@@ -171,6 +171,43 @@ test('SheetsRepository reads one request without loading the full tracking grid'
   assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A3:S4"]);
 });
 
+test('SheetsRepository lists tracking rows only through the last request row', async () => {
+  const ranges = [];
+  const trackingRows = [
+    ['RQ-1', 46217.5, '小明', '商品 A', '件', 5, '待確認', '', '', 0, 5, '', '', 'SKU-A'],
+    ['RQ-2', 46218.5, '小華', '商品 B', '組', 2, '已下單', 2, '', 0, 2, '', '', 'SKU-B']
+  ];
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          ranges.push(range);
+          if (range === "'補貨追蹤'!A2:A5000") {
+            return { data: { values: [['RQ-1'], ['RQ-2'], [], []] } };
+          }
+          if (range === "'補貨追蹤'!A2:N3") return { data: { values: trackingRows } };
+          throw new Error(`unexpected range: ${range}`);
+        }
+      }
+    }
+  };
+  const repository = new SheetsRepository({ sheets, spreadsheetId: 'sheet-123' });
+
+  assert.deepEqual(await repository.listRequestRows(), [
+    {
+      requestId: 'RQ-1', requestedAt: 46217.5, applicant: '小明', displayName: '商品 A',
+      unit: '件', requestedQuantity: 5, status: '待確認', orderedQuantity: 0,
+      receivedQuantity: 0, outstandingQuantity: 5, sku: 'SKU-A'
+    },
+    {
+      requestId: 'RQ-2', requestedAt: 46218.5, applicant: '小華', displayName: '商品 B',
+      unit: '組', requestedQuantity: 2, status: '已下單', orderedQuantity: 2,
+      receivedQuantity: 0, outstandingQuantity: 2, sku: 'SKU-B'
+    }
+  ]);
+  assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A2:N3"]);
+});
+
 function workflowSheets(trackingRow, onWrite) {
   return {
     spreadsheets: {
@@ -270,4 +307,27 @@ test('SheetsRepository finds pending and overdue reminders at Taipei time bounda
     ['RQ-PENDING', 'pending'],
     ['RQ-OVERDUE', 'overdue']
   ]);
+});
+
+test('SheetsRepository never overwrites a configured notification group', async () => {
+  let writes = 0;
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          assert.equal(range, "'系統設定'!A2:B100");
+          return { data: { values: [['NOTIFICATION_GROUP_ID', 'COMPANY']] } };
+        },
+        async update() {
+          writes += 1;
+          return { data: {} };
+        }
+      }
+    }
+  };
+  const repository = new SheetsRepository({ sheets, spreadsheetId: 'sheet-123' });
+
+  assert.equal(await repository.saveNotificationGroupId('COMPANY'), true);
+  assert.equal(await repository.saveNotificationGroupId('OTHER'), false);
+  assert.equal(writes, 0);
 });

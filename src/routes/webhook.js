@@ -1,6 +1,12 @@
 import { validateSignature } from '@line/bot-sdk';
 import { AuthenticationError, ValidationError } from '../errors.js';
 import { createGroupContext } from '../line/context.js';
+import {
+  formatStatusReply,
+  GROUP_COMMAND_HELP,
+  parseGroupCommand,
+  summarizeRequests
+} from '../services/group-commands.js';
 
 export function createWebhookHandler({ config, repository, messenger }) {
   return async function webhookHandler(request, response, next) {
@@ -24,17 +30,37 @@ export function createWebhookHandler({ config, repository, messenger }) {
           && event.message?.type === 'text'
           && event.message.text.trim() === '補貨';
         const isJoin = event.type === 'join' && groupId;
-        if (!isReplenishmentCommand && !isJoin) return;
+        const command = event.type === 'message' ? parseGroupCommand(event.message) : null;
+        if (!isReplenishmentCommand && !isJoin && !command) return;
 
         if (!groupId) {
-          if (event.replyToken) await messenger.replyText(event.replyToken, '請在公司的 LINE 工作群組輸入「補貨」。');
+          if (event.replyToken) await messenger.replyText(event.replyToken, '請在公司的 LINE 工作群組輸入補貨指令。');
           return;
         }
 
-        await repository.saveNotificationGroupId(groupId);
-        const contextToken = createGroupContext({ groupId }, config.linkSigningSecret);
-        const url = `https://liff.line.me/${config.liffId}?ctx=${encodeURIComponent(contextToken)}`;
-        if (event.replyToken) await messenger.replyReplenishmentLink(event.replyToken, url);
+        const groupAllowed = await repository.saveNotificationGroupId(groupId);
+        if (!groupAllowed) {
+          if (event.replyToken) await messenger.replyText(event.replyToken, '此群組未授權使用補貨系統。');
+          return;
+        }
+
+        if (isReplenishmentCommand || isJoin) {
+          const contextToken = createGroupContext({ groupId }, config.linkSigningSecret);
+          const url = `https://liff.line.me/${config.liffId}?ctx=${encodeURIComponent(contextToken)}`;
+          if (event.replyToken) await messenger.replyReplenishmentLink(event.replyToken, url);
+          return;
+        }
+
+        if (command.type === 'help') {
+          if (event.replyToken) await messenger.replyText(event.replyToken, GROUP_COMMAND_HELP);
+          return;
+        }
+
+        const rows = await repository.listRequestRows();
+        const result = summarizeRequests(rows, command.status);
+        if (event.replyToken) {
+          await messenger.replyText(event.replyToken, formatStatusReply(command.status, result));
+        }
       }));
 
       response.json({ ok: true });

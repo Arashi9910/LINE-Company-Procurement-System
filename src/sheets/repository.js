@@ -138,6 +138,38 @@ export class SheetsRepository {
       }));
   }
 
+  async listRequestRows() {
+    const idResponse = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${TRACKING_SHEET}'!A2:A${MAX_TRACKING_ROW}`,
+      valueRenderOption: 'UNFORMATTED_VALUE'
+    });
+    const ids = idResponse.data.values ?? [];
+    const lastIndex = ids.findLastIndex((row) => row[0]);
+    if (lastIndex < 0) return [];
+
+    const response = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${TRACKING_SHEET}'!A2:N${lastIndex + 2}`,
+      valueRenderOption: 'UNFORMATTED_VALUE'
+    });
+    return (response.data.values ?? [])
+      .filter((row) => row[0])
+      .map((row) => ({
+        requestId: String(row[0]),
+        requestedAt: row[1] ?? '',
+        applicant: String(row[2] ?? ''),
+        displayName: String(row[3] ?? ''),
+        unit: String(row[4] || '件'),
+        requestedQuantity: Number(row[5] ?? 0),
+        status: String(row[6] ?? ''),
+        orderedQuantity: Number(row[7] ?? 0),
+        receivedQuantity: Number(row[9] ?? 0),
+        outstandingQuantity: Number(row[10] ?? 0),
+        sku: String(row[13] ?? '')
+      }));
+  }
+
   createRequest(input) {
     return this.#enqueue(() => this.#createRequest(input));
   }
@@ -524,16 +556,22 @@ export class SheetsRepository {
     return row ? value : '';
   }
 
-  async saveNotificationGroupId(groupId) {
-    if (!groupId) return;
+  saveNotificationGroupId(groupId) {
+    if (!groupId) return Promise.resolve(false);
+    return this.#enqueue(() => this.#saveNotificationGroupId(groupId));
+  }
+
+  async #saveNotificationGroupId(groupId) {
     const setting = await this.#findSetting('NOTIFICATION_GROUP_ID');
-    if (!setting.row || setting.value === groupId) return;
+    if (!setting.row) return false;
+    if (setting.value) return setting.value === groupId;
     await this.sheets.spreadsheets.values.update({
       spreadsheetId: this.spreadsheetId,
       range: `'${SETTINGS_SHEET}'!B${setting.row}`,
       valueInputOption: 'RAW',
       requestBody: { values: [[groupId]] }
     });
+    return true;
   }
 
   async #findSetting(key) {
