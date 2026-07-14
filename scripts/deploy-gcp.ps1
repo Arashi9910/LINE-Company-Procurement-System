@@ -30,6 +30,28 @@ function Resolve-GcloudCommand {
   if (-not $command) {
     $command = Get-Command 'gcloud' -ErrorAction SilentlyContinue
   }
+  if ($command) {
+    return $command
+  }
+
+  $candidates = @()
+  if ($env:LOCALAPPDATA) {
+    $candidates += Join-Path $env:LOCALAPPDATA 'Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd'
+  }
+  if ($env:ProgramFiles) {
+    $candidates += Join-Path $env:ProgramFiles 'Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd'
+  }
+  $programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+  if ($programFilesX86) {
+    $candidates += Join-Path $programFilesX86 'Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd'
+  }
+
+  foreach ($candidate in $candidates) {
+    if (Test-Path -LiteralPath $candidate) {
+      return [PSCustomObject]@{ Source = $candidate }
+    }
+  }
+
   return $command
 }
 

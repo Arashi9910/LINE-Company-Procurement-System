@@ -15,6 +15,15 @@ test('PowerShell scripts prefer gcloud.cmd on Windows', async () => {
   }
 });
 
+test('PowerShell scripts find a per-user Google Cloud CLI install when PATH is stale', async () => {
+  for (const path of scripts) {
+    const source = await readFile(path, 'utf8');
+    assert.match(source, /\$env:LOCALAPPDATA/);
+    assert.match(source, /Google\\Cloud SDK\\google-cloud-sdk\\bin\\gcloud\.cmd/);
+    assert.match(source, /Test-Path -LiteralPath \$candidate/);
+  }
+});
+
 test('gcloud stderr is handled by exit code instead of Stop preference', async () => {
   for (const path of scripts) {
     const source = await readFile(path, 'utf8');
