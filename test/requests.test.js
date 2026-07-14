@@ -9,11 +9,29 @@ test('listSearchableSkus adds open request counts', async () => {
     },
     async listOpenRequests() {
       return [{ sku: 'A' }, { sku: 'A' }, { sku: 'UNKNOWN' }];
+    },
+    async listProductImages() {
+      return [{
+        sku: 'A',
+        productId: 'P1',
+        productCode: 'SALE-1',
+        productName: '商品 A 新名稱',
+        variantName: '紅色',
+        mainImageUrl: 'https://img.example/main.jpg',
+        variantImageUrl: 'https://img.example/red.jpg',
+        listImageUrl: 'https://img.example/list.jpg',
+        imageStatus: '正常',
+        bindingStatus: '已綁定'
+      }];
     }
   };
 
   const result = await listSearchableSkus(repository);
   assert.deepEqual(result.map((item) => item.openCount), [2, 0]);
+  assert.equal(result[0].productName, '商品 A 新名稱');
+  assert.equal(result[0].productCode, 'SALE-1');
+  assert.equal(result[0].variantImageUrl, 'https://img.example/red.jpg');
+  assert.equal(result[1].mainImageUrl, '');
 });
 
 test('submitRequest normalizes and forwards a valid multi-item request', async () => {

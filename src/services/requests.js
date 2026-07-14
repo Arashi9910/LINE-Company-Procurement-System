@@ -4,11 +4,16 @@ const MAX_ITEMS = 50;
 const MAX_NOTE_LENGTH = 500;
 
 export async function listSearchableSkus(repository) {
-  const [skus, openRequests] = await Promise.all([
+  const imageRows = typeof repository.listProductImages === 'function'
+    ? repository.listProductImages()
+    : Promise.resolve([]);
+  const [skus, openRequests, productImages] = await Promise.all([
     repository.listAvailableSkus(),
-    repository.listOpenRequests()
+    repository.listOpenRequests(),
+    imageRows
   ]);
   const openCounts = new Map();
+  const imagesBySku = new Map(productImages.map((item) => [item.sku, item]));
 
   for (const request of openRequests) {
     if (!request.sku) continue;
@@ -17,6 +22,15 @@ export async function listSearchableSkus(repository) {
 
   return skus.map((sku) => ({
     ...sku,
+    productId: imagesBySku.get(sku.sku)?.productId ?? '',
+    productCode: imagesBySku.get(sku.sku)?.productCode ?? '',
+    productName: imagesBySku.get(sku.sku)?.productName || sku.productName,
+    variantName: imagesBySku.get(sku.sku)?.variantName ?? '',
+    mainImageUrl: imagesBySku.get(sku.sku)?.mainImageUrl ?? '',
+    variantImageUrl: imagesBySku.get(sku.sku)?.variantImageUrl ?? '',
+    listImageUrl: imagesBySku.get(sku.sku)?.listImageUrl ?? '',
+    imageStatus: imagesBySku.get(sku.sku)?.imageStatus ?? '',
+    bindingStatus: imagesBySku.get(sku.sku)?.bindingStatus ?? '',
     openCount: openCounts.get(sku.sku) ?? 0
   }));
 }

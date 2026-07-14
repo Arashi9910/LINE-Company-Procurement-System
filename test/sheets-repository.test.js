@@ -2,11 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SheetsRepository } from '../src/sheets/repository.js';
 
-function fakeSheets({ ids = [['RQ-1'], ['RQ-2'], ['RQ-3'], ['RQ-4']], keys = [], onWrite } = {}) {
+function fakeSheets({
+  ids = [['RQ-1'], ['RQ-2'], ['RQ-3'], ['RQ-4']],
+  keys = [],
+  imageRows = [],
+  imageError,
+  onWrite
+} = {}) {
   return {
     spreadsheets: {
       values: {
         async get({ range }) {
+          if (range.includes('商品圖片對照')) {
+            if (imageError) throw imageError;
+            return { data: { values: imageRows } };
+          }
           if (range.includes('SKU主檔')) {
             return { data: { values: [[
               'SKU-A', '商品 A', '紅色', '', 12, '', '', '商品 A｜紅色',
@@ -30,6 +40,37 @@ function fakeSheets({ ids = [['RQ-1'], ['RQ-2'], ['RQ-3'], ['RQ-4']], keys = [],
     }
   };
 }
+
+test('SheetsRepository parses product image mappings and tolerates a missing sheet', async () => {
+  const imageRow = [
+    'PART-1', 'SKU-A', 'PRODUCT-1', 'SALE-001', '商品 A', '紅色',
+    'https://img.example/main.jpg', 'https://img.example/red.jpg',
+    'https://img.example/list.jpg', '規格圖', '正常', '已綁定', '已配對', '飛鼠', '2026-07-14'
+  ];
+  const repository = new SheetsRepository({
+    sheets: fakeSheets({ imageRows: [imageRow] }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  assert.deepEqual(await repository.listProductImages(), [{
+    productId: 'PRODUCT-1',
+    sku: 'SKU-A',
+    productCode: 'SALE-001',
+    productName: '商品 A',
+    variantName: '紅色',
+    mainImageUrl: 'https://img.example/main.jpg',
+    variantImageUrl: 'https://img.example/red.jpg',
+    listImageUrl: 'https://img.example/list.jpg',
+    imageStatus: '正常',
+    bindingStatus: '已綁定'
+  }]);
+
+  const missingSheet = new SheetsRepository({
+    sheets: fakeSheets({ imageError: Object.assign(new Error('Unable to parse range'), { code: 400 }) }),
+    spreadsheetId: 'sheet-123'
+  });
+  assert.deepEqual(await missingSheet.listProductImages(), []);
+});
 
 test('SheetsRepository writes disjoint ranges without blocking spill formulas', async () => {
   let write;

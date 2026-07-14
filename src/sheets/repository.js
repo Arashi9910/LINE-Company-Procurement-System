@@ -4,6 +4,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
 
 const TRACKING_SHEET = '補貨追蹤';
 const SKU_SHEET = 'SKU主檔';
+const PRODUCT_IMAGES_SHEET = '商品圖片對照';
 const SETTINGS_SHEET = '系統設定';
 const AUTH_SHEET = '授權人員';
 const OPERATIONS_SHEET = '操作紀錄';
@@ -88,6 +89,34 @@ export class SheetsRepository {
         unit: String(row[11] || '件'),
         updatedAt: String(row[13] ?? '')
       }));
+  }
+
+  async listProductImages() {
+    try {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `'${PRODUCT_IMAGES_SHEET}'!A2:O`
+      });
+
+      return (response.data.values ?? [])
+        .filter((row) => row[1])
+        .map((row) => ({
+          productId: String(row[2] ?? ''),
+          sku: String(row[1]),
+          productCode: String(row[3] ?? ''),
+          productName: String(row[4] ?? ''),
+          variantName: String(row[5] ?? ''),
+          mainImageUrl: String(row[6] ?? ''),
+          variantImageUrl: String(row[7] ?? ''),
+          listImageUrl: String(row[8] ?? ''),
+          imageStatus: String(row[10] ?? ''),
+          bindingStatus: String(row[11] ?? '')
+        }));
+    } catch (error) {
+      const status = Number(error.code ?? error.response?.status);
+      if (status === 400) return [];
+      throw error;
+    }
   }
 
   async listOpenRequests() {
