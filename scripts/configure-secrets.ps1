@@ -1,6 +1,8 @@
 param(
   [Parameter(Mandatory = $true)]
-  [string]$ProjectId
+  [string]$ProjectId,
+
+  [switch]$RotateExistingSecrets
 )
 
 $ErrorActionPreference = 'Stop'
@@ -71,8 +73,22 @@ function Ensure-Secret([string]$Name) {
   }
 }
 
+function Test-SecretHasEnabledVersion([string]$Name) {
+  $probe = Invoke-Gcloud -Arguments @(
+    'secrets', 'versions', 'list', $Name,
+    '--project', $ProjectId,
+    '--filter=state=ENABLED',
+    '--format=value(name)'
+  ) -AllowFailure
+  return $probe.ExitCode -eq 0 -and $probe.Output.Count -gt 0
+}
+
 function Add-SecureVersion([string]$Name, [string]$Prompt) {
   Ensure-Secret $Name
+  if (-not $RotateExistingSecrets -and (Test-SecretHasEnabledVersion $Name)) {
+    Write-Host "Keeping existing Secret Manager version: $Name"
+    return
+  }
   $secure = Read-Host $Prompt -AsSecureString
   $plain = [System.Net.NetworkCredential]::new('', $secure).Password
   try {
@@ -92,6 +108,10 @@ function Add-SecureVersion([string]$Name, [string]$Prompt) {
 
 function Add-GeneratedVersion([string]$Name) {
   Ensure-Secret $Name
+  if (-not $RotateExistingSecrets -and (Test-SecretHasEnabledVersion $Name)) {
+    Write-Host "Keeping existing Secret Manager version: $Name"
+    return
+  }
   $bytes = [byte[]]::new(32)
   $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
   try {
@@ -112,8 +132,8 @@ function Add-GeneratedVersion([string]$Name) {
   }
 }
 
-Add-SecureVersion 'line-channel-secret' 'Enter the LINE Messaging API Channel Secret'
-Add-SecureVersion 'line-channel-access-token' 'Enter the LINE Messaging API Channel Access Token'
+Add-SecureVersion 'line-channel-secret' 'Paste the LINE Messaging API Channel Secret, confirm a * appears, then press Enter'
+Add-SecureVersion 'line-channel-access-token' 'Paste the LINE Messaging API Channel Access Token, confirm a * appears, then press Enter'
 Add-GeneratedVersion 'line-link-signing-secret'
 Add-GeneratedVersion 'line-job-token'
 

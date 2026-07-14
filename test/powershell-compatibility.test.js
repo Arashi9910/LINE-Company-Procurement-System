@@ -31,3 +31,12 @@ test('secret generation supports Windows PowerShell 5.1', async () => {
   assert.match(source, /\.GetBytes\(\$bytes\)/);
   assert.doesNotMatch(source, /RandomNumberGenerator\]::Fill/);
 });
+
+test('secret setup resumes without rotating completed values', async () => {
+  const source = await readFile('scripts/configure-secrets.ps1', 'utf8');
+  assert.match(source, /\[switch\]\$RotateExistingSecrets/);
+  assert.match(source, /function Test-SecretHasEnabledVersion/);
+  assert.match(source, /--filter=state=ENABLED/);
+  assert.match(source, /-not \$RotateExistingSecrets -and \(Test-SecretHasEnabledVersion \$Name\)/);
+  assert.match(source, /Keeping existing Secret Manager version/);
+});
