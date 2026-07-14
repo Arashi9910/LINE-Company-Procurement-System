@@ -37,6 +37,16 @@
         <textarea id="note" maxlength="500" rows="3" placeholder="例如：活動前需要、供應商資訊…"></textarea>
         <button id="submit" class="primary" type="button">送出補貨申請</button>
       </section>
+
+      <section id="workflow-section" class="workflow-section" hidden>
+        <div class="section-heading">
+          <h2 id="workflow-title"></h2>
+          <span id="request-id" class="request-id"></span>
+        </div>
+        <p id="workflow-meta" class="muted"></p>
+        <div id="workflow-items" class="workflow-items"></div>
+        <button id="workflow-submit" class="primary" type="button"></button>
+      </section>
     </main>
     <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
     <script src="/app.js" type="module"></script>

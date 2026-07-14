@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { bearerToken } from '../line/identity.js';
 import { verifyGroupContext } from '../line/context.js';
 import { listSearchableSkus, submitRequest } from '../services/requests.js';
+import { confirmOrder, confirmReceipt, getRequestDetails } from '../services/workflow.js';
 
 export function createApiRouter({ config, repository, identityVerifier, messenger }) {
   const router = Router();
@@ -48,6 +49,59 @@ export function createApiRouter({ config, repository, identityVerifier, messenge
         }
       }
 
+      response.status(result.idempotentReplay ? 200 : 201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/requests/:requestId', async (request, response, next) => {
+    try {
+      response.json(await getRequestDetails({
+        actor: request.actor,
+        requestId: request.params.requestId
+      }, repository));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/requests/:requestId/order', async (request, response, next) => {
+    try {
+      const result = await confirmOrder({
+        actor: request.actor,
+        requestId: request.params.requestId,
+        items: request.body?.items,
+        idempotencyKey: request.body?.idempotencyKey
+      }, repository);
+      if (result.groupId) {
+        try {
+          await messenger.pushOrderConfirmed(result.groupId, result, request.actor);
+        } catch (error) {
+          console.warn('LINE order notification failed', { requestId: result.requestId, message: error.message });
+        }
+      }
+      response.status(result.idempotentReplay ? 200 : 201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/requests/:requestId/receipt', async (request, response, next) => {
+    try {
+      const result = await confirmReceipt({
+        actor: request.actor,
+        requestId: request.params.requestId,
+        items: request.body?.items,
+        idempotencyKey: request.body?.idempotencyKey
+      }, repository);
+      if (result.groupId) {
+        try {
+          await messenger.pushReceiptConfirmed(result.groupId, result, request.actor);
+        } catch (error) {
+          console.warn('LINE receipt notification failed', { requestId: result.requestId, message: error.message });
+        }
+      }
       response.status(result.idempotentReplay ? 200 : 201).json(result);
     } catch (error) {
       next(error);

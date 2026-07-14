@@ -51,6 +51,8 @@ test('SheetsRepository writes disjoint ranges without blocking spill formulas', 
   assert.match(result.requestId, /^RQ-20260714-100304-abcd$/);
   assert.equal(result.items[0].unit, '件');
   assert.equal(write.requestBody.valueInputOption, 'RAW');
+  const expectedTaipeiSerial = Date.UTC(2026, 6, 14, 10, 3, 4) / 86_400_000 + 25_569;
+  assert.equal(write.requestBody.data[0].values[0][1], expectedTaipeiSerial);
   assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
     "'補貨追蹤'!A6:D6",
     "'補貨追蹤'!F6:J6",
@@ -98,4 +100,105 @@ test('SheetsRepository rejects a disabled or missing SKU before writing', async 
     idempotencyKey: 'abcdefghijklmnop'
   }), /停用或不存在/);
   assert.equal(writes, 0);
+});
+
+function workflowSheets(trackingRow, onWrite) {
+  return {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          if (range.includes('操作紀錄')) return { data: { values: [] } };
+          if (range.includes('補貨追蹤')) return { data: { values: [trackingRow] } };
+          return { data: { values: [] } };
+        },
+        async batchUpdate(request) {
+          onWrite(request);
+          return { data: {} };
+        }
+      }
+    }
+  };
+}
+
+test('SheetsRepository confirms an order and records the operation atomically', async () => {
+  let write;
+  const row = [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '待確認', '', '', 0,
+    '', '', '', 'SKU-A', 'U1', 'C1', 'U1', '', 'create-key'
+  ];
+  const repository = new SheetsRepository({
+    sheets: workflowSheets(row, (request) => { write = request; }),
+    spreadsheetId: 'sheet-123',
+    now: () => new Date('2026-07-14T02:00:00.000Z')
+  });
+
+  const result = await repository.confirmOrder({
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-1',
+    items: [{ sku: 'SKU-A', orderedQuantity: 5, expectedDate: '2026-07-20' }],
+    idempotencyKey: 'order-key-123456'
+  });
+
+  assert.equal(result.items[0].status, '已下單');
+  assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
+    "'補貨追蹤'!G2:I2",
+    "'補貨追蹤'!Q2:R2",
+    "'操作紀錄'!A2:F2"
+  ]);
+  assert.equal(write.requestBody.data[2].values[0][1], '確認下單');
+});
+
+test('SheetsRepository accumulates partial receipts and prevents over-receipt', async () => {
+  const row = [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '已下單', 5, '2026/07/20', 2,
+    3, '', '', 'SKU-A', 'U1', 'C1', 'BUYER', '', 'create-key'
+  ];
+  let write;
+  const repository = new SheetsRepository({
+    sheets: workflowSheets(row, (request) => { write = request; }),
+    spreadsheetId: 'sheet-123',
+    now: () => new Date('2026-07-14T03:00:00.000Z')
+  });
+
+  const result = await repository.confirmReceipt({
+    actor: { userId: 'RECEIVER' },
+    requestId: 'RQ-1',
+    items: [{ sku: 'SKU-A', receivedQuantity: 2 }],
+    idempotencyKey: 'receipt-key-1234'
+  });
+  assert.equal(result.items[0].status, '部分到貨');
+  assert.equal(result.items[0].receivedQuantity, 4);
+  assert.equal(write.requestBody.data[0].values[0][0], '部分到貨');
+  assert.equal(write.requestBody.data[1].values[0][0], 4);
+
+  await assert.rejects(repository.confirmReceipt({
+    actor: { userId: 'RECEIVER' },
+    requestId: 'RQ-1',
+    items: [{ sku: 'SKU-A', receivedQuantity: 4 }],
+    idempotencyKey: 'receipt-key-5678'
+  }), /不可超過下單量/);
+});
+
+test('SheetsRepository finds pending and overdue reminders at Taipei time boundaries', async () => {
+  const at = new Date('2026-07-14T02:00:00.000Z');
+  const nowSerial = Date.UTC(2026, 6, 14, 10, 0, 0) / 86_400_000 + 25_569;
+  const rows = [
+    ['RQ-PENDING', nowSerial - 25 / 24, '小明', '商品 A', '件', 1, '待確認', '', '', '', '', '', '', 'A', 'U1', 'C1'],
+    ['RQ-TOO-SOON', nowSerial - 23 / 24, '小明', '商品 B', '件', 1, '待確認', '', '', '', '', '', '', 'B', 'U1', 'C1'],
+    ['RQ-OVERDUE', nowSerial - 48 / 24, '小明', '商品 C', '件', 2, '已下單', 2, Math.floor(nowSerial) - 1, 0, 2, '', '', 'C', 'U1', 'C2']
+  ];
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get() { return { data: { values: rows } }; }
+      }
+    }
+  };
+  const repository = new SheetsRepository({ sheets, spreadsheetId: 'sheet-123' });
+  const result = await repository.listReminderCandidates({ at, pendingAfterHours: 24 });
+
+  assert.deepEqual(result.map((item) => [item.requestId, item.kind]), [
+    ['RQ-PENDING', 'pending'],
+    ['RQ-OVERDUE', 'overdue']
+  ]);
 });

@@ -3,7 +3,8 @@ const REQUIRED_SECRETS = [
   'LINE_CHANNEL_SECRET',
   'LINE_CHANNEL_ACCESS_TOKEN',
   'LIFF_ID',
-  'LINK_SIGNING_SECRET'
+  'LINK_SIGNING_SECRET',
+  'JOB_TOKEN'
 ];
 
 export function loadConfig(env = process.env, options = {}) {

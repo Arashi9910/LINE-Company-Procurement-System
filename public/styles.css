@@ -92,9 +92,18 @@ textarea { resize: vertical; }
 .primary { width: 100%; margin-top: 16px; padding: 14px; background: #06c755; color: #fff; }
 .primary:disabled { background: #9aa0a6; cursor: wait; }
 
+.workflow-section { margin-top: 24px; }
+.request-id { color: #5f6368; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .82rem; }
+.workflow-items { display: grid; gap: 12px; margin-top: 16px; }
+.workflow-row { padding: 14px; border: 1px solid #e1e3e6; border-radius: 14px; background: #fff; }
+.workflow-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.workflow-fields label { margin: 0; font-size: .86rem; }
+.workflow-fields input { width: 100%; margin-top: 6px; padding: 10px; border: 1px solid #c7c9cc; border-radius: 8px; }
+
 @media (max-width: 520px) {
   .shell { padding-inline: 12px; }
   .cart-row { align-items: flex-start; flex-direction: column; }
   .quantity-controls { width: 100%; }
   .quantity-controls input { flex: 1; }
+  .workflow-fields { grid-template-columns: 1fr; }
 }

@@ -1,15 +1,35 @@
 import { randomUUID } from 'node:crypto';
 import { google } from 'googleapis';
-import { ConflictError, ValidationError } from '../errors.js';
+import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
 
 const TRACKING_SHEET = '補貨追蹤';
 const SKU_SHEET = 'SKU主檔';
 const SETTINGS_SHEET = '系統設定';
+const AUTH_SHEET = '授權人員';
+const OPERATIONS_SHEET = '操作紀錄';
 const MAX_TRACKING_ROW = 5000;
 const CLOSED_STATUSES = new Set(['已完成', '取消']);
 
 function sheetSerial(date) {
-  return date.getTime() / 86_400_000 + 25_569;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return Date.UTC(
+    Number(value.year),
+    Number(value.month) - 1,
+    Number(value.day),
+    Number(value.hour),
+    Number(value.minute),
+    Number(value.second)
+  ) / 86_400_000 + 25_569;
 }
 
 function requestId(date, uuid) {
@@ -25,6 +45,12 @@ function requestId(date, uuid) {
   }).formatToParts(date);
   const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `RQ-${value.year}${value.month}${value.day}-${value.hour}${value.minute}${value.second}-${uuid.slice(0, 4)}`;
+}
+
+function dateSerial(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) throw new ValidationError('預計到貨日格式錯誤');
+  return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86_400_000 + 25_569;
 }
 
 export function createGoogleSheetsClient() {
@@ -84,7 +110,18 @@ export class SheetsRepository {
   }
 
   createRequest(input) {
-    const run = () => this.#createRequest(input);
+    return this.#enqueue(() => this.#createRequest(input));
+  }
+
+  confirmOrder(input) {
+    return this.#enqueue(() => this.#confirmOrder(input));
+  }
+
+  confirmReceipt(input) {
+    return this.#enqueue(() => this.#confirmReceipt(input));
+  }
+
+  #enqueue(run) {
     const result = this.writeChain.then(run, run);
     this.writeChain = result.catch(() => undefined);
     return result;
@@ -165,6 +202,260 @@ export class SheetsRepository {
     });
 
     return { requestId: newRequestId, idempotentReplay: false, items: createdItems };
+  }
+
+  async getRequest(targetRequestId) {
+    const response = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${TRACKING_SHEET}'!A2:S${MAX_TRACKING_ROW}`
+    });
+    const items = (response.data.values ?? [])
+      .map((row, index) => ({ row, rowNumber: index + 2 }))
+      .filter(({ row }) => row[0] === targetRequestId)
+      .map(({ row, rowNumber }) => ({
+        rowNumber,
+        requestId: String(row[0]),
+        requestedAt: String(row[1] ?? ''),
+        applicant: String(row[2] ?? ''),
+        displayName: String(row[3] ?? ''),
+        unit: String(row[4] || '件'),
+        requestedQuantity: Number(row[5] ?? 0),
+        status: String(row[6] ?? ''),
+        orderedQuantity: Number(row[7] ?? 0),
+        expectedDate: String(row[8] ?? '').replaceAll('/', '-'),
+        receivedQuantity: Number(row[9] ?? 0),
+        outstandingQuantity: Number(row[10] ?? 0),
+        duplicateWarning: String(row[11] ?? ''),
+        note: String(row[12] ?? ''),
+        sku: String(row[13] ?? ''),
+        sourceGroupId: String(row[15] ?? '')
+      }));
+    if (items.length === 0) throw new NotFoundError(`找不到補貨單 ${targetRequestId}`);
+    return {
+      requestId: targetRequestId,
+      requestedAt: items[0].requestedAt,
+      applicant: items[0].applicant,
+      note: items[0].note,
+      groupId: items[0].sourceGroupId,
+      items
+    };
+  }
+
+  async getAuthorization(userId) {
+    const response = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${AUTH_SHEET}'!A2:E1000`
+    });
+    const row = (response.data.values ?? []).find((value) => value[0] === userId);
+    if (!row) return { role: '申請人', enabled: true, exists: false };
+    return {
+      role: String(row[2] || '申請人'),
+      enabled: row[3] === '是',
+      exists: true
+    };
+  }
+
+  async #confirmOrder(input) {
+    const operation = await this.#findOperation(input.idempotencyKey);
+    if (operation.existing) {
+      if (operation.requestId !== input.requestId || operation.type !== '確認下單') {
+        throw new ConflictError('操作金鑰已被其他操作使用');
+      }
+      return { ...(await this.getRequest(input.requestId)), idempotentReplay: true };
+    }
+
+    const request = await this.getRequest(input.requestId);
+    const inputMap = new Map(input.items.map((item) => [item.sku, item]));
+    if (inputMap.size !== request.items.length || request.items.some((item) => !inputMap.has(item.sku))) {
+      throw new ValidationError('下單品項必須與補貨單一致');
+    }
+    if (request.items.some((item) => item.status !== '待確認')) {
+      throw new ConflictError('此補貨單已確認下單或已結案');
+    }
+
+    const serial = sheetSerial(this.now());
+    const data = request.items.flatMap((item) => {
+      const update = inputMap.get(item.sku);
+      const status = update.orderedQuantity === 0 ? '取消' : '已下單';
+      return [
+        {
+          range: `'${TRACKING_SHEET}'!G${item.rowNumber}:I${item.rowNumber}`,
+          values: [[status, update.orderedQuantity, update.expectedDate ? dateSerial(update.expectedDate) : '']]
+        },
+        {
+          range: `'${TRACKING_SHEET}'!Q${item.rowNumber}:R${item.rowNumber}`,
+          values: [[input.actor.userId, serial]]
+        }
+      ];
+    });
+    data.push({
+      range: `'${OPERATIONS_SHEET}'!A${operation.nextRow}:F${operation.nextRow}`,
+      values: [[
+        input.idempotencyKey,
+        '確認下單',
+        input.requestId,
+        input.actor.userId,
+        serial,
+        `共 ${request.items.length} 項`
+      ]]
+    });
+    await this.sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: this.spreadsheetId,
+      requestBody: { valueInputOption: 'RAW', data }
+    });
+
+    const items = request.items.map((item) => {
+      const update = inputMap.get(item.sku);
+      return {
+        ...item,
+        status: update.orderedQuantity === 0 ? '取消' : '已下單',
+        orderedQuantity: update.orderedQuantity,
+        expectedDate: update.expectedDate,
+        outstandingQuantity: update.orderedQuantity
+      };
+    });
+    return { ...request, items, idempotentReplay: false };
+  }
+
+  async #confirmReceipt(input) {
+    const operation = await this.#findOperation(input.idempotencyKey);
+    if (operation.existing) {
+      if (operation.requestId !== input.requestId || operation.type !== '到貨確認') {
+        throw new ConflictError('操作金鑰已被其他操作使用');
+      }
+      return { ...(await this.getRequest(input.requestId)), idempotentReplay: true };
+    }
+
+    const request = await this.getRequest(input.requestId);
+    const requestMap = new Map(request.items.map((item) => [item.sku, item]));
+    const serial = sheetSerial(this.now());
+    const updated = [];
+    const data = [];
+    for (const receipt of input.items) {
+      const item = requestMap.get(receipt.sku);
+      if (!item) throw new ValidationError(`SKU ${receipt.sku} 不在此補貨單`);
+      if (!['已下單', '部分到貨'].includes(item.status)) {
+        throw new ConflictError(`SKU ${receipt.sku} 目前不可登記到貨`);
+      }
+      const newTotal = item.receivedQuantity + receipt.receivedQuantity;
+      if (newTotal > item.orderedQuantity) {
+        throw new ValidationError(`SKU ${receipt.sku} 的累計到貨量不可超過下單量`);
+      }
+      const status = newTotal === item.orderedQuantity ? '已完成' : '部分到貨';
+      data.push(
+        { range: `'${TRACKING_SHEET}'!G${item.rowNumber}`, values: [[status]] },
+        { range: `'${TRACKING_SHEET}'!J${item.rowNumber}`, values: [[newTotal]] },
+        { range: `'${TRACKING_SHEET}'!Q${item.rowNumber}:R${item.rowNumber}`, values: [[input.actor.userId, serial]] }
+      );
+      updated.push({
+        ...item,
+        status,
+        receivedQuantity: newTotal,
+        outstandingQuantity: item.orderedQuantity - newTotal
+      });
+    }
+    data.push({
+      range: `'${OPERATIONS_SHEET}'!A${operation.nextRow}:F${operation.nextRow}`,
+      values: [[
+        input.idempotencyKey,
+        '到貨確認',
+        input.requestId,
+        input.actor.userId,
+        serial,
+        `本次 ${updated.length} 項`
+      ]]
+    });
+    await this.sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: this.spreadsheetId,
+      requestBody: { valueInputOption: 'RAW', data }
+    });
+
+    const updatedMap = new Map(updated.map((item) => [item.sku, item]));
+    return {
+      ...request,
+      items: request.items.map((item) => updatedMap.get(item.sku) ?? item),
+      idempotentReplay: false
+    };
+  }
+
+  async #findOperation(key) {
+    const response = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${OPERATIONS_SHEET}'!A2:C5000`
+    });
+    const rows = response.data.values ?? [];
+    const row = rows.find((value) => value[0] === key);
+    return {
+      existing: Boolean(row),
+      type: String(row?.[1] ?? ''),
+      requestId: String(row?.[2] ?? ''),
+      nextRow: rows.length + 2
+    };
+  }
+
+  async listReminderCandidates({ at = this.now(), pendingAfterHours = 24 } = {}) {
+    const response = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${TRACKING_SHEET}'!A2:S${MAX_TRACKING_ROW}`,
+      valueRenderOption: 'UNFORMATTED_VALUE'
+    });
+    const nowSerial = sheetSerial(at);
+    const todaySerial = Math.floor(nowSerial);
+    const pendingBefore = nowSerial - pendingAfterHours / 24;
+    const candidates = new Map();
+
+    for (const row of response.data.values ?? []) {
+      const requestIdValue = String(row[0] ?? '');
+      const status = String(row[6] ?? '');
+      if (!requestIdValue || CLOSED_STATUSES.has(status)) continue;
+      const requestedAt = Number(row[1]);
+      const expectedDate = Number(row[8]);
+      const outstanding = Number(row[10] ?? 0);
+      const kind = status === '待確認' && Number.isFinite(requestedAt) && requestedAt <= pendingBefore
+        ? 'pending'
+        : Number.isFinite(expectedDate) && expectedDate < todaySerial && outstanding > 0
+          ? 'overdue'
+          : '';
+      if (!kind) continue;
+
+      const key = `${kind}:${requestIdValue}`;
+      const candidate = candidates.get(key) ?? {
+        kind,
+        requestId: requestIdValue,
+        groupId: String(row[15] ?? ''),
+        items: []
+      };
+      candidate.items.push({
+        sku: String(row[13] ?? ''),
+        displayName: String(row[3] ?? ''),
+        status,
+        outstandingQuantity: outstanding,
+        unit: String(row[4] || '件')
+      });
+      candidates.set(key, candidate);
+    }
+    return [...candidates.values()];
+  }
+
+  reserveReminder(input) {
+    return this.#enqueue(async () => {
+      const operation = await this.#findOperation(input.key);
+      if (operation.existing) return false;
+      await this.sheets.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: `'${OPERATIONS_SHEET}'!A${operation.nextRow}:F${operation.nextRow}`,
+        valueInputOption: 'RAW',
+        requestBody: { values: [[
+          input.key,
+          '提醒',
+          input.requestId,
+          'system',
+          sheetSerial(input.at ?? this.now()),
+          input.summary
+        ]] }
+      });
+      return true;
+    });
   }
 
   async #findPositions(idempotencyKey) {

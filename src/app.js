@@ -2,6 +2,7 @@ import express from 'express';
 import { AppError } from './errors.js';
 import { createApiRouter } from './routes/api.js';
 import { createWebhookHandler } from './routes/webhook.js';
+import { createJobsRouter } from './routes/jobs.js';
 
 export function createApp({ config, repository, identityVerifier, messenger }) {
   const app = express();
@@ -19,6 +20,7 @@ export function createApp({ config, repository, identityVerifier, messenger }) {
     app.post('/webhook', express.raw({ type: 'application/json', limit: '1mb' }),
       createWebhookHandler({ config, repository, messenger }));
     app.use(express.json({ limit: '64kb' }));
+    app.use('/jobs', createJobsRouter({ config, repository, messenger }));
     app.use('/api', createApiRouter({ config, repository, identityVerifier, messenger }));
   }
 

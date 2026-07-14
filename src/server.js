@@ -10,7 +10,10 @@ const repository = new SheetsRepository({
   spreadsheetId: config.spreadsheetId
 });
 const identityVerifier = createLineIdentityVerifier({ channelId: config.lineChannelId });
-const messenger = createLineMessenger({ channelAccessToken: config.lineChannelAccessToken });
+const messenger = createLineMessenger({
+  channelAccessToken: config.lineChannelAccessToken,
+  liffId: config.liffId
+});
 const app = createApp({ config, repository, identityVerifier, messenger });
 
 const server = app.listen(config.port, () => {

@@ -31,3 +31,9 @@ export class ConflictError extends AppError {
     super(message, { code: 'CONFLICT', status: 409, details });
   }
 }
+
+export class NotFoundError extends AppError {
+  constructor(message = '找不到指定資料') {
+    super(message, { code: 'NOT_FOUND', status: 404 });
+  }
+}
