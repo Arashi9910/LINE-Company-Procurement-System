@@ -35,10 +35,23 @@ test('secret generation supports Windows PowerShell 5.1', async () => {
 test('secret setup resumes without rotating completed values', async () => {
   const source = await readFile('scripts/configure-secrets.ps1', 'utf8');
   assert.match(source, /\[switch\]\$RotateExistingSecrets/);
+  assert.match(source, /\[switch\]\$RotateLineCredentials/);
   assert.match(source, /function Test-SecretHasEnabledVersion/);
   assert.match(source, /--filter=state=ENABLED/);
+  assert.match(
+    source,
+    /-not \(\$RotateExistingSecrets -or \$RotateLineCredentials\) -and \(Test-SecretHasEnabledVersion \$Name\)/
+  );
   assert.match(source, /-not \$RotateExistingSecrets -and \(Test-SecretHasEnabledVersion \$Name\)/);
   assert.match(source, /Keeping existing Secret Manager version/);
+});
+
+test('LINE credential rotation rejects masked or truncated values', async () => {
+  const source = await readFile('scripts/configure-secrets.ps1', 'utf8');
+  assert.match(source, /\$plain\.Length -ge \$MinimumLength/);
+  assert.match(source, /\$plain -notmatch '\^\\\*\+\$'/);
+  assert.match(source, /'line-channel-secret'.* 16/);
+  assert.match(source, /'line-channel-access-token'.* 32/);
 });
 
 test('deployment trims trailing blank gcloud output safely', async () => {

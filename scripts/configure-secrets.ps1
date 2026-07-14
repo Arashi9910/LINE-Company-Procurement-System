@@ -2,7 +2,9 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$ProjectId,
 
-  [switch]$RotateExistingSecrets
+  [switch]$RotateExistingSecrets,
+
+  [switch]$RotateLineCredentials
 )
 
 $ErrorActionPreference = 'Stop'
@@ -83,18 +85,37 @@ function Test-SecretHasEnabledVersion([string]$Name) {
   return $probe.ExitCode -eq 0 -and $probe.Output.Count -gt 0
 }
 
-function Add-SecureVersion([string]$Name, [string]$Prompt) {
+function Add-SecureVersion(
+  [string]$Name,
+  [string]$Prompt,
+  [int]$MinimumLength
+) {
   Ensure-Secret $Name
-  if (-not $RotateExistingSecrets -and (Test-SecretHasEnabledVersion $Name)) {
+  if (-not ($RotateExistingSecrets -or $RotateLineCredentials) -and (Test-SecretHasEnabledVersion $Name)) {
     Write-Host "Keeping existing Secret Manager version: $Name"
     return
   }
-  $secure = Read-Host $Prompt -AsSecureString
-  $plain = [System.Net.NetworkCredential]::new('', $secure).Password
-  try {
-    if ([string]::IsNullOrWhiteSpace($plain)) {
-      throw 'Secret values cannot be empty.'
+
+  $secure = $null
+  $plain = $null
+  while ($true) {
+    $secure = Read-Host $Prompt -AsSecureString
+    $plain = [System.Net.NetworkCredential]::new('', $secure).Password
+    if (
+      -not [string]::IsNullOrWhiteSpace($plain) -and
+      $plain.Length -ge $MinimumLength -and
+      $plain -notmatch '^\*+$'
+    ) {
+      break
     }
+
+    $plain = $null
+    $secure.Dispose()
+    $secure = $null
+    Write-Warning "The value was too short or masked. Copy the complete value from LINE Developers and try again."
+  }
+
+  try {
     (Invoke-Gcloud -Arguments @(
       'secrets', 'versions', 'add', $Name,
       '--project', $ProjectId,
@@ -132,8 +153,8 @@ function Add-GeneratedVersion([string]$Name) {
   }
 }
 
-Add-SecureVersion 'line-channel-secret' 'Paste the LINE Messaging API Channel Secret, confirm a * appears, then press Enter'
-Add-SecureVersion 'line-channel-access-token' 'Paste the LINE Messaging API Channel Access Token, confirm a * appears, then press Enter'
+Add-SecureVersion 'line-channel-secret' 'Paste the complete LINE Messaging API Channel Secret, then press Enter' 16
+Add-SecureVersion 'line-channel-access-token' 'Paste the complete LINE Messaging API Channel Access Token, then press Enter' 32
 Add-GeneratedVersion 'line-link-signing-secret'
 Add-GeneratedVersion 'line-job-token'
 
