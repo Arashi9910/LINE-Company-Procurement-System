@@ -1,7 +1,9 @@
 import express from 'express';
 import { AppError } from './errors.js';
+import { createApiRouter } from './routes/api.js';
+import { createWebhookHandler } from './routes/webhook.js';
 
-export function createApp({ config }) {
+export function createApp({ config, repository, identityVerifier, messenger }) {
   const app = express();
   app.disable('x-powered-by');
 
@@ -12,6 +14,13 @@ export function createApp({ config }) {
   app.get('/api/config', (_request, response) => {
     response.json({ liffId: config.liffId });
   });
+
+  if (repository && identityVerifier && messenger) {
+    app.post('/webhook', express.raw({ type: 'application/json', limit: '1mb' }),
+      createWebhookHandler({ config, repository, messenger }));
+    app.use(express.json({ limit: '64kb' }));
+    app.use('/api', createApiRouter({ config, repository, identityVerifier, messenger }));
+  }
 
   app.use(express.static('public', { extensions: ['html'] }));
 

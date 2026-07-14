@@ -8,10 +8,37 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <main class="shell">
-      <h1>補貨申請</h1>
-      <p id="status">系統初始化中…</p>
+    <main class="shell" aria-busy="true">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">內部作業</p>
+          <h1>補貨申請</h1>
+        </div>
+        <span id="user-name" class="user-name"></span>
+      </header>
+
+      <div id="status" class="status" role="status">正在連接 LINE…</div>
+
+      <section id="catalog" hidden>
+        <label class="search-label" for="search">搜尋商品</label>
+        <input id="search" type="search" inputmode="search" autocomplete="off"
+          placeholder="輸入 SKU、商品名稱或規格">
+        <p id="result-summary" class="muted"></p>
+        <div id="results" class="results"></div>
+      </section>
+
+      <section id="cart-section" class="cart-section" hidden>
+        <div class="section-heading">
+          <h2>本次補貨</h2>
+          <span id="cart-count" class="count-badge">0</span>
+        </div>
+        <div id="cart" class="cart"></div>
+        <label for="note">整張申請備註（選填）</label>
+        <textarea id="note" maxlength="500" rows="3" placeholder="例如：活動前需要、供應商資訊…"></textarea>
+        <button id="submit" class="primary" type="button">送出補貨申請</button>
+      </section>
     </main>
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
     <script src="/app.js" type="module"></script>
   </body>
 </html>

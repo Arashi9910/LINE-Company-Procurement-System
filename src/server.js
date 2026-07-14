@@ -1,8 +1,17 @@
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
+import { createLineIdentityVerifier } from './line/identity.js';
+import { createLineMessenger } from './line/messenger.js';
+import { createGoogleSheetsClient, SheetsRepository } from './sheets/repository.js';
 
 const config = loadConfig();
-const app = createApp({ config });
+const repository = new SheetsRepository({
+  sheets: createGoogleSheetsClient(),
+  spreadsheetId: config.spreadsheetId
+});
+const identityVerifier = createLineIdentityVerifier({ channelId: config.lineChannelId });
+const messenger = createLineMessenger({ channelAccessToken: config.lineChannelAccessToken });
+const app = createApp({ config, repository, identityVerifier, messenger });
 
 const server = app.listen(config.port, () => {
   console.log(`line-replenishment listening on :${config.port}`);
