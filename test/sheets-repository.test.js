@@ -331,3 +331,94 @@ test('SheetsRepository never overwrites a configured notification group', async 
   assert.equal(await repository.saveNotificationGroupId('OTHER'), false);
   assert.equal(writes, 0);
 });
+
+function authorizationSheets({ authRows = [], operationRows = [], onWrite }) {
+  return {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          if (range.includes('操作紀錄')) return { data: { values: operationRows } };
+          if (range.includes('授權人員')) return { data: { values: authRows } };
+          throw new Error(`unexpected range: ${range}`);
+        },
+        async batchUpdate(request) {
+          onWrite?.(request);
+          return { data: {} };
+        }
+      }
+    }
+  };
+}
+
+test('SheetsRepository grants a role and records its actor atomically', async () => {
+  let write;
+  const repository = new SheetsRepository({
+    sheets: authorizationSheets({ onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123',
+    now: () => new Date('2026-07-14T04:00:00.000Z')
+  });
+
+  const result = await repository.updateAuthorization({
+    actor: { userId: 'ADMIN' },
+    target: { userId: 'TARGET', displayName: '小明' },
+    role: '採購確認',
+    enabled: true,
+    idempotencyKey: 'line-event-123456'
+  });
+
+  assert.deepEqual(result, { role: '採購確認', enabled: true, idempotentReplay: false });
+  assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
+    "'授權人員'!A2:E2",
+    "'操作紀錄'!A2:F2"
+  ]);
+  assert.deepEqual(write.requestBody.data[0].values[0], ['TARGET', '小明', '採購確認', '是', '']);
+  assert.deepEqual(write.requestBody.data[1].values[0].slice(0, 4), [
+    'line-event-123456', '授權', 'TARGET', 'ADMIN'
+  ]);
+});
+
+test('SheetsRepository preserves a role when disabling and blocks self lockout', async () => {
+  const authRows = [['ADMIN', '老闆', '管理員', '是', 46217], ['TARGET', '小華', '到貨確認', '是', 46218]];
+  let write;
+  const repository = new SheetsRepository({
+    sheets: authorizationSheets({ authRows, onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  const result = await repository.updateAuthorization({
+    actor: { userId: 'ADMIN' },
+    target: { userId: 'TARGET', displayName: '小華' },
+    enabled: false,
+    idempotencyKey: 'line-disable-1234'
+  });
+  assert.deepEqual(result, { role: '到貨確認', enabled: false, idempotentReplay: false });
+  assert.deepEqual(write.requestBody.data[0].values[0], ['TARGET', '小華', '到貨確認', '否', 46218]);
+
+  await assert.rejects(repository.updateAuthorization({
+    actor: { userId: 'ADMIN' },
+    target: { userId: 'ADMIN', displayName: '老闆' },
+    enabled: false,
+    idempotencyKey: 'line-disable-self'
+  }), /不能停用自己或移除自己的管理員權限/);
+});
+
+test('SheetsRepository treats a repeated authorization event as idempotent', async () => {
+  let writes = 0;
+  const repository = new SheetsRepository({
+    sheets: authorizationSheets({
+      authRows: [['TARGET', '小明', '採購確認', '是', '']],
+      operationRows: [['line-event-123456', '授權', 'TARGET']],
+      onWrite: () => { writes += 1; }
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  assert.deepEqual(await repository.updateAuthorization({
+    actor: { userId: 'ADMIN' },
+    target: { userId: 'TARGET', displayName: '小明' },
+    role: '採購確認',
+    enabled: true,
+    idempotencyKey: 'line-event-123456'
+  }), { role: '採購確認', enabled: true, idempotentReplay: true });
+  assert.equal(writes, 0);
+});

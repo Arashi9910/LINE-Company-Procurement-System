@@ -1,11 +1,15 @@
 import { messagingApi } from '@line/bot-sdk';
 
-export function createLineMessenger({ channelAccessToken, liffId }) {
-  const client = new messagingApi.MessagingApiClient({ channelAccessToken });
+export function createLineMessenger({ channelAccessToken, liffId }, dependencies = {}) {
+  const client = dependencies.client ?? new messagingApi.MessagingApiClient({ channelAccessToken });
   const workflowUrl = (mode, requestId) =>
     `https://liff.line.me/${liffId}?mode=${mode}&requestId=${encodeURIComponent(requestId)}`;
 
   return {
+    async getGroupMemberProfile(groupId, userId) {
+      return client.getGroupMemberProfile(groupId, userId);
+    },
+
     async replyReplenishmentLink(replyToken, url) {
       await client.replyMessage({
         replyToken,

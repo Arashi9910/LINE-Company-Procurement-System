@@ -20,6 +20,16 @@ async function start(t, calls) {
         calls.statusReads = (calls.statusReads ?? 0) + 1;
         return calls.rows ?? [];
       },
+      async getAuthorization(userId) {
+        calls.authReads ??= [];
+        calls.authReads.push(userId);
+        return calls.authorizations?.[userId] ?? { role: '申請人', enabled: true, exists: false };
+      },
+      async updateAuthorization(input) {
+        calls.authWrites ??= [];
+        calls.authWrites.push(input);
+        return { role: input.role ?? '申請人', enabled: input.enabled, idempotentReplay: false };
+      },
       async listAvailableSkus() { return []; },
       async listOpenRequests() { return []; }
     },
@@ -27,6 +37,11 @@ async function start(t, calls) {
     messenger: {
       async replyReplenishmentLink(replyToken, url) { calls.links.push({ replyToken, url }); },
       async replyText(replyToken, text) { calls.texts.push({ replyToken, text }); },
+      async getGroupMemberProfile(groupId, userId) {
+        calls.profileReads ??= [];
+        calls.profileReads.push({ groupId, userId });
+        return { displayName: calls.profileNames?.[userId] ?? 'LINE 成員' };
+      },
       async pushRequestCreated() {}
     }
   });
@@ -118,4 +133,67 @@ test('webhook rejects a command from another group without reading requests', as
   assert.equal(response.status, 200);
   assert.equal(calls.statusReads, undefined);
   assert.match(calls.texts[0].text, /未授權/);
+});
+
+test('webhook lets an administrator grant a mentioned member role', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    authorizations: { ADMIN: { role: '管理員', enabled: true, exists: true } },
+    profileNames: { TARGET: '小明' }
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: 'event-1234567890',
+    replyToken: 'reply-auth',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'ADMIN' },
+    message: {
+      id: 'message-1',
+      type: 'text',
+      text: '授權 @小明 採購確認',
+      mention: { mentionees: [{ type: 'user', userId: 'TARGET', isSelf: false, index: 3, length: 3 }] }
+    }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.profileReads, [{ groupId: 'COMPANY', userId: 'TARGET' }]);
+  assert.deepEqual(calls.authWrites[0], {
+    actor: { userId: 'ADMIN' },
+    target: { userId: 'TARGET', displayName: '小明' },
+    role: '採購確認',
+    enabled: true,
+    idempotencyKey: 'line-event-1234567890'
+  });
+  assert.match(calls.texts[0].text, /已授權小明/);
+});
+
+test('webhook returns a friendly reply when a non-admin tries to authorize', async (t) => {
+  const calls = { groups: [], links: [], texts: [] };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: 'event-0987654321',
+    replyToken: 'reply-denied',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'MEMBER' },
+    message: {
+      id: 'message-2',
+      type: 'text',
+      text: '停用 @小明',
+      mention: { mentionees: [{ type: 'user', userId: 'TARGET', isSelf: false }] }
+    }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.authWrites, undefined);
+  assert.match(calls.texts[0].text, /只有已啟用的管理員/);
 });

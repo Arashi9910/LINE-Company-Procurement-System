@@ -1,3 +1,5 @@
+import { AuthenticationError, AuthorizationError } from '../errors.js';
+
 const STATUS_COMMANDS = new Map([
   ['查未結案', '未結案'],
   ['查待確認', '待確認'],
@@ -9,6 +11,7 @@ const STATUS_COMMANDS = new Map([
 
 const OPEN_STATUSES = new Set(['待確認', '已下單', '部分到貨']);
 const TERMINAL_STATUSES = new Set(['已完成', '取消']);
+const AUTHORIZATION_ROLES = ['申請人', '採購確認', '到貨確認', '管理員'];
 
 export const GROUP_COMMAND_HELP = [
   '【補貨指令】',
@@ -26,7 +29,79 @@ export function parseGroupCommand(message) {
   const text = message.text.trim();
   if (STATUS_COMMANDS.has(text)) return { type: 'status', status: STATUS_COMMANDS.get(text) };
   if (text === '補貨指令') return { type: 'help' };
-  return null;
+
+  let action;
+  let role;
+  const grantMatch = /^授權\s+.+\s+(申請人|採購確認|到貨確認|管理員)$/.exec(text);
+  if (grantMatch) {
+    action = 'grant';
+    role = grantMatch[1];
+  } else if (/^停用\s+.+$/.test(text)) {
+    action = 'disable';
+  } else if (/^查權限\s+.+$/.test(text)) {
+    action = 'query';
+  } else if (/^(授權|停用|查權限)(\s|$)/.test(text)) {
+    return { type: 'authorization-error', reason: 'invalid-syntax' };
+  } else {
+    return null;
+  }
+
+  const targets = (message.mention?.mentionees ?? [])
+    .filter((mentionee) => mentionee.type === 'user' && !mentionee.isSelf);
+  if (targets.length > 1) return { type: 'authorization-error', reason: 'multiple-targets' };
+  if (targets.length === 0) return { type: 'authorization-error', reason: 'invalid-syntax' };
+  if (!targets[0].userId) return { type: 'authorization-error', reason: 'missing-user-id' };
+  return {
+    type: 'authorization',
+    action,
+    ...(role ? { role } : {}),
+    targetUserId: targets[0].userId
+  };
+}
+
+function authorizationErrorMessage(reason) {
+  if (reason === 'missing-user-id') {
+    return 'LINE 尚未提供這位成員的識別資料。請對方先與官方帳號互動並同意提供資料，再重新 @成員 操作。';
+  }
+  if (reason === 'multiple-targets') return '一次只能設定一位成員，請只 @一位成員 後重試。';
+  return `指令格式不正確。可用格式：\n授權 @成員 ${AUTHORIZATION_ROLES.join('／')}\n停用 @成員\n查權限 @成員`;
+}
+
+export async function executeAuthorizationCommand(input, { repository, messenger }) {
+  const { command, actorUserId, groupId, idempotencyKey } = input;
+  if (command.type === 'authorization-error') return authorizationErrorMessage(command.reason);
+  if (!actorUserId) throw new AuthenticationError('無法辨識操作者，請先同意 LINE 提供個人識別資料。');
+
+  const actorAuthorization = await repository.getAuthorization(actorUserId);
+  if (!actorAuthorization.enabled || actorAuthorization.role !== '管理員') {
+    throw new AuthorizationError('只有已啟用的管理員可以管理成員權限。');
+  }
+
+  const profile = await messenger.getGroupMemberProfile(groupId, command.targetUserId);
+  const displayName = String(profile?.displayName || 'LINE 成員');
+  if (command.action === 'query') {
+    const authorization = await repository.getAuthorization(command.targetUserId);
+    return [
+      `【權限】${displayName}`,
+      `角色：${authorization.role}${authorization.exists ? '' : '（尚未登記）'}`,
+      `狀態：${authorization.enabled ? '啟用' : '停用'}`
+    ].join('\n');
+  }
+
+  const enabled = command.action === 'grant';
+  const result = await repository.updateAuthorization({
+    actor: { userId: actorUserId },
+    target: { userId: command.targetUserId, displayName },
+    ...(enabled ? { role: command.role } : {}),
+    enabled,
+    idempotencyKey
+  });
+  return [
+    `${enabled ? '已授權' : '已停用'}${displayName}`,
+    `角色：${result.role}`,
+    `狀態：${result.enabled ? '啟用' : '停用'}`,
+    ...(result.idempotentReplay ? ['（此事件已處理過，未重複寫入）'] : [])
+  ].join('\n');
 }
 
 function aggregateStatus(rows) {

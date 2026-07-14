@@ -10,6 +10,7 @@ const AUTH_SHEET = '授權人員';
 const OPERATIONS_SHEET = '操作紀錄';
 const MAX_TRACKING_ROW = 5000;
 const CLOSED_STATUSES = new Set(['已完成', '取消']);
+const AUTHORIZATION_ROLES = new Set(['申請人', '採購確認', '到貨確認', '管理員']);
 
 function sheetSerial(date) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -326,6 +327,75 @@ export class SheetsRepository {
       enabled: row[3] === '是',
       exists: true
     };
+  }
+
+  updateAuthorization(input) {
+    return this.#enqueue(() => this.#updateAuthorization(input));
+  }
+
+  async #updateAuthorization(input) {
+    const actorUserId = String(input.actor?.userId ?? '');
+    const targetUserId = String(input.target?.userId ?? '');
+    const displayName = String(input.target?.displayName || 'LINE 成員');
+    if (!actorUserId || !targetUserId) throw new ValidationError('授權操作缺少成員識別資料');
+    if (input.enabled && !AUTHORIZATION_ROLES.has(input.role)) {
+      throw new ValidationError('授權角色不正確');
+    }
+    if (actorUserId === targetUserId && (!input.enabled || input.role !== '管理員')) {
+      throw new ConflictError('管理員不能停用自己或移除自己的管理員權限');
+    }
+
+    const [operation, authResponse] = await Promise.all([
+      this.#findOperation(input.idempotencyKey),
+      this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `'${AUTH_SHEET}'!A2:E1000`
+      })
+    ]);
+    const operationType = input.enabled ? '授權' : '停用';
+    const rows = authResponse.data.values ?? [];
+    const existingIndex = rows.findIndex((row) => row[0] === targetUserId);
+    const existingRow = existingIndex >= 0 ? rows[existingIndex] : [];
+    const role = input.enabled ? input.role : String(existingRow[2] || '申請人');
+
+    if (operation.existing) {
+      if (operation.type !== operationType || operation.requestId !== targetUserId) {
+        throw new ConflictError('操作金鑰已被其他操作使用');
+      }
+      return {
+        role: String(existingRow[2] || role),
+        enabled: existingRow[3] === '是',
+        idempotentReplay: true
+      };
+    }
+
+    const firstEmptyIndex = rows.findIndex((row) => !row[0]);
+    const targetRow = (existingIndex >= 0
+      ? existingIndex
+      : (firstEmptyIndex >= 0 ? firstEmptyIndex : rows.length)) + 2;
+    const serial = sheetSerial(this.now());
+    const data = [
+      {
+        range: `'${AUTH_SHEET}'!A${targetRow}:E${targetRow}`,
+        values: [[targetUserId, displayName, role, input.enabled ? '是' : '否', existingRow[4] ?? '']]
+      },
+      {
+        range: `'${OPERATIONS_SHEET}'!A${operation.nextRow}:F${operation.nextRow}`,
+        values: [[
+          input.idempotencyKey,
+          operationType,
+          targetUserId,
+          actorUserId,
+          serial,
+          `${displayName}｜${role}｜${input.enabled ? '啟用' : '停用'}`
+        ]]
+      }
+    ];
+    await this.sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: this.spreadsheetId,
+      requestBody: { valueInputOption: 'RAW', data }
+    });
+    return { role, enabled: input.enabled, idempotentReplay: false };
   }
 
   async #confirmOrder(input) {
