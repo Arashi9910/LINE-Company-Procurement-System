@@ -48,3 +48,12 @@ test('deployment trims trailing blank gcloud output safely', async () => {
   assert.match(source, /\$jobToken = Get-GcloudOutputText \$jobTokenResult/);
   assert.doesNotMatch(source, /Output \| Select-Object -Last 1/);
 });
+
+test('Scheduler updates use the update-only header flag', async () => {
+  const source = await readFile('scripts/deploy-gcp.ps1', 'utf8');
+  assert.match(
+    source,
+    /\$jobHeaderFlag = if \(\$jobCommand -eq 'update'\) \{ '--update-headers' \} else \{ '--headers' \}/
+  );
+  assert.match(source, /\$jobHeaderFlag, "Authorization=Bearer \$jobToken/);
+});

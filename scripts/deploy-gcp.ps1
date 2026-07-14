@@ -163,6 +163,7 @@ $jobProbe = Invoke-Gcloud -Arguments @(
   '--location', $Region
 ) -AllowFailure
 $jobCommand = if ($jobProbe.ExitCode -eq 0) { 'update' } else { 'create' }
+$jobHeaderFlag = if ($jobCommand -eq 'update') { '--update-headers' } else { '--headers' }
 
 (Invoke-Gcloud -Arguments @(
   'scheduler', 'jobs', $jobCommand, 'http', $jobName,
@@ -172,7 +173,7 @@ $jobCommand = if ($jobProbe.ExitCode -eq 0) { 'update' } else { 'create' }
   '--time-zone', 'Asia/Taipei',
   '--uri', "$serviceUrl/jobs/reminders",
   '--http-method', 'POST',
-  '--headers', "Authorization=Bearer $jobToken,Content-Type=application/json",
+  $jobHeaderFlag, "Authorization=Bearer $jobToken,Content-Type=application/json",
   '--message-body', '{}',
   '--quiet'
 )).Output | Out-Null
