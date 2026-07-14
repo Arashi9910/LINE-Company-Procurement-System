@@ -3,7 +3,7 @@ param(
   [string]$ProjectId,
 
   [Parameter(Mandatory = $true)]
-  [string]$LineChannelId,
+  [string]$LineLoginChannelId,
 
   [Parameter(Mandatory = $true)]
   [string]$LiffId,
@@ -72,7 +72,7 @@ foreach ($secret in $secretNames) {
   --service-account $serviceAccountEmail `
   --max-instances 1 `
   --concurrency 20 `
-  --set-env-vars "SPREADSHEET_ID=$SpreadsheetId,LINE_CHANNEL_ID=$LineChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId" `
+  --set-env-vars "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId" `
   --set-secrets 'LINE_CHANNEL_SECRET=line-channel-secret:latest,LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token:latest,LINK_SIGNING_SECRET=line-link-signing-secret:latest,JOB_TOKEN=line-job-token:latest' `
   --quiet
 

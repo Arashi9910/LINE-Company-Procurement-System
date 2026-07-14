@@ -17,8 +17,23 @@ test('loadConfig accepts a minimal test configuration', () => {
 test('loadConfig rejects missing production secrets', () => {
   assert.throws(
     () => loadConfig({ NODE_ENV: 'production', SPREADSHEET_ID: 'sheet-123' }),
-    /LINE_CHANNEL_ID/
+    /LINE_LOGIN_CHANNEL_ID/
   );
+});
+
+test('loadConfig uses the LINE Login channel ID for LIFF identity verification', () => {
+  const config = loadConfig({
+    NODE_ENV: 'production',
+    SPREADSHEET_ID: 'sheet-123',
+    LINE_LOGIN_CHANNEL_ID: 'login-channel-123',
+    LINE_CHANNEL_SECRET: 'messaging-secret',
+    LINE_CHANNEL_ACCESS_TOKEN: 'messaging-token',
+    LIFF_ID: 'liff-123',
+    LINK_SIGNING_SECRET: 'signing-secret',
+    JOB_TOKEN: 'job-token'
+  });
+
+  assert.equal(config.lineLoginChannelId, 'login-channel-123');
 });
 
 test('loadConfig rejects an invalid port', () => {

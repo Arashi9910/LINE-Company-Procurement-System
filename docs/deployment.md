@@ -3,8 +3,8 @@
 ## 必要資料
 
 - Google Cloud 專案 ID 與可用的計費帳戶 ID。
-- LINE Messaging API 的 Channel Secret、Channel Access Token、Channel ID。
-- 與 Messaging API 位於同一 Provider 的 LIFF ID。
+- LINE Messaging API 的 Channel Secret 與 Channel Access Token。
+- 與 Messaging API 位於同一 Provider 的 LINE Login Channel ID 與 LIFF ID。
 - Google Sheet ID：`16ko37-omRLDxdKXOX-VRwsCG3VyMerAO4EPBX_T10M8`。
 
 任何 Channel Secret、Access Token 或自動產生的簽章金鑰都不得貼進對話、Git 或 Sheet。
@@ -25,7 +25,7 @@
    .\scripts\deploy-gcp.ps1 `
      -ProjectId '<PROJECT_ID>' `
      -BillingAccountId '<BILLING_ACCOUNT_ID>' `
-     -LineChannelId '<LINE_CHANNEL_ID>' `
+     -LineLoginChannelId '<LINE_LOGIN_CHANNEL_ID>' `
      -LiffId '<LIFF_ID>'
    ```
 

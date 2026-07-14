@@ -9,7 +9,7 @@ const repository = new SheetsRepository({
   sheets: createGoogleSheetsClient(),
   spreadsheetId: config.spreadsheetId
 });
-const identityVerifier = createLineIdentityVerifier({ channelId: config.lineChannelId });
+const identityVerifier = createLineIdentityVerifier({ channelId: config.lineLoginChannelId });
 const messenger = createLineMessenger({
   channelAccessToken: config.lineChannelAccessToken,
   liffId: config.liffId

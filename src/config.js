@@ -1,5 +1,5 @@
 const REQUIRED_SECRETS = [
-  'LINE_CHANNEL_ID',
+  'LINE_LOGIN_CHANNEL_ID',
   'LINE_CHANNEL_SECRET',
   'LINE_CHANNEL_ACCESS_TOKEN',
   'LIFF_ID',
@@ -29,7 +29,7 @@ export function loadConfig(env = process.env, options = {}) {
     nodeEnv: env.NODE_ENV ?? 'development',
     port,
     spreadsheetId: env.SPREADSHEET_ID,
-    lineChannelId: env.LINE_CHANNEL_ID ?? '',
+    lineLoginChannelId: env.LINE_LOGIN_CHANNEL_ID ?? '',
     lineChannelSecret: env.LINE_CHANNEL_SECRET ?? '',
     lineChannelAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN ?? '',
     liffId: env.LIFF_ID ?? '',
