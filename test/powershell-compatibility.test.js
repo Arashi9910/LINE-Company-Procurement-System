@@ -63,6 +63,16 @@ test('LINE credential rotation rejects masked or truncated values', async () => 
   assert.match(source, /'line-channel-access-token'.* 32/);
 });
 
+test('secret uploads do not add PowerShell pipeline line endings', async () => {
+  const source = await readFile('scripts/configure-secrets.ps1', 'utf8');
+  assert.doesNotMatch(source, /\$InputText \| & \$gcloud/);
+  assert.match(source, /UTF8Encoding\]::new\(\$false\)/);
+  assert.match(source, /WriteAllText\(\$temporaryInputPath, \$InputText, \$utf8WithoutBom\)/);
+  assert.match(source, /"--data-file=\$temporaryInputPath"/);
+  assert.match(source, /WriteAllBytes\(\$temporaryInputPath, \[byte\[\]\]::new\(0\)\)/);
+  assert.match(source, /Remove-Item -LiteralPath \$temporaryInputPath -Force/);
+});
+
 test('deployment trims trailing blank gcloud output safely', async () => {
   const source = await readFile('scripts/deploy-gcp.ps1', 'utf8');
   assert.match(source, /function Get-GcloudOutputText/);

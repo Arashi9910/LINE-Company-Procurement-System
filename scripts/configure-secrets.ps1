@@ -57,16 +57,32 @@ function Invoke-Gcloud {
   )
 
   $previousErrorActionPreference = $ErrorActionPreference
+  $temporaryInputPath = $null
   try {
     $ErrorActionPreference = 'Continue'
     if ($PSBoundParameters.ContainsKey('InputText')) {
-      $output = @($InputText | & $gcloud @Arguments 2>$null)
-    } else {
+      $temporaryInputPath = [IO.Path]::GetTempFileName()
+      $utf8WithoutBom = [Text.UTF8Encoding]::new($false)
+      [IO.File]::WriteAllText($temporaryInputPath, $InputText, $utf8WithoutBom)
+      $effectiveArguments = @($Arguments | ForEach-Object {
+        if ($_ -eq '--data-file=-') {
+          "--data-file=$temporaryInputPath"
+        } else {
+          $_
+        }
+      })
+      $output = @(& $gcloud @effectiveArguments 2>$null)
+    }
+    else {
       $output = @(& $gcloud @Arguments 2>$null)
     }
     $exitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousErrorActionPreference
+    if ($temporaryInputPath -and (Test-Path -LiteralPath $temporaryInputPath)) {
+      [IO.File]::WriteAllBytes($temporaryInputPath, [byte[]]::new(0))
+      Remove-Item -LiteralPath $temporaryInputPath -Force
+    }
   }
 
   if ($exitCode -ne 0 -and -not $AllowFailure) {
