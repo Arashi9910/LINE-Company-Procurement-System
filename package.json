@@ -1,0 +1,21 @@
+{
+  "name": "line-replenishment-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test",
+    "lint": "node scripts/check.mjs",
+    "build": "node scripts/build.mjs"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^10.2.0",
+    "express": "^5.1.0",
+    "googleapis": "^159.0.0"
+  }
+}
