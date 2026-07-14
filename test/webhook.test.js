@@ -87,6 +87,28 @@ test('webhook rejects an invalid signature before parsing events', async (t) => 
   assert.equal(calls.links.length, 0);
 });
 
+test('webhook keeps the existing private-chat guidance for the replenishment command', async (t) => {
+  const calls = { groups: [], links: [], texts: [] };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    replyToken: 'reply-private',
+    source: { type: 'user', userId: 'U1' },
+    message: { type: 'text', text: '補貨' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.texts, [{
+    replyToken: 'reply-private',
+    text: '請在公司的 LINE 工作群組輸入「補貨」。'
+  }]);
+});
+
 test('webhook replies with request-level status in the company group', async (t) => {
   const calls = {
     groups: [], links: [], texts: [],

@@ -35,7 +35,10 @@ export function createWebhookHandler({ config, repository, messenger }) {
         if (!isReplenishmentCommand && !isJoin && !command) return;
 
         if (!groupId) {
-          if (event.replyToken) await messenger.replyText(event.replyToken, '請在公司的 LINE 工作群組輸入補貨指令。');
+          const instruction = isReplenishmentCommand
+            ? '請在公司的 LINE 工作群組輸入「補貨」。'
+            : '請在公司的 LINE 工作群組輸入補貨指令。';
+          if (event.replyToken) await messenger.replyText(event.replyToken, instruction);
           return;
         }
 
