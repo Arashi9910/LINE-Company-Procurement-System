@@ -20,18 +20,23 @@
       <div id="status" class="status" role="status">正在連接 LINE…</div>
 
       <section id="catalog" hidden>
-        <label class="search-label" for="search">搜尋商品</label>
+        <div class="catalog-intro">
+          <h2>選擇商品</h2>
+          <p class="muted">點商品卡片，再選規格與數量</p>
+        </div>
+        <label class="search-label" for="search">搜尋商品或規格</label>
         <input id="search" type="search" inputmode="search" autocomplete="off"
           placeholder="輸入 SKU、商品名稱或規格">
         <p id="result-summary" class="muted"></p>
-        <div id="results" class="results"></div>
+        <div id="results" class="results" aria-live="polite"></div>
       </section>
 
       <section id="cart-section" class="cart-section" hidden>
         <div class="section-heading">
           <h2>本次補貨</h2>
-          <span id="cart-count" class="count-badge">0</span>
+          <span id="cart-count" class="count-badge" aria-label="已選規格數">0</span>
         </div>
+        <p id="cart-summary" class="muted"></p>
         <div id="cart" class="cart"></div>
         <label for="note">整張申請備註（選填）</label>
         <textarea id="note" maxlength="500" rows="3" placeholder="例如：活動前需要、供應商資訊…"></textarea>
@@ -48,6 +53,34 @@
         <button id="workflow-submit" class="primary" type="button"></button>
       </section>
     </main>
+
+    <nav id="cart-dock" class="cart-dock" aria-label="本次補貨摘要" hidden>
+      <button id="cart-dock-button" type="button">
+        <span class="dock-badge" aria-hidden="true">清單</span>
+        <span id="cart-dock-summary">已選 0 個規格</span>
+        <strong>查看清單</strong>
+      </button>
+    </nav>
+
+    <div id="variant-dialog" class="dialog-layer" hidden>
+      <section class="variant-sheet" role="dialog" aria-modal="true" aria-labelledby="variant-title">
+        <header class="variant-header">
+          <div>
+            <p class="eyebrow">選擇規格</p>
+            <h2 id="variant-title"></h2>
+            <p id="variant-subtitle" class="muted"></p>
+          </div>
+          <button id="variant-close" class="icon-button" type="button" aria-label="關閉規格選擇">×</button>
+        </header>
+        <p id="variant-notice" class="inline-notice" role="status" hidden></p>
+        <div id="variant-items" class="variant-items"></div>
+        <footer class="variant-footer">
+          <span id="variant-selection">尚未選擇規格</span>
+          <button id="variant-done" class="primary compact" type="button">完成</button>
+        </footer>
+      </section>
+    </div>
+
     <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
     <script src="/app.js" type="module"></script>
   </body>
