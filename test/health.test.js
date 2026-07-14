@@ -10,7 +10,7 @@ test('health endpoint reports a healthy service', async (t) => {
   await once(server, 'listening');
 
   const address = server.address();
-  const response = await fetch(`http://127.0.0.1:${address.port}/healthz`);
+  const response = await fetch(`http://127.0.0.1:${address.port}/health`);
   const body = await response.json();
 
   assert.equal(response.status, 200);

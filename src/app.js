@@ -8,7 +8,7 @@ export function createApp({ config, repository, identityVerifier, messenger }) {
   const app = express();
   app.disable('x-powered-by');
 
-  app.get('/healthz', (_request, response) => {
+  app.get('/health', (_request, response) => {
     response.json({ ok: true, service: 'line-replenishment', version: '0.1.0' });
   });
 

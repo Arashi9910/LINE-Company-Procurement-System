@@ -50,7 +50,7 @@ npm.cmd run lint
 npm.cmd run build
 ```
 
-- `GET <CLOUD_RUN_URL>/healthz` 回傳 `ok: true`。
+- `GET <CLOUD_RUN_URL>/health` 回傳 `ok: true`。Cloud Run 保留部分以 `z` 結尾的路徑，因此不要使用 `/healthz`。
 - LINE Developers Console 的 Webhook Verify 成功。
 - 手機 LINE 開啟 LIFF，搜尋 SKU、建立多品項申請。
 - 採購角色確認下單；到貨角色執行部分到貨與完成。
