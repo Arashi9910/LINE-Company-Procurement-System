@@ -67,6 +67,10 @@ function Invoke-Gcloud {
   }
 }
 
+function Get-GcloudOutputText($Result) {
+  return (($Result.Output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
+}
+
 (Invoke-Gcloud -Arguments @('config', 'set', 'project', $ProjectId)).Output | Out-Null
 
 if ($BillingAccountId) {
@@ -138,7 +142,7 @@ $serviceUrlResult = Invoke-Gcloud -Arguments @(
   '--region', $Region,
   '--format=value(status.url)'
 )
-$serviceUrl = ($serviceUrlResult.Output | Select-Object -Last 1).ToString().Trim()
+$serviceUrl = Get-GcloudOutputText $serviceUrlResult
 if (-not $serviceUrl) {
   throw 'Cloud Run did not return a service URL.'
 }
@@ -148,7 +152,7 @@ $jobTokenResult = Invoke-Gcloud -Arguments @(
   '--secret', 'line-job-token',
   '--project', $ProjectId
 )
-$jobToken = ($jobTokenResult.Output | Select-Object -Last 1).ToString().Trim()
+$jobToken = Get-GcloudOutputText $jobTokenResult
 if (-not $jobToken) {
   throw 'The reminder job token is empty.'
 }
@@ -182,7 +186,7 @@ if ($BillingAccountId) {
     '--filter', "displayName=$budgetName",
     '--format=value(name)'
   )
-  $existingBudget = ($budgetResult.Output -join '').Trim()
+  $existingBudget = Get-GcloudOutputText $budgetResult
   if (-not $existingBudget) {
     (Invoke-Gcloud -Arguments @(
       'billing', 'budgets', 'create',

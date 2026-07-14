@@ -40,3 +40,11 @@ test('secret setup resumes without rotating completed values', async () => {
   assert.match(source, /-not \$RotateExistingSecrets -and \(Test-SecretHasEnabledVersion \$Name\)/);
   assert.match(source, /Keeping existing Secret Manager version/);
 });
+
+test('deployment trims trailing blank gcloud output safely', async () => {
+  const source = await readFile('scripts/deploy-gcp.ps1', 'utf8');
+  assert.match(source, /function Get-GcloudOutputText/);
+  assert.match(source, /-join \[Environment\]::NewLine\)\.Trim\(\)/);
+  assert.match(source, /\$jobToken = Get-GcloudOutputText \$jobTokenResult/);
+  assert.doesNotMatch(source, /Output \| Select-Object -Last 1/);
+});
