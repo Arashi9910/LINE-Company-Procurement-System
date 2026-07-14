@@ -143,6 +143,34 @@ test('SheetsRepository rejects a disabled or missing SKU before writing', async 
   assert.equal(writes, 0);
 });
 
+test('SheetsRepository reads one request without loading the full tracking grid', async () => {
+  const ranges = [];
+  const rows = [
+    ['RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '已下單', 5, '2026/07/20', 0, 5, '', '', 'SKU-A'],
+    ['RQ-1', '2026/07/14 10:00', '小明', '商品 B', '件', 3, '已下單', 3, '2026/07/20', 0, 3, '', '', 'SKU-B']
+  ];
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          ranges.push(range);
+          if (range === "'補貨追蹤'!A2:A5000") {
+            return { data: { values: [['RQ-OTHER'], ['RQ-1'], ['RQ-1']] } };
+          }
+          if (range === "'補貨追蹤'!A3:S4") return { data: { values: rows } };
+          throw new Error(`unexpected range: ${range}`);
+        }
+      }
+    }
+  };
+  const repository = new SheetsRepository({ sheets, spreadsheetId: 'sheet-123' });
+
+  const result = await repository.getRequest('RQ-1');
+
+  assert.deepEqual(result.items.map((item) => item.rowNumber), [3, 4]);
+  assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A3:S4"]);
+});
+
 function workflowSheets(trackingRow, onWrite) {
   return {
     spreadsheets: {

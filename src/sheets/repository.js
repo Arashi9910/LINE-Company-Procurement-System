@@ -234,12 +234,24 @@ export class SheetsRepository {
   }
 
   async getRequest(targetRequestId) {
+    const indexResponse = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${TRACKING_SHEET}'!A2:A${MAX_TRACKING_ROW}`
+    });
+
+    const rowNumbers = (indexResponse.data.values ?? [])
+      .map((row, index) => row[0] === targetRequestId ? index + 2 : 0)
+      .filter(Boolean);
+    if (rowNumbers.length === 0) throw new NotFoundError(`找不到補貨單 ${targetRequestId}`);
+
+    const firstRow = rowNumbers[0];
+    const lastRow = rowNumbers.at(-1);
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `'${TRACKING_SHEET}'!A2:S${MAX_TRACKING_ROW}`
+      range: `'${TRACKING_SHEET}'!A${firstRow}:S${lastRow}`
     });
     const items = (response.data.values ?? [])
-      .map((row, index) => ({ row, rowNumber: index + 2 }))
+      .map((row, index) => ({ row, rowNumber: index + firstRow }))
       .filter(({ row }) => row[0] === targetRequestId)
       .map(({ row, rowNumber }) => ({
         rowNumber,
