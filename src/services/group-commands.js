@@ -51,17 +51,23 @@ export function parseGroupCommand(message) {
   if (targets.length > 1) return { type: 'authorization-error', reason: 'multiple-targets' };
   if (targets.length === 0) return { type: 'authorization-error', reason: 'invalid-syntax' };
   if (!targets[0].userId) return { type: 'authorization-error', reason: 'missing-user-id' };
+  const mentionStart = Number(targets[0].index);
+  const mentionLength = Number(targets[0].length);
+  const targetDisplayName = Number.isInteger(mentionStart) && Number.isInteger(mentionLength)
+    ? text.slice(mentionStart, mentionStart + mentionLength).replace(/^@/, '').trim()
+    : '';
   return {
     type: 'authorization',
     action,
     ...(role ? { role } : {}),
-    targetUserId: targets[0].userId
+    targetUserId: targets[0].userId,
+    ...(targetDisplayName ? { targetDisplayName } : {})
   };
 }
 
 function authorizationErrorMessage(reason) {
   if (reason === 'missing-user-id') {
-    return 'LINE 尚未提供這位成員的識別資料。請對方先與官方帳號互動並同意提供資料，再重新 @成員 操作。';
+    return 'LINE 尚未提供這位成員的識別資料。請確認對方目前有使用手機版 LINE；若仍無法取得，請改到「授權人員」工作表設定。';
   }
   if (reason === 'multiple-targets') return '一次只能設定一位成員，請只 @一位成員 後重試。';
   return `指令格式不正確。可用格式：\n授權 @成員 ${AUTHORIZATION_ROLES.join('／')}\n停用 @成員\n查權限 @成員`;
@@ -70,15 +76,23 @@ function authorizationErrorMessage(reason) {
 export async function executeAuthorizationCommand(input, { repository, messenger }) {
   const { command, actorUserId, groupId, idempotencyKey } = input;
   if (command.type === 'authorization-error') return authorizationErrorMessage(command.reason);
-  if (!actorUserId) throw new AuthenticationError('無法辨識操作者，請先同意 LINE 提供個人識別資料。');
+  if (!actorUserId) {
+    throw new AuthenticationError('LINE 未提供你的使用者識別資料。請確認你目前有使用手機版 LINE；若仍失敗，請改用「授權人員」工作表。');
+  }
 
   const actorAuthorization = await repository.getAuthorization(actorUserId);
   if (!actorAuthorization.enabled || actorAuthorization.role !== '管理員') {
     throw new AuthorizationError('只有已啟用的管理員可以管理成員權限。');
   }
 
-  const profile = await messenger.getGroupMemberProfile(groupId, command.targetUserId);
-  const displayName = String(profile?.displayName || 'LINE 成員');
+  let displayName = String(command.targetDisplayName || '');
+  try {
+    const profile = await messenger.getGroupMemberProfile(groupId, command.targetUserId);
+    displayName = String(profile?.displayName || displayName);
+  } catch (error) {
+    if (!displayName) throw error;
+  }
+  if (!displayName) displayName = 'LINE 成員';
   if (command.action === 'query') {
     const authorization = await repository.getAuthorization(command.targetUserId);
     return [

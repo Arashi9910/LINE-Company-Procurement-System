@@ -84,21 +84,25 @@ test('formatStatusReply clearly reports an empty result', () => {
 });
 
 function textWithMention(text, mentionee) {
-  return { type: 'text', text, mention: { mentionees: [mentionee] } };
+  return {
+    type: 'text',
+    text,
+    mention: { mentionees: [{ ...mentionee, index: text.indexOf('@'), length: 3 }] }
+  };
 }
 
 test('parseGroupCommand binds authorization commands to the mentioned LINE user ID', () => {
   const mentionee = { type: 'user', userId: 'TARGET', isSelf: false, index: 3, length: 3 };
   for (const role of ['申請人', '採購確認', '到貨確認', '管理員']) {
     assert.deepEqual(parseGroupCommand(textWithMention(`授權 @小明 ${role}`, mentionee)), {
-      type: 'authorization', action: 'grant', role, targetUserId: 'TARGET'
+      type: 'authorization', action: 'grant', role, targetUserId: 'TARGET', targetDisplayName: '小明'
     });
   }
   assert.deepEqual(parseGroupCommand(textWithMention('停用 @小明', mentionee)), {
-    type: 'authorization', action: 'disable', targetUserId: 'TARGET'
+    type: 'authorization', action: 'disable', targetUserId: 'TARGET', targetDisplayName: '小明'
   });
   assert.deepEqual(parseGroupCommand(textWithMention('查權限 @小明', mentionee)), {
-    type: 'authorization', action: 'query', targetUserId: 'TARGET'
+    type: 'authorization', action: 'query', targetUserId: 'TARGET', targetDisplayName: '小明'
   });
 });
 
@@ -183,4 +187,27 @@ test('executeAuthorizationCommand queries the mentioned member role without writ
   assert.match(text, /【權限】小華/);
   assert.match(text, /角色：到貨確認/);
   assert.match(text, /狀態：停用/);
+});
+
+test('executeAuthorizationCommand safely falls back to the mention label when profile lookup fails', async () => {
+  let write;
+  const text = await executeAuthorizationCommand({
+    command: {
+      type: 'authorization', action: 'grant', role: '申請人',
+      targetUserId: 'TARGET', targetDisplayName: '小美'
+    },
+    actorUserId: 'ADMIN', groupId: 'COMPANY', idempotencyKey: 'line-event-fallback'
+  }, {
+    repository: {
+      async getAuthorization() { return { role: '管理員', enabled: true, exists: true }; },
+      async updateAuthorization(input) {
+        write = input;
+        return { role: input.role, enabled: true, idempotentReplay: false };
+      }
+    },
+    messenger: { async getGroupMemberProfile() { throw new Error('profile unavailable'); } }
+  });
+
+  assert.equal(write.target.displayName, '小美');
+  assert.match(text, /已授權小美/);
 });

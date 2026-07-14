@@ -332,6 +332,28 @@ test('SheetsRepository never overwrites a configured notification group', async 
   assert.equal(writes, 0);
 });
 
+test('SheetsRepository registers the first notification group when the setting is empty', async () => {
+  let update;
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get() {
+          return { data: { values: [['NOTIFICATION_GROUP_ID', '']] } };
+        },
+        async update(request) {
+          update = request;
+          return { data: {} };
+        }
+      }
+    }
+  };
+  const repository = new SheetsRepository({ sheets, spreadsheetId: 'sheet-123' });
+
+  assert.equal(await repository.saveNotificationGroupId('COMPANY'), true);
+  assert.equal(update.range, "'系統設定'!B2");
+  assert.deepEqual(update.requestBody.values, [['COMPANY']]);
+});
+
 function authorizationSheets({ authRows = [], operationRows = [], onWrite }) {
   return {
     spreadsheets: {
@@ -399,6 +421,13 @@ test('SheetsRepository preserves a role when disabling and blocks self lockout',
     target: { userId: 'ADMIN', displayName: '老闆' },
     enabled: false,
     idempotencyKey: 'line-disable-self'
+  }), /不能停用自己或移除自己的管理員權限/);
+  await assert.rejects(repository.updateAuthorization({
+    actor: { userId: 'ADMIN' },
+    target: { userId: 'ADMIN', displayName: '老闆' },
+    role: '申請人',
+    enabled: true,
+    idempotencyKey: 'line-demote-self-1'
   }), /不能停用自己或移除自己的管理員權限/);
 });
 
