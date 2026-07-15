@@ -28,6 +28,11 @@ export function loadConfig(env = process.env, options = {}) {
   return Object.freeze({
     nodeEnv: env.NODE_ENV ?? 'development',
     port,
+    appVersion: env.APP_VERSION ?? '0.1.0',
+    gitCommit: env.GIT_COMMIT ?? 'development',
+    deployedAt: env.DEPLOYED_AT ?? '',
+    serviceName: env.K_SERVICE ?? 'line-replenishment',
+    serviceRevision: env.K_REVISION ?? '',
     spreadsheetId: env.SPREADSHEET_ID,
     lineLoginChannelId: env.LINE_LOGIN_CHANNEL_ID ?? '',
     lineChannelSecret: env.LINE_CHANNEL_SECRET ?? '',

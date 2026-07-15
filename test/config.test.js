@@ -36,6 +36,40 @@ test('loadConfig uses the LINE Login channel ID for LIFF identity verification',
   assert.equal(config.lineLoginChannelId, 'login-channel-123');
 });
 
+test('loadConfig exposes deployment metadata with safe local defaults', () => {
+  const local = loadConfig({
+    NODE_ENV: 'test',
+    SPREADSHEET_ID: 'sheet-123'
+  });
+  assert.deepEqual({
+    appVersion: local.appVersion,
+    gitCommit: local.gitCommit,
+    deployedAt: local.deployedAt,
+    serviceName: local.serviceName,
+    serviceRevision: local.serviceRevision
+  }, {
+    appVersion: '0.1.0',
+    gitCommit: 'development',
+    deployedAt: '',
+    serviceName: 'line-replenishment',
+    serviceRevision: ''
+  });
+
+  const deployed = loadConfig({
+    NODE_ENV: 'test',
+    SPREADSHEET_ID: 'sheet-123',
+    APP_VERSION: '0.1.0+abc123def456',
+    GIT_COMMIT: 'abc123def456abc123def456abc123def456abcd',
+    DEPLOYED_AT: '2026-07-15T07:30:00Z',
+    K_SERVICE: 'line-replenishment',
+    K_REVISION: 'line-replenishment-00013-xyz'
+  });
+  assert.equal(deployed.appVersion, '0.1.0+abc123def456');
+  assert.equal(deployed.gitCommit, 'abc123def456abc123def456abc123def456abcd');
+  assert.equal(deployed.deployedAt, '2026-07-15T07:30:00Z');
+  assert.equal(deployed.serviceRevision, 'line-replenishment-00013-xyz');
+});
+
 test('loadConfig rejects an invalid port', () => {
   assert.throws(
     () => loadConfig({ NODE_ENV: 'test', SPREADSHEET_ID: 'sheet-123', PORT: '99999' }),

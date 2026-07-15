@@ -9,7 +9,14 @@ export function createApp({ config, repository, identityVerifier, messenger }) {
   app.disable('x-powered-by');
 
   app.get('/health', (_request, response) => {
-    response.json({ ok: true, service: 'line-replenishment', version: '0.1.0' });
+    response.json({
+      ok: true,
+      service: config.serviceName ?? 'line-replenishment',
+      version: config.appVersion ?? '0.1.0',
+      commit: config.gitCommit ?? 'development',
+      revision: config.serviceRevision ?? '',
+      deployedAt: config.deployedAt ?? ''
+    });
   });
 
   app.get('/api/config', (_request, response) => {
