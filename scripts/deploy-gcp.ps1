@@ -181,7 +181,7 @@ foreach ($secret in $secretNames) {
   '--concurrency', '20',
   '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId,APP_VERSION=$appVersion,GIT_COMMIT=$gitCommit,DEPLOYED_AT=$deployedAt",
   '--update-labels', "git-commit=$gitCommit",
-  '--startup-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=10,failureThreshold=12',
+  '--startup-probe', 'httpGet.path=/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=10,failureThreshold=12',
   '--liveness-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=30,failureThreshold=3',
   '--readiness-probe', 'httpGet.path=/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=60,failureThreshold=3',
   '--set-secrets', 'LINE_CHANNEL_SECRET=line-channel-secret:latest,LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token:latest,LINK_SIGNING_SECRET=line-link-signing-secret:latest,JOB_TOKEN=line-job-token:latest',

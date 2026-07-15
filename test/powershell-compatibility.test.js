@@ -103,7 +103,7 @@ test('deployment binds a clean Git commit to Cloud Run metadata', async () => {
 
 test('deployment configures Cloud Run probes and verifies the ready revision', async () => {
   const source = await readFile('scripts/deploy-gcp.ps1', 'utf8');
-  assert.match(source, /'--startup-probe', 'httpGet\.path=\/health,/);
+  assert.match(source, /'--startup-probe', 'httpGet\.path=\/ready,/);
   assert.match(source, /'--liveness-probe', 'httpGet\.path=\/health,/);
   assert.match(source, /'--readiness-probe', 'httpGet\.path=\/ready,/);
   assert.match(source, /status\.latestReadyRevisionName/);
