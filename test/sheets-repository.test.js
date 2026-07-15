@@ -41,6 +41,30 @@ function fakeSheets({
   };
 }
 
+test('SheetsRepository health check reads only the settings header', async () => {
+  const ranges = [];
+  const repository = new SheetsRepository({
+    sheets: {
+      spreadsheets: {
+        values: {
+          async get(request) {
+            ranges.push(request);
+            return { data: { values: [['Key', 'Value']] } };
+          }
+        }
+      }
+    },
+    spreadsheetId: 'sheet-123'
+  });
+
+  assert.equal(await repository.checkHealth(), true);
+  assert.deepEqual(ranges, [{
+    spreadsheetId: 'sheet-123',
+    range: "'系統設定'!A1:B1",
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  }]);
+});
+
 test('SheetsRepository parses product image mappings and tolerates a missing sheet', async () => {
   const imageRow = [
     'PART-1', 'SKU-A', 'PRODUCT-1', 'SALE-001', '商品 A', '紅色',

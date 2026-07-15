@@ -7,6 +7,7 @@ import { createGroupContext } from '../src/line/context.js';
 function fixture() {
   const calls = { create: [], push: [] };
   const repository = {
+    async checkHealth() { return true; },
     async listAvailableSkus() {
       return [{ sku: 'SKU-A', displayName: '商品 A', unit: '件' }];
     },

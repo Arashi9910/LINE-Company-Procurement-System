@@ -71,6 +71,15 @@ export class SheetsRepository {
     this.writeChain = Promise.resolve();
   }
 
+  async checkHealth() {
+    await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${SETTINGS_SHEET}'!A1:B1`,
+      valueRenderOption: 'UNFORMATTED_VALUE'
+    });
+    return true;
+  }
+
   async listAvailableSkus() {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,

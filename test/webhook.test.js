@@ -12,6 +12,7 @@ async function start(t, calls) {
   const app = createApp({
     config: { liffId: 'liff-123', linkSigningSecret: 'link-secret', lineChannelSecret: 'line-secret' },
     repository: {
+      async checkHealth() { return true; },
       async saveNotificationGroupId(groupId) {
         calls.groups.push(groupId);
         return calls.groupAllowed !== false;
