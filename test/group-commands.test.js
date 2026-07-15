@@ -2,10 +2,26 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   executeAuthorizationCommand,
+  executeCancellationCommand,
   formatStatusReply,
   parseGroupCommand,
   summarizeRequests
 } from '../src/services/group-commands.js';
+
+test('parseGroupCommand recognizes and normalizes cancellation commands', () => {
+  assert.deepEqual(
+    parseGroupCommand({ type: 'text', text: ' 取消補貨 rq-20260715-123456-ABCD ' }),
+    { type: 'cancellation', requestId: 'RQ-20260715-123456-abcd' }
+  );
+  assert.deepEqual(
+    parseGroupCommand({ type: 'text', text: '取消補貨' }),
+    { type: 'cancellation-error', reason: 'invalid-syntax' }
+  );
+  assert.deepEqual(
+    parseGroupCommand({ type: 'text', text: '取消補貨 RQ-123' }),
+    { type: 'cancellation-error', reason: 'invalid-syntax' }
+  );
+});
 
 test('parseGroupCommand recognizes every status query and help', () => {
   const cases = [
@@ -210,4 +226,87 @@ test('executeAuthorizationCommand safely falls back to the mention label when pr
 
   assert.equal(write.target.displayName, '小美');
   assert.match(text, /已授權小美/);
+});
+
+function cancellationDependencies({ owner = 'OWNER', role = '申請人', enabled = true, status = '待確認' } = {}) {
+  const writes = [];
+  return {
+    writes,
+    dependencies: {
+      repository: {
+        async getRequestForCancellation(requestId) {
+          return {
+            requestId,
+            requesterUserId: owner,
+            groupId: 'COMPANY',
+            items: [{ sku: 'SKU-A', status }]
+          };
+        },
+        async getAuthorization() { return { role, enabled, exists: true }; },
+        async cancelRequest(input) {
+          writes.push(input);
+          return {
+            requestId: input.requestId,
+            items: [{ sku: 'SKU-A', status: '取消' }],
+            idempotentReplay: false
+          };
+        }
+      },
+      messenger: {
+        async getGroupMemberProfile(groupId, userId) {
+          assert.equal(groupId, 'COMPANY');
+          assert.ok(userId);
+          return { displayName: userId === 'OWNER' ? '小明' : '管理員' };
+        }
+      }
+    }
+  };
+}
+
+test('executeCancellationCommand lets the original applicant cancel a pending request', async () => {
+  const fixture = cancellationDependencies();
+  const text = await executeCancellationCommand({
+    command: { type: 'cancellation', requestId: 'RQ-20260715-123456-abcd' },
+    actorUserId: 'OWNER',
+    groupId: 'COMPANY',
+    idempotencyKey: 'line-event-cancel-1'
+  }, fixture.dependencies);
+
+  assert.match(text, /已取消補貨單 RQ-20260715-123456-abcd/);
+  assert.match(text, /操作人：小明/);
+  assert.match(text, /共 1 項/);
+  assert.deepEqual(fixture.writes, [{
+    actor: { userId: 'OWNER' },
+    requestId: 'RQ-20260715-123456-abcd',
+    idempotencyKey: 'line-event-cancel-1'
+  }]);
+});
+
+test('executeCancellationCommand permits enabled administrators and rejects other members', async () => {
+  const admin = cancellationDependencies({ owner: 'OWNER', role: '管理員', enabled: true });
+  await executeCancellationCommand({
+    command: { type: 'cancellation', requestId: 'RQ-20260715-123456-abcd' },
+    actorUserId: 'ADMIN', groupId: 'COMPANY', idempotencyKey: 'line-event-admin-1'
+  }, admin.dependencies);
+  assert.equal(admin.writes.length, 1);
+
+  const member = cancellationDependencies({ owner: 'OWNER', role: '採購確認', enabled: true });
+  await assert.rejects(executeCancellationCommand({
+    command: { type: 'cancellation', requestId: 'RQ-20260715-123456-abcd' },
+    actorUserId: 'BUYER', groupId: 'COMPANY', idempotencyKey: 'line-event-buyer-1'
+  }, member.dependencies), /只有原申請人或已啟用的管理員/);
+  assert.equal(member.writes.length, 0);
+});
+
+test('executeCancellationCommand rejects another group and gives syntax guidance', async () => {
+  const fixture = cancellationDependencies();
+  await assert.rejects(executeCancellationCommand({
+    command: { type: 'cancellation', requestId: 'RQ-20260715-123456-abcd' },
+    actorUserId: 'OWNER', groupId: 'OTHER', idempotencyKey: 'line-event-group-1'
+  }, fixture.dependencies), /不屬於目前群組/);
+
+  const guidance = await executeCancellationCommand({
+    command: { type: 'cancellation-error', reason: 'invalid-syntax' }
+  }, fixture.dependencies);
+  assert.match(guidance, /取消補貨 RQ-/);
 });

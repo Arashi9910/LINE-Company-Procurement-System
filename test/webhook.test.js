@@ -31,6 +31,25 @@ async function start(t, calls) {
         calls.authWrites.push(input);
         return { role: input.role ?? '申請人', enabled: input.enabled, idempotentReplay: false };
       },
+      async getRequestForCancellation(requestId) {
+        calls.cancelReads ??= [];
+        calls.cancelReads.push(requestId);
+        return calls.cancellationContext ?? {
+          requestId,
+          requesterUserId: 'OWNER',
+          groupId: 'COMPANY',
+          items: [{ sku: 'SKU-A', status: '待確認' }]
+        };
+      },
+      async cancelRequest(input) {
+        calls.cancelWrites ??= [];
+        calls.cancelWrites.push(input);
+        return {
+          requestId: input.requestId,
+          items: [{ sku: 'SKU-A', status: '取消' }],
+          idempotentReplay: false
+        };
+      },
       async listAvailableSkus() { return []; },
       async listOpenRequests() { return []; }
     },
@@ -219,4 +238,53 @@ test('webhook returns a friendly reply when a non-admin tries to authorize', asy
   assert.equal(response.status, 200);
   assert.equal(calls.authWrites, undefined);
   assert.match(calls.texts[0].text, /只有已啟用的管理員/);
+});
+
+test('webhook lets the original applicant cancel a pending request', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    profileNames: { OWNER: '小明' }
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: 'event-cancel-123456',
+    replyToken: 'reply-cancel',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'OWNER' },
+    message: { type: 'text', text: '取消補貨 RQ-20260715-123456-abcd' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.cancelWrites, [{
+    actor: { userId: 'OWNER' },
+    requestId: 'RQ-20260715-123456-abcd',
+    idempotencyKey: 'line-event-cancel-123456'
+  }]);
+  assert.match(calls.texts[0].text, /已取消補貨單 RQ-20260715-123456-abcd/);
+  assert.match(calls.texts[0].text, /操作人：小明/);
+});
+
+test('webhook refuses a cancellation event without an idempotency identifier', async (t) => {
+  const calls = { groups: [], links: [], texts: [] };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    replyToken: 'reply-cancel-missing-id',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'OWNER' },
+    message: { type: 'text', text: '取消補貨 RQ-20260715-123456-abcd' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.cancelWrites, undefined);
+  assert.match(calls.texts[0].text, /缺少識別碼/);
 });

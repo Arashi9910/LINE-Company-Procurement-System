@@ -192,6 +192,10 @@ export class SheetsRepository {
     return this.#enqueue(() => this.#confirmReceipt(input));
   }
 
+  cancelRequest(input) {
+    return this.#enqueue(() => this.#cancelRequest(input));
+  }
+
   #enqueue(run) {
     const result = this.writeChain.then(run, run);
     this.writeChain = result.catch(() => undefined);
@@ -275,7 +279,15 @@ export class SheetsRepository {
     return { requestId: newRequestId, idempotentReplay: false, items: createdItems };
   }
 
-  async getRequest(targetRequestId) {
+  getRequest(targetRequestId) {
+    return this.#readRequest(targetRequestId, false);
+  }
+
+  getRequestForCancellation(targetRequestId) {
+    return this.#readRequest(targetRequestId, true);
+  }
+
+  async #readRequest(targetRequestId, includeRequester) {
     const indexResponse = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
       range: `'${TRACKING_SHEET}'!A2:A${MAX_TRACKING_ROW}`
@@ -292,9 +304,10 @@ export class SheetsRepository {
       spreadsheetId: this.spreadsheetId,
       range: `'${TRACKING_SHEET}'!A${firstRow}:S${lastRow}`
     });
-    const items = (response.data.values ?? [])
+    const requestRows = (response.data.values ?? [])
       .map((row, index) => ({ row, rowNumber: index + firstRow }))
-      .filter(({ row }) => row[0] === targetRequestId)
+      .filter(({ row }) => row[0] === targetRequestId);
+    const items = requestRows
       .map(({ row, rowNumber }) => ({
         rowNumber,
         requestId: String(row[0]),
@@ -320,6 +333,7 @@ export class SheetsRepository {
       applicant: items[0].applicant,
       note: items[0].note,
       groupId: items[0].sourceGroupId,
+      ...(includeRequester ? { requesterUserId: String(requestRows[0].row[14] ?? '') } : {}),
       items
     };
   }
@@ -405,6 +419,51 @@ export class SheetsRepository {
       requestBody: { valueInputOption: 'RAW', data }
     });
     return { role, enabled: input.enabled, idempotentReplay: false };
+  }
+
+  async #cancelRequest(input) {
+    const operation = await this.#findOperation(input.idempotencyKey);
+    if (operation.existing) {
+      if (operation.requestId !== input.requestId || operation.type !== '取消補貨') {
+        throw new ConflictError('操作金鑰已被其他操作使用');
+      }
+      return { ...(await this.getRequest(input.requestId)), idempotentReplay: true };
+    }
+
+    const request = await this.getRequest(input.requestId);
+    if (request.items.some((item) => item.status !== '待確認')) {
+      throw new ConflictError('只有尚未下單且所有品項皆為待確認的補貨單可以取消');
+    }
+
+    const serial = sheetSerial(this.now());
+    const data = request.items.flatMap((item) => [
+      { range: `'${TRACKING_SHEET}'!G${item.rowNumber}`, values: [['取消']] },
+      {
+        range: `'${TRACKING_SHEET}'!Q${item.rowNumber}:R${item.rowNumber}`,
+        values: [[input.actor.userId, serial]]
+      }
+    ]);
+    data.push({
+      range: `'${OPERATIONS_SHEET}'!A${operation.nextRow}:F${operation.nextRow}`,
+      values: [[
+        input.idempotencyKey,
+        '取消補貨',
+        input.requestId,
+        input.actor.userId,
+        serial,
+        `共 ${request.items.length} 項`
+      ]]
+    });
+    await this.sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: this.spreadsheetId,
+      requestBody: { valueInputOption: 'RAW', data }
+    });
+
+    return {
+      ...request,
+      items: request.items.map((item) => ({ ...item, status: '取消', outstandingQuantity: 0 })),
+      idempotentReplay: false
+    };
   }
 
   async #confirmOrder(input) {

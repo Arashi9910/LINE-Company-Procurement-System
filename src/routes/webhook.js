@@ -3,6 +3,7 @@ import { AuthenticationError, ValidationError } from '../errors.js';
 import { createGroupContext } from '../line/context.js';
 import {
   executeAuthorizationCommand,
+  executeCancellationCommand,
   formatStatusReply,
   GROUP_COMMAND_HELP,
   parseGroupCommand,
@@ -57,6 +58,26 @@ export function createWebhookHandler({ config, repository, messenger }) {
 
         if (command.type === 'help') {
           if (event.replyToken) await messenger.replyText(event.replyToken, GROUP_COMMAND_HELP);
+          return;
+        }
+
+        if (['cancellation', 'cancellation-error'].includes(command.type)) {
+          let reply;
+          try {
+            if (command.type === 'cancellation' && !event.webhookEventId) {
+              throw new ValidationError('LINE 事件缺少識別碼，請重新送出取消指令。');
+            }
+            reply = await executeCancellationCommand({
+              command,
+              actorUserId: event.source?.userId,
+              groupId,
+              idempotencyKey: event.webhookEventId ? `line-${event.webhookEventId}` : ''
+            }, { repository, messenger });
+          } catch (error) {
+            if (!Number.isInteger(error.status) || error.status >= 500) throw error;
+            reply = error.message;
+          }
+          if (event.replyToken) await messenger.replyText(event.replyToken, reply);
           return;
         }
 

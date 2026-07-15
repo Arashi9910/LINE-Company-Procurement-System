@@ -195,6 +195,32 @@ test('SheetsRepository reads one request without loading the full tracking grid'
   assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A3:S4"]);
 });
 
+test('SheetsRepository exposes requester identity only through cancellation context', async () => {
+  const row = [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '待確認', '', '', 0,
+    5, '', '', 'SKU-A', 'OWNER', 'COMPANY', 'OWNER', '', 'create-key'
+  ];
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          if (range === "'補貨追蹤'!A2:A5000") return { data: { values: [['RQ-1']] } };
+          if (range === "'補貨追蹤'!A2:S2") return { data: { values: [row] } };
+          throw new Error(`unexpected range: ${range}`);
+        }
+      }
+    }
+  };
+  const repository = new SheetsRepository({ sheets, spreadsheetId: 'sheet-123' });
+
+  const publicRequest = await repository.getRequest('RQ-1');
+  const cancellationContext = await repository.getRequestForCancellation('RQ-1');
+
+  assert.equal('requesterUserId' in publicRequest, false);
+  assert.equal(cancellationContext.requesterUserId, 'OWNER');
+  assert.equal(cancellationContext.groupId, 'COMPANY');
+});
+
 test('SheetsRepository lists tracking rows only through the last request row', async () => {
   const ranges = [];
   const trackingRows = [
@@ -249,6 +275,101 @@ function workflowSheets(trackingRow, onWrite) {
     }
   };
 }
+
+function cancellationSheets({ rows, operationRows = [], onWrite }) {
+  return {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          if (range === "'操作紀錄'!A2:C5000") return { data: { values: operationRows } };
+          if (range === "'補貨追蹤'!A2:A5000") {
+            return { data: { values: rows.map((row) => [row[0]]) } };
+          }
+          if (range === `'補貨追蹤'!A2:S${rows.length + 1}`) {
+            return { data: { values: rows } };
+          }
+          throw new Error(`unexpected range: ${range}`);
+        },
+        async batchUpdate(request) {
+          onWrite?.(request);
+          return { data: {} };
+        }
+      }
+    }
+  };
+}
+
+test('SheetsRepository cancels an entire pending request and records one operation', async () => {
+  const rows = [
+    ['RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '待確認', '', '', 0, 5, '', '', 'SKU-A', 'OWNER', 'COMPANY'],
+    ['RQ-1', '2026/07/14 10:00', '小明', '商品 B', '件', 2, '待確認', '', '', 0, 2, '', '', 'SKU-B', 'OWNER', 'COMPANY']
+  ];
+  let write;
+  const repository = new SheetsRepository({
+    sheets: cancellationSheets({ rows, onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123',
+    now: () => new Date('2026-07-15T08:00:00.000Z')
+  });
+
+  const result = await repository.cancelRequest({
+    actor: { userId: 'OWNER' },
+    requestId: 'RQ-1',
+    idempotencyKey: 'line-event-cancel-1'
+  });
+
+  assert.deepEqual(result.items.map((item) => item.status), ['取消', '取消']);
+  assert.equal(result.idempotentReplay, false);
+  assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
+    "'補貨追蹤'!G2",
+    "'補貨追蹤'!Q2:R2",
+    "'補貨追蹤'!G3",
+    "'補貨追蹤'!Q3:R3",
+    "'操作紀錄'!A2:F2"
+  ]);
+  assert.deepEqual(write.requestBody.data[4].values[0].slice(0, 4), [
+    'line-event-cancel-1', '取消補貨', 'RQ-1', 'OWNER'
+  ]);
+});
+
+test('SheetsRepository rejects cancellation after ordering has started', async () => {
+  const rows = [[
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '已下單', 5, '2026/07/20', 0,
+    5, '', '', 'SKU-A', 'OWNER', 'COMPANY'
+  ]];
+  let writes = 0;
+  const repository = new SheetsRepository({
+    sheets: cancellationSheets({ rows, onWrite: () => { writes += 1; } }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  await assert.rejects(repository.cancelRequest({
+    actor: { userId: 'OWNER' }, requestId: 'RQ-1', idempotencyKey: 'line-event-cancel-2'
+  }), /只有尚未下單/);
+  assert.equal(writes, 0);
+});
+
+test('SheetsRepository treats a repeated cancellation event as idempotent', async () => {
+  const rows = [[
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '取消', '', '', 0,
+    0, '', '', 'SKU-A', 'OWNER', 'COMPANY'
+  ]];
+  let writes = 0;
+  const repository = new SheetsRepository({
+    sheets: cancellationSheets({
+      rows,
+      operationRows: [['line-event-cancel-1', '取消補貨', 'RQ-1']],
+      onWrite: () => { writes += 1; }
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  const result = await repository.cancelRequest({
+    actor: { userId: 'OWNER' }, requestId: 'RQ-1', idempotencyKey: 'line-event-cancel-1'
+  });
+  assert.equal(result.idempotentReplay, true);
+  assert.equal(result.items[0].status, '取消');
+  assert.equal(writes, 0);
+});
 
 test('SheetsRepository confirms an order and records the operation atomically', async () => {
   let write;

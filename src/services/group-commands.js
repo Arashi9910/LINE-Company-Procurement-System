@@ -17,6 +17,7 @@ export const GROUP_COMMAND_HELP = [
   '【補貨指令】',
   '查未結案｜查待確認｜查已下單',
   '查部分到貨｜查已完成｜查取消',
+  '取消補貨 <補貨單號>',
   '',
   '管理員指令：',
   '授權 @成員 申請人／採購確認／到貨確認／管理員',
@@ -29,6 +30,18 @@ export function parseGroupCommand(message) {
   const text = message.text.trim();
   if (STATUS_COMMANDS.has(text)) return { type: 'status', status: STATUS_COMMANDS.get(text) };
   if (text === '補貨指令') return { type: 'help' };
+
+  const cancellationMatch = /^取消補貨\s+(RQ-\d{8}-\d{6}-[0-9a-f]{4})$/i.exec(text);
+  if (cancellationMatch) {
+    const requestId = cancellationMatch[1];
+    return {
+      type: 'cancellation',
+      requestId: `${requestId.slice(0, -4).toUpperCase()}${requestId.slice(-4).toLowerCase()}`
+    };
+  }
+  if (/^取消補貨(?:\s|$)/.test(text)) {
+    return { type: 'cancellation-error', reason: 'invalid-syntax' };
+  }
 
   let action;
   let role;
@@ -63,6 +76,48 @@ export function parseGroupCommand(message) {
     targetUserId: targets[0].userId,
     ...(targetDisplayName ? { targetDisplayName } : {})
   };
+}
+
+export async function executeCancellationCommand(input, { repository, messenger }) {
+  const { command, actorUserId, groupId, idempotencyKey } = input;
+  if (command.type === 'cancellation-error') {
+    return '指令格式不正確。可用格式：取消補貨 RQ-20260715-123456-abcd';
+  }
+  if (!actorUserId) {
+    throw new AuthenticationError('LINE 未提供你的使用者識別資料，無法取消補貨單。');
+  }
+
+  const [request, authorization] = await Promise.all([
+    repository.getRequestForCancellation(command.requestId),
+    repository.getAuthorization(actorUserId)
+  ]);
+  if (request.groupId && request.groupId !== groupId) {
+    throw new AuthorizationError('此補貨單不屬於目前群組。');
+  }
+  const isApplicant = request.requesterUserId === actorUserId;
+  const isEnabledAdmin = authorization.enabled && authorization.role === '管理員';
+  if (!isApplicant && !isEnabledAdmin) {
+    throw new AuthorizationError('只有原申請人或已啟用的管理員可以取消補貨單。');
+  }
+
+  const result = await repository.cancelRequest({
+    actor: { userId: actorUserId },
+    requestId: command.requestId,
+    idempotencyKey
+  });
+  let displayName = 'LINE 成員';
+  try {
+    const profile = await messenger.getGroupMemberProfile(groupId, actorUserId);
+    displayName = String(profile?.displayName || displayName);
+  } catch {
+    // 取消已完成，不因顯示名稱查詢失敗而回報操作失敗。
+  }
+  return [
+    `已取消補貨單 ${result.requestId}`,
+    `操作人：${displayName}`,
+    `共 ${result.items.length} 項`,
+    ...(result.idempotentReplay ? ['（此事件已處理過，未重複寫入）'] : [])
+  ].join('\n');
 }
 
 function authorizationErrorMessage(reason) {
