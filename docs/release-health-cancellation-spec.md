@@ -54,12 +54,10 @@ docs/                            # 規格、部署與操作文件
 沿用具名匯出、依賴注入及薄路由；業務規則放在 service／repository 並以明確錯誤拒絕非法狀態：
 
 ```js
-export async function cancelRequest(input, repository) {
-  const request = await repository.getRequest(input.requestId);
-  if (request.items.some((item) => item.status !== '待確認')) {
-    throw new ConflictError('只有尚未下單的補貨單可以取消');
-  }
-  return repository.cancelRequest(input);
+export async function executeCancellationCommand(input, { repository }) {
+  const request = await repository.getRequestForCancellation(input.command.requestId);
+  if (request.requesterUserId !== input.actorUserId) throw new AuthorizationError();
+  return repository.cancelRequest({ requestId: request.requestId });
 }
 ```
 
@@ -75,7 +73,7 @@ export async function cancelRequest(input, repository) {
 
 ## Cancellation Rules
 
-- 指令格式：`取消補貨 <補貨單號>`；補貨單號忽略英文字母大小寫並正規化為大寫。
+- 指令格式：`取消補貨 <補貨單號>`；補貨單號忽略英文字母大小寫，並正規化為大寫 `RQ` 前綴與小寫 UUID 尾碼。
 - 只能整張取消，不提供單一 SKU 取消。
 - 所有品項都仍為 `待確認` 時才能取消；任何品項已下單、部分到貨、完成或已取消都拒絕。
 - 原申請人或已啟用的管理員可取消；其他人拒絕。
@@ -93,11 +91,11 @@ export async function cancelRequest(input, repository) {
 
 1. Dirty Git 工作區不能執行正式部署；乾淨工作區會把完整 commit SHA、短版版本與 UTC 部署時間送進 Cloud Run，並更新 `git-commit` label。
 2. `/health` 回傳 liveness 與版本資訊；`/ready` 實際讀取指定 Sheet，失敗時回傳 `503` 且不洩漏底層錯誤。
-3. Cloud Run 使用 `/health` startup/liveness probe 與 `/ready` readiness probe。
+3. Cloud Run 使用 `/ready` startup/readiness probe 與 `/health` liveness probe，避免首次 readiness 前接收流量。
 4. 缺少 repository、identity verifier 或 messenger 時，`createApp` 直接拋錯，不再靜默略過核心路由。
 5. 符合取消規則的 LINE 指令會原子更新整張補貨單並留下操作紀錄；非法權限、狀態、格式或重送皆有測試。
 6. 全部自動測試、lint、build 與 diff check 通過。
 
 ## Open Questions
 
-- 取消權限目前採「原申請人或已啟用管理員」。若使用者指定其他角色規則，實作前更新本文件。
+無。使用者於 2026-07-15 同意採「原申請人或已啟用管理員」。

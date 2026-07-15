@@ -57,6 +57,7 @@ flowchart LR
 - `採購確認` 或 `管理員` 可確認下單量與預計到貨日。
 - `到貨確認` 或 `管理員` 可登記本次實到數量。
 - 支援部分到貨、累計到貨及全部完成。
+- 原申請人或已啟用的管理員可在尚未下單前取消整張補貨單。
 - 下單、到貨與取消皆記錄操作人及時間。
 
 ### LINE 群組指令
@@ -70,6 +71,7 @@ flowchart LR
 查部分到貨
 查已完成
 查取消
+取消補貨 RQ-20260715-123456-abcd
 
 授權 @成員 申請人
 授權 @成員 採購確認
@@ -79,7 +81,7 @@ flowchart LR
 查權限 @成員
 ```
 
-授權指令只有已啟用的管理員能使用。系統使用 LINE Webhook 提供的 user ID 識別成員，不依賴可能重複或變更的顯示名稱。
+`取消補貨` 只接受仍全部處於「待確認」的補貨單，限原申請人或已啟用的管理員使用。授權指令只有已啟用的管理員能使用。系統使用 LINE Webhook 提供的 user ID 識別成員，不依賴可能重複或變更的顯示名稱。
 
 ### 自動提醒
 
@@ -198,7 +200,9 @@ npm.cmd run build
 - 多品項補貨申請
 - 重複申請與冪等防護
 - 下單、部分到貨及完成狀態
+- 取消補貨的權限、狀態限制、冪等與操作紀錄
 - 角色與群組授權指令
+- liveness、Sheet readiness 與部署版本 metadata
 - Scheduler 提醒與重複提醒防護
 - Google Sheets 寫入範圍
 - 手機版商品及規格畫面
@@ -207,11 +211,12 @@ npm.cmd run build
 
 正式環境使用 Cloud Run Source Deployment。部署腳本會：
 
-1. 啟用必要的 Google Cloud APIs。
-2. 檢查 Cloud Run 服務帳號。
-3. 掛載 Secret Manager 中的密鑰。
-4. 建立新的 Cloud Run revision。
-5. 更新 Cloud Scheduler 提醒工作。
+1. 確認 Git 工作區乾淨並取得完整 commit SHA。
+2. 啟用必要的 Google Cloud APIs。
+3. 檢查 Cloud Run 服務帳號並掛載 Secret Manager 密鑰。
+4. 建立帶有 commit、部署時間與 probes 的 Cloud Run revision。
+5. 呼叫 `/ready`，確認最新 revision 可讀取 Sheet 且版本符合預期。
+6. 更新 Cloud Scheduler 提醒工作。
 
 ```powershell
 .\scripts\deploy-gcp.ps1 `
@@ -232,6 +237,7 @@ npm.cmd run build
 - 管理員不能停用自己或移除自己的管理員權限。
 - Scheduler 端點使用獨立 Bearer token。
 - 正式密鑰保存在 Secret Manager，不寫入 Git、Sheets 或日誌。
+- `/health` 僅代表程序存活；`/ready` 會唯讀檢查 Sheet，失敗時 Cloud Run 不應分配流量。
 
 ## 目前限制與維護重點
 
