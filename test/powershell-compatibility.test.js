@@ -89,3 +89,24 @@ test('Scheduler updates use the update-only header flag', async () => {
   );
   assert.match(source, /\$jobHeaderFlag, "Authorization=Bearer \$jobToken/);
 });
+
+test('deployment binds a clean Git commit to Cloud Run metadata', async () => {
+  const source = await readFile('scripts/deploy-gcp.ps1', 'utf8');
+  assert.match(source, /git status --porcelain --untracked-files=all/);
+  assert.match(source, /git rev-parse HEAD/);
+  assert.match(source, /Working tree must be clean before deployment/);
+  assert.match(source, /APP_VERSION=\$appVersion/);
+  assert.match(source, /GIT_COMMIT=\$gitCommit/);
+  assert.match(source, /DEPLOYED_AT=\$deployedAt/);
+  assert.match(source, /'--update-labels', "git-commit=\$gitCommit"/);
+});
+
+test('deployment configures Cloud Run probes and verifies the ready revision', async () => {
+  const source = await readFile('scripts/deploy-gcp.ps1', 'utf8');
+  assert.match(source, /'--startup-probe', 'httpGet\.path=\/health,/);
+  assert.match(source, /'--liveness-probe', 'httpGet\.path=\/health,/);
+  assert.match(source, /'--readiness-probe', 'httpGet\.path=\/ready,/);
+  assert.match(source, /status\.latestReadyRevisionName/);
+  assert.match(source, /Invoke-RestMethod[^\n]+\/ready/);
+  assert.match(source, /ready\.commit -eq \$gitCommit/);
+});

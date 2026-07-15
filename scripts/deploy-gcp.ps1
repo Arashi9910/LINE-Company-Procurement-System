@@ -25,6 +25,32 @@ $secretNames = @(
   'line-job-token'
 )
 
+if (-not (Get-Command 'git' -ErrorAction SilentlyContinue)) {
+  throw 'git was not found. Install Git and run this script from the repository root.'
+}
+
+$workingTreeStatus = @(& git status --porcelain --untracked-files=all 2>$null)
+if ($LASTEXITCODE -ne 0) {
+  throw 'Unable to inspect the Git working tree.'
+}
+if ($workingTreeStatus.Count -gt 0) {
+  throw 'Working tree must be clean before deployment. Commit or remove local changes first.'
+}
+
+$gitCommit = [string](& git rev-parse HEAD 2>$null)
+if ($LASTEXITCODE -ne 0 -or $gitCommit -notmatch '^[0-9a-fA-F]{40}$') {
+  throw 'Unable to resolve a full Git commit for deployment.'
+}
+$gitCommit = $gitCommit.ToLowerInvariant()
+$gitShort = $gitCommit.Substring(0, 12)
+$packageJsonPath = Join-Path $PSScriptRoot '..\package.json'
+$packageVersion = [string]((Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json).version)
+if ($packageVersion -notmatch '^\d+\.\d+\.\d+') {
+  throw 'package.json does not contain a valid application version.'
+}
+$appVersion = "$packageVersion+$gitShort"
+$deployedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+
 function Resolve-GcloudCommand {
   $command = Get-Command 'gcloud.cmd' -ErrorAction SilentlyContinue
   if (-not $command) {
@@ -153,7 +179,11 @@ foreach ($secret in $secretNames) {
   '--service-account', $serviceAccountEmail,
   '--max-instances', '1',
   '--concurrency', '20',
-  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId",
+  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId,APP_VERSION=$appVersion,GIT_COMMIT=$gitCommit,DEPLOYED_AT=$deployedAt",
+  '--update-labels', "git-commit=$gitCommit",
+  '--startup-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=10,failureThreshold=12',
+  '--liveness-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=30,failureThreshold=3',
+  '--readiness-probe', 'httpGet.path=/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=60,failureThreshold=3',
   '--set-secrets', 'LINE_CHANNEL_SECRET=line-channel-secret:latest,LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token:latest,LINK_SIGNING_SECRET=line-link-signing-secret:latest,JOB_TOKEN=line-job-token:latest',
   '--quiet'
 )).Output | Out-Null
@@ -167,6 +197,35 @@ $serviceUrlResult = Invoke-Gcloud -Arguments @(
 $serviceUrl = Get-GcloudOutputText $serviceUrlResult
 if (-not $serviceUrl) {
   throw 'Cloud Run did not return a service URL.'
+}
+
+$revisionResult = Invoke-Gcloud -Arguments @(
+  'run', 'services', 'describe', $ServiceName,
+  '--project', $ProjectId,
+  '--region', $Region,
+  '--format=value(status.latestReadyRevisionName)'
+)
+$readyRevision = Get-GcloudOutputText $revisionResult
+if (-not $readyRevision) {
+  throw 'Cloud Run did not return a ready revision.'
+}
+
+$ready = $null
+for ($attempt = 1; $attempt -le 6; $attempt += 1) {
+  try {
+    $ready = Invoke-RestMethod -Method Get -Uri "$serviceUrl/ready" -TimeoutSec 15
+    if ($ready.ok -and $ready.commit -eq $gitCommit) {
+      break
+    }
+  } catch {
+    $ready = $null
+  }
+  if ($attempt -lt 6) {
+    Start-Sleep -Seconds 5
+  }
+}
+if (-not $ready -or -not $ready.ok -or $ready.commit -ne $gitCommit) {
+  throw 'The deployed service did not become ready with the expected Git commit.'
 }
 
 $jobTokenResult = Invoke-Gcloud -Arguments @(
@@ -226,4 +285,7 @@ if ($BillingAccountId) {
 
 Write-Host "Service account: $serviceAccountEmail"
 Write-Host "Cloud Run URL: $serviceUrl"
+Write-Host "Application version: $appVersion"
+Write-Host "Git commit: $gitCommit"
+Write-Host "Ready revision: $readyRevision"
 Write-Host 'Budget alerts do not cap spending or stop the service.'
