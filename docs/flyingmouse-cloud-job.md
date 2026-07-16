@@ -162,7 +162,9 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - 首次 execution 結果：14.69 秒完成，`sheetCreated: true`、`found: 0`、錯誤 0
 - 回寫分頁：`飛鼠庫存回寫`，已建立成功
 - Cloud Scheduler：尚未建立；首次驗收維持手動執行
-- LINE Service：尚未設定 `FLYINGMOUSE_WRITEBACK_ENABLED`，因此仍按預設 `false`，不會建立正式回寫事件
+- LINE Service revision：`line-replenishment-00015-v6t`
+- LINE Service commit：`942327f5c73b255db302097a27d0617717b451d2`
+- LINE Service：`FLYINGMOUSE_WRITEBACK_ENABLED=true`；2026-07-16 19:56（Asia/Taipei）後的新到貨確認會建立回寫事件
 - 飛鼠庫存 PUT：0 次
 
-目前 dry-run 部署與空 queue 驗收已完成。下一階段要先讓 LINE 正式服務建立一筆真實到貨回寫事件，再以 dry-run 驗證飛鼠 GET 與目標庫存計算；切換 live 前仍需再次取得使用者同意。
+目前 dry-run 部署、空 queue 驗收與 LINE 入列功能均已完成，`/health`、`/ready` 皆正常。下一階段是以一筆新到貨事件手動執行 dry-run，驗證飛鼠 GET 與目標庫存計算；切換 live 前仍需再次取得使用者同意。
