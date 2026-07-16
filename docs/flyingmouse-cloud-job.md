@@ -150,4 +150,19 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 4. 選定一筆真實到貨事件驗證只增加一次。
 5. 最後才部署 LINE Service 的 `FLYINGMOUSE_WRITEBACK_ENABLED=true`。
 
-目前狀態：程式、測試與部署資產已建立，但尚未建立正式 queue 分頁、尚未部署 writeback Job、尚未發送任何正式飛鼠 PUT。
+## 庫存回寫 dry-run 部署狀態（2026-07-16）
+
+- GCP project：`line-restock-20260714`
+- Region：`asia-east1`
+- Cloud Run Job：`flyingmouse-inventory-writeback`
+- Mode：`dry-run`
+- Image：`flyingmouse-sync:20260716114701`
+- Image digest：`sha256:872b7c1870017e1ef360c8073af778808078a78445e85bb4dc60e670db71dc63`
+- 首次 execution：`flyingmouse-inventory-writeback-qhp9m`
+- 首次 execution 結果：14.69 秒完成，`sheetCreated: true`、`found: 0`、錯誤 0
+- 回寫分頁：`飛鼠庫存回寫`，已建立成功
+- Cloud Scheduler：尚未建立；首次驗收維持手動執行
+- LINE Service：尚未設定 `FLYINGMOUSE_WRITEBACK_ENABLED`，因此仍按預設 `false`，不會建立正式回寫事件
+- 飛鼠庫存 PUT：0 次
+
+目前 dry-run 部署與空 queue 驗收已完成。下一階段要先讓 LINE 正式服務建立一筆真實到貨回寫事件，再以 dry-run 驗證飛鼠 GET 與目標庫存計算；切換 live 前仍需再次取得使用者同意。
