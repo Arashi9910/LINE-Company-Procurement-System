@@ -117,3 +117,37 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - Review execution：`flyingmouse-catalog-sync-nkgdv`
 - Review execution 結果：24.63 秒完成，912 對 912，零差異、零核准、零匯入
 - 審核分頁：`飛鼠目錄待確認`（sheetId `592816291`），建立成功且目前只有表頭
+
+## 到貨庫存回寫 Job（尚未部署）
+
+庫存回寫使用獨立的 `flyingmouse-inventory-writeback` Cloud Run Job，與每日 03:00 的目錄同步分開。它會讀取 `飛鼠庫存回寫` 分頁，依序處理到貨事件；LINE 服務的 `FLYINGMOUSE_WRITEBACK_ENABLED` 預設為 `false`，在分頁與 worker 驗收完成前不得開啟。
+
+部署腳本預設為 `dry-run`、每 5 分鐘、單 task、Cloud Run 平台 retry 0：
+
+```powershell
+.\scripts\deploy-flyingmouse-writeback-job.ps1 `
+  -ProjectId 'line-restock-20260714' `
+  -SkipSchedule `
+  -ExecuteNow
+```
+
+第一次 dry-run 會建立或驗證 `飛鼠庫存回寫` 分頁；即使 queue 有事件，也只會登入、GET、計算目標庫存，不會發送 PUT，也不會變更 queue 狀態。
+
+只有完成 dry-run 與真實 SKU 驗收準備、並再次取得使用者同意後，才可執行：
+
+```powershell
+.\scripts\deploy-flyingmouse-writeback-job.ps1 `
+  -ProjectId 'line-restock-20260714' `
+  -Mode 'live' `
+  -ApproveLive
+```
+
+正式啟用順序：
+
+1. 部署 dry-run Job 並建立 queue 分頁。
+2. 手動執行，確認 Cloud Logging、GET 與計算結果。
+3. 經核准後以 `-Mode live -ApproveLive` 更新 worker。
+4. 選定一筆真實到貨事件驗證只增加一次。
+5. 最後才部署 LINE Service 的 `FLYINGMOUSE_WRITEBACK_ENABLED=true`。
+
+目前狀態：程式、測試與部署資產已建立，但尚未建立正式 queue 分頁、尚未部署 writeback Job、尚未發送任何正式飛鼠 PUT。

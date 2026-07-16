@@ -21,6 +21,7 @@ test('FlyingMouse Cloud Build context is an allow-list that never includes secre
   assert.equal(lines.includes('*'), true);
   assert.equal(lines.includes('!src/flyingmouse/**'), true);
   assert.equal(lines.includes('!scripts/flyingmouse-sync.mjs'), true);
+  assert.equal(lines.includes('!scripts/flyingmouse-inventory-writeback.mjs'), true);
   assert.equal(lines.some((line) => /^!.*\.env/i.test(line)), false);
   assert.equal(lines.some((line) => /claude/i.test(line)), false);
 });
@@ -39,4 +40,23 @@ test('FlyingMouse deployment keeps credentials in Secret Manager and requires an
   assert.doesNotMatch(sheets, /values\.(?:update|append|batchUpdate)/);
   assert.match(review, /auth\/spreadsheets'/);
   assert.match(review, /核准匯入/);
+});
+
+test('FlyingMouse writeback deployment defaults to dry-run and disables platform retries', async () => {
+  const deploy = await read('scripts/deploy-flyingmouse-writeback-job.ps1');
+  const dockerfile = await read('Dockerfile.flyingmouse-job');
+
+  assert.match(dockerfile, /flyingmouse-inventory-writeback\.mjs/);
+  assert.match(deploy, /\[ValidateSet\('dry-run', 'live'\)\]/);
+  assert.match(deploy, /\[string\]\$Mode = 'dry-run'/);
+  assert.match(deploy, /\[switch\]\$ApproveLive/);
+  assert.match(deploy, /if \(\$Mode -eq 'live' -and -not \$ApproveLive\)/);
+  assert.match(deploy, /'--max-retries', '0'/);
+  assert.match(deploy, /\[string\]\$Schedule = '\*\/5 \* \* \* \*'/);
+  assert.match(deploy, /'--command', 'node'/);
+  assert.match(deploy, /flyingmouse-inventory-writeback\.mjs,--ensure-sheet/);
+  assert.match(deploy, /FLYINGMOUSE_WRITEBACK_MODE=\$Mode/);
+  assert.match(deploy, /FLYINGMOUSE_USERNAME=flyingmouse-username:latest/);
+  assert.match(deploy, /FLYINGMOUSE_PASSWORD=flyingmouse-password:latest/);
+  assert.doesNotMatch(deploy, /\.env\.flyingmouse-login\.txt/);
 });

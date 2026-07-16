@@ -12,3 +12,4 @@
 !src/flyingmouse/**
 !scripts/
 !scripts/flyingmouse-sync.mjs
+!scripts/flyingmouse-inventory-writeback.mjs

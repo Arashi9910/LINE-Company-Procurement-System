@@ -9,7 +9,7 @@ COPY jobs/flyingmouse/package.json jobs/flyingmouse/package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY src/flyingmouse ./src/flyingmouse
-COPY scripts/flyingmouse-sync.mjs ./scripts/flyingmouse-sync.mjs
+COPY scripts/flyingmouse-sync.mjs scripts/flyingmouse-inventory-writeback.mjs ./scripts/
 
 USER pwuser
 
