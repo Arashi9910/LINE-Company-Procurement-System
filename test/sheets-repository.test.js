@@ -192,6 +192,8 @@ test('SheetsRepository reads one request without loading the full tracking grid'
   const result = await repository.getRequest('RQ-1');
 
   assert.deepEqual(result.items.map((item) => item.rowNumber), [3, 4]);
+  assert.equal('applicantUserId' in result, false);
+  assert.equal('applicantUserId' in result.items[0], false);
   assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A3:S4"]);
 });
 
@@ -299,6 +301,33 @@ function cancellationSheets({ rows, operationRows = [], onWrite }) {
   };
 }
 
+function orderAdditionSheets({ trackingRows, availableSkuRows, onWrite }) {
+  return {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          if (range.includes('操作紀錄')) return { data: { values: [] } };
+          if (range.includes('SKU主檔')) return { data: { values: availableSkuRows } };
+          if (range === "'補貨追蹤'!A2:A5000") {
+            return { data: { values: trackingRows.map((row) => [row[0]]) } };
+          }
+          const match = /!A(\d+):S(\d+)$/.exec(range);
+          if (match) {
+            const start = Number(match[1]);
+            const end = Number(match[2]);
+            return { data: { values: trackingRows.slice(start - 2, end - 1) } };
+          }
+          return { data: { values: [] } };
+        },
+        async batchUpdate(request) {
+          onWrite(request);
+          return { data: {} };
+        }
+      }
+    }
+  };
+}
+
 test('SheetsRepository cancels an entire pending request and records one operation', async () => {
   const rows = [
     ['RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '待確認', '', '', 0, 5, '', '', 'SKU-A', 'OWNER', 'COMPANY'],
@@ -397,6 +426,147 @@ test('SheetsRepository confirms an order and records the operation atomically', 
     "'操作紀錄'!A2:F2"
   ]);
   assert.equal(write.requestBody.data[2].values[0][1], '確認下單');
+});
+
+test('SheetsRepository appends approved purchase additions without overwriting later rows', async () => {
+  let write;
+  const original = [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '待確認', '', '', 0,
+    '', '', '急件', 'SKU-A', 'U1', 'C1', 'U1', '', 'create-key'
+  ];
+  const unrelated = [
+    'RQ-2', '2026/07/14 11:00', '小華', '商品 C', '件', 1, '待確認', '', '', 0,
+    '', '', '', 'SKU-C', 'U2', 'C1', 'U2', '', 'other-key'
+  ];
+  const availableSkuRows = [[
+    'SKU-B', '商品 B', '紅色', '', 7, '', '', '商品 B｜紅色', '', '是', '', '件', '', ''
+  ]];
+  const repository = new SheetsRepository({
+    sheets: orderAdditionSheets({
+      trackingRows: [original, unrelated],
+      availableSkuRows,
+      onWrite: (request) => { write = request; }
+    }),
+    spreadsheetId: 'sheet-123',
+    now: () => new Date('2026-07-14T02:00:00.000Z')
+  });
+
+  const result = await repository.confirmOrder({
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-1',
+    items: [
+      { sku: 'SKU-A', orderedQuantity: 5, expectedDate: '2026-07-20' },
+      { sku: 'SKU-B', orderedQuantity: 3, expectedDate: '2026-07-21' }
+    ],
+    idempotencyKey: 'order-addition-1234'
+  });
+
+  assert.equal(result.items.length, 2);
+  assert.equal(result.items[1].requestedQuantity, 0);
+  assert.equal(result.items[1].orderedQuantity, 3);
+  assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
+    "'補貨追蹤'!G2:I2",
+    "'補貨追蹤'!Q2:R2",
+    "'補貨追蹤'!A4:D4",
+    "'補貨追蹤'!F4:J4",
+    "'補貨追蹤'!M4:S4",
+    "'操作紀錄'!A2:F2"
+  ]);
+  assert.deepEqual(write.requestBody.data[2].values[0], [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 B｜紅色'
+  ]);
+  assert.deepEqual(write.requestBody.data[3].values[0].slice(0, 3), [0, '已下單', 3]);
+  assert.deepEqual(write.requestBody.data[4].values[0], [
+    '急件', 'SKU-B', 'U1', 'C1', 'BUYER', 46217.41666666667, 'order-addition-1234'
+  ]);
+});
+
+test('SheetsRepository rejects a purchase addition that is unavailable', async () => {
+  let writes = 0;
+  const row = [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '待確認', '', '', 0,
+    '', '', '', 'SKU-A', 'U1', 'C1', 'U1', '', 'create-key'
+  ];
+  const repository = new SheetsRepository({
+    sheets: orderAdditionSheets({
+      trackingRows: [row],
+      availableSkuRows: [],
+      onWrite: () => { writes += 1; }
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  await assert.rejects(repository.confirmOrder({
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-1',
+    items: [
+      { sku: 'SKU-A', orderedQuantity: 5, expectedDate: '2026-07-20' },
+      { sku: 'SKU-X', orderedQuantity: 1, expectedDate: '2026-07-20' }
+    ],
+    idempotencyKey: 'order-unavailable-1'
+  }), /已停用或不存在/);
+  assert.equal(writes, 0);
+});
+
+test('SheetsRepository rejects an order that omits an original item before writing', async () => {
+  let writes = 0;
+  const originalA = [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '待確認', '', '', 0,
+    '', '', '', 'SKU-A', 'U1', 'C1', 'U1', '', 'create-key'
+  ];
+  const originalB = [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 B', '件', 2, '待確認', '', '', 0,
+    '', '', '', 'SKU-B', 'U1', 'C1', 'U1', '', 'create-key'
+  ];
+  const repository = new SheetsRepository({
+    sheets: orderAdditionSheets({
+      trackingRows: [originalA, originalB],
+      availableSkuRows: [],
+      onWrite: () => { writes += 1; }
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  await assert.rejects(repository.confirmOrder({
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-1',
+    items: [{ sku: 'SKU-A', orderedQuantity: 5, expectedDate: '2026-07-20' }],
+    idempotencyKey: 'order-missing-item-1'
+  }), /原補貨品項不可省略/);
+  assert.equal(writes, 0);
+});
+
+test('SheetsRepository rejects additions when the tracking sheet is full before writing', async () => {
+  let writes = 0;
+  const original = [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '待確認', '', '', 0,
+    '', '', '', 'SKU-A', 'U1', 'C1', 'U1', '', 'create-key'
+  ];
+  const trackingRows = Array.from({ length: 4999 }, (_, index) => (
+    index === 0 ? original : [`RQ-FILL-${index}`]
+  ));
+  const availableSkuRows = [[
+    'SKU-B', '商品 B', '紅色', '', 7, '', '', '商品 B｜紅色', '', '是', '', '件', '', ''
+  ]];
+  const repository = new SheetsRepository({
+    sheets: orderAdditionSheets({
+      trackingRows,
+      availableSkuRows,
+      onWrite: () => { writes += 1; }
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  await assert.rejects(repository.confirmOrder({
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-1',
+    items: [
+      { sku: 'SKU-A', orderedQuantity: 5, expectedDate: '2026-07-20' },
+      { sku: 'SKU-B', orderedQuantity: 1, expectedDate: '2026-07-20' }
+    ],
+    idempotencyKey: 'order-sheet-full-1'
+  }), /補貨追蹤表已滿/);
+  assert.equal(writes, 0);
 });
 
 test('SheetsRepository accumulates partial receipts and prevents over-receipt', async () => {

@@ -11,6 +11,7 @@ const OPERATIONS_SHEET = '操作紀錄';
 const MAX_TRACKING_ROW = 5000;
 const CLOSED_STATUSES = new Set(['已完成', '取消']);
 const AUTHORIZATION_ROLES = new Set(['申請人', '採購確認', '到貨確認', '管理員']);
+const REQUEST_INTERNAL = Symbol('requestInternal');
 
 function sheetSerial(date) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -334,7 +335,10 @@ export class SheetsRepository {
       note: items[0].note,
       groupId: items[0].sourceGroupId,
       ...(includeRequester ? { requesterUserId: String(requestRows[0].row[14] ?? '') } : {}),
-      items
+      items,
+      [REQUEST_INTERNAL]: {
+        applicantUserId: String(requestRows[0]?.row[14] ?? '')
+      }
     };
   }
 
@@ -477,14 +481,36 @@ export class SheetsRepository {
 
     const request = await this.getRequest(input.requestId);
     const inputMap = new Map(input.items.map((item) => [item.sku, item]));
-    if (inputMap.size !== request.items.length || request.items.some((item) => !inputMap.has(item.sku))) {
-      throw new ValidationError('下單品項必須與補貨單一致');
+    if (inputMap.size !== input.items.length) {
+      throw new ValidationError('同一張補貨單的 SKU 不可重複');
+    }
+    if (request.items.some((item) => !inputMap.has(item.sku))) {
+      throw new ValidationError('原補貨品項不可省略；不採購時請將下單數量設為 0');
     }
     if (request.items.some((item) => item.status !== '待確認')) {
       throw new ConflictError('此補貨單已確認下單或已結案');
     }
 
+    const requestSkuSet = new Set(request.items.map((item) => item.sku));
+    const additions = input.items.filter((item) => !requestSkuSet.has(item.sku));
+    if (additions.some((item) => item.orderedQuantity < 1)) {
+      throw new ValidationError('採購追加品項的下單數量必須是正整數');
+    }
+
+    let additionSkus = new Map();
+    let additionStartRow = 0;
+    if (additions.length > 0) {
+      const availableSkus = await this.listAvailableSkus();
+      additionSkus = new Map(availableSkus.map((sku) => [sku.sku, sku]));
+      const invalidSkus = additions.filter((item) => !additionSkus.has(item.sku)).map((item) => item.sku);
+      if (invalidSkus.length > 0) {
+        throw new ValidationError('部分追加 SKU 已停用或不存在', { invalidSkus });
+      }
+      additionStartRow = await this.#findAppendRow(additions.length);
+    }
+
     const serial = sheetSerial(this.now());
+    const applicantUserId = request[REQUEST_INTERNAL]?.applicantUserId ?? '';
     const data = request.items.flatMap((item) => {
       const update = inputMap.get(item.sku);
       const status = update.orderedQuantity === 0 ? '取消' : '已下單';
@@ -499,6 +525,52 @@ export class SheetsRepository {
         }
       ];
     });
+
+    const addedItems = additions.map((update, index) => {
+      const sku = additionSkus.get(update.sku);
+      const rowNumber = additionStartRow + index;
+      data.push(
+        {
+          range: `'${TRACKING_SHEET}'!A${rowNumber}:D${rowNumber}`,
+          values: [[request.requestId, request.requestedAt, request.applicant, sku.displayName]]
+        },
+        {
+          range: `'${TRACKING_SHEET}'!F${rowNumber}:J${rowNumber}`,
+          values: [[0, '已下單', update.orderedQuantity, dateSerial(update.expectedDate), 0]]
+        },
+        {
+          range: `'${TRACKING_SHEET}'!M${rowNumber}:S${rowNumber}`,
+          values: [[
+            request.note,
+            sku.sku,
+            applicantUserId,
+            request.groupId,
+            input.actor.userId,
+            serial,
+            input.idempotencyKey
+          ]]
+        }
+      );
+      return {
+        rowNumber,
+        requestId: request.requestId,
+        requestedAt: request.requestedAt,
+        applicant: request.applicant,
+        displayName: sku.displayName,
+        unit: sku.unit,
+        requestedQuantity: 0,
+        status: '已下單',
+        orderedQuantity: update.orderedQuantity,
+        expectedDate: update.expectedDate,
+        receivedQuantity: 0,
+        outstandingQuantity: update.orderedQuantity,
+        duplicateWarning: '',
+        note: request.note,
+        sku: sku.sku,
+        sourceGroupId: request.groupId,
+        purchaseAdded: true
+      };
+    });
     data.push({
       range: `'${OPERATIONS_SHEET}'!A${operation.nextRow}:F${operation.nextRow}`,
       values: [[
@@ -507,7 +579,7 @@ export class SheetsRepository {
         input.requestId,
         input.actor.userId,
         serial,
-        `共 ${request.items.length} 項`
+        `共 ${input.items.length} 項，追加 ${additions.length} 項`
       ]]
     });
     await this.sheets.spreadsheets.values.batchUpdate({
@@ -524,7 +596,7 @@ export class SheetsRepository {
         expectedDate: update.expectedDate,
         outstandingQuantity: update.orderedQuantity
       };
-    });
+    }).concat(addedItems);
     return { ...request, items, idempotentReplay: false };
   }
 
@@ -602,6 +674,20 @@ export class SheetsRepository {
       requestId: String(row?.[2] ?? ''),
       nextRow: rows.length + 2
     };
+  }
+
+  async #findAppendRow(itemCount) {
+    const response = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${TRACKING_SHEET}'!A2:A${MAX_TRACKING_ROW}`
+    });
+    const rows = response.data.values ?? [];
+    const lastUsedIndex = rows.findLastIndex((row) => row[0]);
+    const nextRow = lastUsedIndex < 0 ? 2 : lastUsedIndex + 3;
+    if (nextRow + itemCount - 1 > MAX_TRACKING_ROW) {
+      throw new ConflictError('補貨追蹤表已滿，請先封存舊資料');
+    }
+    return nextRow;
   }
 
   async listReminderCandidates({ at = this.now(), pendingAfterHours = 24 } = {}) {

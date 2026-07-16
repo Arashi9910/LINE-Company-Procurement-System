@@ -5,7 +5,7 @@ import { createApp } from '../src/app.js';
 import { createGroupContext } from '../src/line/context.js';
 
 function fixture() {
-  const calls = { create: [], push: [] };
+  const calls = { create: [], order: [], push: [] };
   const repository = {
     async checkHealth() { return true; },
     async listAvailableSkus() {
@@ -30,6 +30,7 @@ function fixture() {
       }] };
     },
     async confirmOrder(input) {
+      calls.order.push(input);
       return { requestId: input.requestId, groupId: 'C123', items: [], idempotentReplay: false };
     },
     async confirmReceipt(input) {
@@ -118,11 +119,15 @@ test('workflow API returns role and enforces order and receipt service paths', a
     method: 'POST',
     headers: { authorization: 'Bearer valid-token', 'content-type': 'application/json' },
     body: JSON.stringify({
-      items: [{ sku: 'SKU-A', orderedQuantity: 2, expectedDate: '2026-07-20' }],
+      items: [
+        { sku: 'SKU-A', orderedQuantity: 2, expectedDate: '2026-07-20' },
+        { sku: 'SKU-B', orderedQuantity: 1, expectedDate: '2026-07-21' }
+      ],
       idempotencyKey: 'order-key-123456'
     })
   });
   assert.equal(order.status, 201);
+  assert.deepEqual(dependencies.calls.order[0].items.map((item) => item.sku), ['SKU-A', 'SKU-B']);
 
   const receipt = await fetch(`${baseUrl}/api/requests/RQ-1/receipt`, {
     method: 'POST',

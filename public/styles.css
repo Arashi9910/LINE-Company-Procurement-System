@@ -297,6 +297,16 @@ textarea { resize: vertical; }
 }
 .primary.compact { width: auto; min-width: 92px; margin: 0; padding: 11px 18px; }
 .primary:disabled { background: #9aa0a6; cursor: wait; }
+.secondary {
+  width: 100%;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-green);
+  border-radius: 12px;
+  background: var(--soft-green);
+  color: var(--deep-green);
+  font-weight: 750;
+}
 
 .cart-dock {
   position: fixed;
@@ -331,6 +341,18 @@ textarea { resize: vertical; }
 .request-id { color: #5f6368; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .82rem; }
 .workflow-items { display: grid; gap: 12px; margin-top: 16px; }
 .workflow-row { padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: #fff; }
+.workflow-row.purchase-added { border-color: #83d5a0; background: #f5fff8; }
+.workflow-addition-badge {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #dff7e7;
+  color: var(--deep-green);
+  font-size: .72rem;
+  font-weight: 750;
+}
+.workflow-remove { margin-top: 8px; }
 .workflow-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .workflow-fields label { margin: 0; font-size: .86rem; }
 .workflow-fields input { width: 100%; margin-top: 6px; padding: 10px; border: 1px solid #c7c9cc; border-radius: 8px; }

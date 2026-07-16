@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cartTotals, filterCatalog, groupCatalog, variantLabel, visibleVariants } from '../public/catalog.js';
+import {
+  cartTotals,
+  filterCatalog,
+  groupCatalog,
+  selectableCatalogItems,
+  variantLabel,
+  visibleVariants
+} from '../public/catalog.js';
 
 const items = [
   {
@@ -42,5 +49,10 @@ test('variantLabel and cartTotals provide stable UI values', () => {
   assert.equal(variantLabel(items[0]), '紅色');
   assert.equal(variantLabel(items[1]), '藍色');
   assert.deepEqual(cartTotals([{ quantity: 2 }, { quantity: 5 }]), { variants: 2, quantity: 7 });
+});
+
+test('selectableCatalogItems excludes SKUs already present in an order', () => {
+  const result = selectableCatalogItems(items, new Set(['SKU-RED', 'SKU-CUP']));
+  assert.deepEqual(result.map((item) => item.sku), ['SKU-BLUE']);
 });
 

@@ -36,6 +36,24 @@ test('confirmOrder enforces role, quantity, date and normalizes items', async ()
     { sku: 'A', orderedQuantity: 2, expectedDate: '2026-07-15' },
     { sku: 'B', orderedQuantity: 0, expectedDate: '' }
   ]);
+
+  await assert.rejects(confirmOrder({
+    actor: { userId: 'U1' },
+    requestId: 'RQ-1',
+    items: Array.from({ length: 51 }, (_, index) => ({
+      sku: `SKU-${index}`,
+      orderedQuantity: 1,
+      expectedDate: '2026-07-15'
+    })),
+    idempotencyKey: 'order-too-many-1234'
+  }, allowed), /最多可下單 50 個品項/);
+
+  await assert.rejects(confirmOrder({
+    actor: { userId: 'U1' },
+    requestId: 'RQ-1',
+    items: [{ sku: 'A', orderedQuantity: 1000000, expectedDate: '2026-07-15' }],
+    idempotencyKey: 'order-too-large-123'
+  }, allowed), /不可超過 999999/);
 });
 
 test('confirmReceipt permits receipt roles and rejects non-positive quantities', async () => {

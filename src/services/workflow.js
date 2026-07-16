@@ -2,6 +2,8 @@ import { AuthenticationError, AuthorizationError, ValidationError } from '../err
 
 const ORDER_ROLES = new Set(['採購確認', '管理員']);
 const RECEIPT_ROLES = new Set(['到貨確認', '管理員']);
+const MAX_ORDER_ITEMS = 50;
+const MAX_ORDER_QUANTITY = 999999;
 
 function operationKey(value) {
   const key = String(value ?? '').trim();
@@ -38,6 +40,9 @@ export async function confirmOrder(input, repository) {
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ValidationError('至少需要一個下單品項');
   }
+  if (input.items.length > MAX_ORDER_ITEMS) {
+    throw new ValidationError(`單張補貨單最多可下單 ${MAX_ORDER_ITEMS} 個品項`);
+  }
 
   const seen = new Set();
   const items = input.items.map((item) => {
@@ -48,6 +53,9 @@ export async function confirmOrder(input, repository) {
     seen.add(sku);
     if (!Number.isInteger(orderedQuantity) || orderedQuantity < 0) {
       throw new ValidationError(`SKU ${sku} 的下單數量必須是 0 或正整數`);
+    }
+    if (orderedQuantity > MAX_ORDER_QUANTITY) {
+      throw new ValidationError(`SKU ${sku} 的下單數量不可超過 ${MAX_ORDER_QUANTITY}`);
     }
     if (orderedQuantity > 0 && !/^\d{4}-\d{2}-\d{2}$/.test(expectedDate)) {
       throw new ValidationError(`SKU ${sku} 必須填寫預計到貨日`);

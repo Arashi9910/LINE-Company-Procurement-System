@@ -1,4 +1,11 @@
-import { cartTotals, filterCatalog, groupCatalog, variantLabel, visibleVariants } from './catalog.js';
+import {
+  cartTotals,
+  filterCatalog,
+  groupCatalog,
+  selectableCatalogItems,
+  variantLabel,
+  visibleVariants
+} from './catalog.js';
 
 const MAX_CART_ITEMS = 50;
 const MAX_QUANTITY = 999999;
@@ -9,6 +16,10 @@ const state = {
   groups: [],
   groupsBySku: new Map(),
   cart: new Map(),
+  mode: '',
+  orderDraft: new Map(),
+  orderOriginalSkus: new Set(),
+  workflowRequest: null,
   activeGroupKey: '',
   lastFocus: null,
   idempotencyKey: crypto.randomUUID().replaceAll('-', '')
@@ -19,6 +30,8 @@ const elements = {
   status: document.querySelector('#status'),
   userName: document.querySelector('#user-name'),
   catalog: document.querySelector('#catalog'),
+  catalogTitle: document.querySelector('#catalog-title'),
+  catalogDescription: document.querySelector('#catalog-description'),
   search: document.querySelector('#search'),
   summary: document.querySelector('#result-summary'),
   results: document.querySelector('#results'),
@@ -43,6 +56,7 @@ const elements = {
   workflowTitle: document.querySelector('#workflow-title'),
   requestId: document.querySelector('#request-id'),
   workflowMeta: document.querySelector('#workflow-meta'),
+  workflowAdd: document.querySelector('#workflow-add'),
   workflowItems: document.querySelector('#workflow-items'),
   workflowSubmit: document.querySelector('#workflow-submit')
 };
@@ -118,7 +132,9 @@ function itemImageUrls(item) {
 }
 
 function quantityFor(item) {
-  return state.cart.get(item.sku)?.quantity ?? 0;
+  return state.mode === 'order'
+    ? state.orderDraft.get(item.sku)?.orderedQuantity ?? 0
+    : state.cart.get(item.sku)?.quantity ?? 0;
 }
 
 function showVariantNotice(message) {
@@ -128,12 +144,31 @@ function showVariantNotice(message) {
 
 function updateQuantity(item, nextQuantity) {
   const quantity = Math.max(0, Math.min(MAX_QUANTITY, Math.trunc(Number(nextQuantity) || 0)));
-  if (quantity > 0 && !state.cart.has(item.sku) && state.cart.size >= MAX_CART_ITEMS) {
+  const selected = state.mode === 'order' ? state.orderDraft : state.cart;
+  if (quantity > 0 && !selected.has(item.sku) && selected.size >= MAX_CART_ITEMS) {
     showVariantNotice(`單次最多選擇 ${MAX_CART_ITEMS} 個規格，請先送出這一批。`);
     return;
   }
 
   elements.variantNotice.hidden = true;
+  if (state.mode === 'order') {
+    const existing = state.orderDraft.get(item.sku);
+    if (quantity === 0 && !state.orderOriginalSkus.has(item.sku)) {
+      state.orderDraft.delete(item.sku);
+    } else {
+      state.orderDraft.set(item.sku, {
+        item,
+        orderedQuantity: quantity,
+        expectedDate: existing?.expectedDate ?? '',
+        purchaseAdded: existing?.purchaseAdded ?? !state.orderOriginalSkus.has(item.sku)
+      });
+    }
+    renderWorkflowOrderItems();
+    renderResults();
+    if (!elements.variantDialog.hidden) renderVariantDialog();
+    return;
+  }
+
   if (quantity === 0) state.cart.delete(item.sku);
   else state.cart.set(item.sku, { item, quantity });
   renderCart();
@@ -189,7 +224,7 @@ function productCard(group) {
   info.className = 'product-info';
   const title = document.createElement('h3');
   title.textContent = group.title;
-  const selectedCount = group.items.filter((item) => state.cart.has(item.sku)).length;
+  const selectedCount = group.items.filter((item) => quantityFor(item) > 0).length;
   const meta = document.createElement('p');
   meta.className = 'card-meta';
   meta.textContent = selectedCount > 0 ? `已選 ${selectedCount} 個規格` : '點擊選擇規格';
@@ -255,8 +290,8 @@ function renderVariantDialog() {
     ? `共 ${group.items.length} 個規格`
     : `目前搜尋符合 ${variants.length} / ${group.items.length} 個規格`;
   elements.variantItems.replaceChildren(...variants.map(variantRow));
-  const selected = group.items.filter((item) => state.cart.has(item.sku));
-  const totals = cartTotals(selected.map((item) => state.cart.get(item.sku)));
+  const selected = group.items.filter((item) => quantityFor(item) > 0);
+  const totals = cartTotals(selected.map((item) => ({ quantity: quantityFor(item) })));
   elements.variantSelection.textContent = totals.variants > 0
     ? `本商品已選 ${totals.variants} 個規格，共 ${totals.quantity} 件`
     : '尚未選擇規格';
@@ -350,10 +385,35 @@ async function submit() {
   }
 }
 
+function setCatalogItems(items, excludedSkus = new Set()) {
+  state.items = selectableCatalogItems(items, excludedSkus);
+  state.groups = groupCatalog(state.items);
+  state.groupsBySku.clear();
+  for (const group of state.groups) {
+    for (const item of group.items) state.groupsBySku.set(item.sku, group);
+  }
+}
+
+function renderWorkflowOrderItems() {
+  const drafts = [...state.orderDraft.values()];
+  const addedCount = drafts.filter((draft) => draft.purchaseAdded).length;
+  elements.workflowItems.replaceChildren(...drafts.map((draft) => workflowItem(draft.item, 'order')));
+  elements.workflowMeta.textContent = `申請人 ${state.workflowRequest.applicant}｜原申請 ${state.orderOriginalSkus.size} 項｜採購追加 ${addedCount} 項`;
+}
+
 function workflowItem(item, mode) {
+  const draft = mode === 'order' ? state.orderDraft.get(item.sku) : null;
+  const purchaseAdded = Boolean(draft?.purchaseAdded);
   const row = document.createElement('article');
-  row.className = 'workflow-row';
+  row.className = `workflow-row${purchaseAdded ? ' purchase-added' : ''}`;
   row.dataset.sku = item.sku;
+
+  if (purchaseAdded) {
+    const badge = document.createElement('span');
+    badge.className = 'workflow-addition-badge';
+    badge.textContent = '採購追加';
+    row.append(badge);
+  }
 
   const heading = document.createElement('div');
   const title = document.createElement('h3');
@@ -361,7 +421,9 @@ function workflowItem(item, mode) {
   const meta = document.createElement('p');
   meta.className = 'muted';
   meta.textContent = mode === 'order'
-    ? `申請 ${item.requestedQuantity} ${item.unit}｜${item.sku}`
+    ? purchaseAdded
+      ? `原申請未包含｜${item.sku}`
+      : `申請 ${item.requestedQuantity} ${item.unit}｜${item.sku}`
     : `已到 ${item.receivedQuantity}/${item.orderedQuantity} ${item.unit}｜尚缺 ${item.outstandingQuantity}`;
   heading.append(title, meta);
   row.append(heading);
@@ -373,10 +435,16 @@ function workflowItem(item, mode) {
   const quantity = document.createElement('input');
   quantity.type = 'number';
   quantity.className = 'workflow-quantity';
-  quantity.min = mode === 'order' ? '0' : '1';
+  quantity.min = mode === 'order' && !purchaseAdded ? '0' : '1';
   quantity.max = mode === 'order' ? String(MAX_QUANTITY) : String(item.outstandingQuantity);
   quantity.step = '1';
-  quantity.value = String(mode === 'order' ? item.requestedQuantity : item.outstandingQuantity);
+  quantity.value = String(mode === 'order' ? draft.orderedQuantity : item.outstandingQuantity);
+  if (mode === 'order') {
+    quantity.addEventListener('input', () => {
+      const current = state.orderDraft.get(item.sku);
+      if (current) current.orderedQuantity = Number(quantity.value);
+    });
+  }
   quantityLabel.append(quantity);
   fields.append(quantityLabel);
 
@@ -387,11 +455,28 @@ function workflowItem(item, mode) {
     date.type = 'date';
     date.className = 'workflow-date';
     date.min = new Date().toISOString().slice(0, 10);
-    date.value = /^\d{4}-\d{2}-\d{2}$/.test(item.expectedDate) ? item.expectedDate : '';
+    date.value = /^\d{4}-\d{2}-\d{2}$/.test(draft.expectedDate) ? draft.expectedDate : '';
+    date.addEventListener('input', () => {
+      const current = state.orderDraft.get(item.sku);
+      if (current) current.expectedDate = date.value;
+    });
     dateLabel.append(date);
     fields.append(dateLabel);
   }
   row.append(fields);
+
+  if (purchaseAdded) {
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'text-button danger workflow-remove';
+    remove.textContent = '移除追加品項';
+    remove.addEventListener('click', () => {
+      state.orderDraft.delete(item.sku);
+      renderWorkflowOrderItems();
+      renderResults();
+    });
+    row.append(remove);
+  }
   return row;
 }
 
@@ -402,13 +487,40 @@ async function loadWorkflow(mode, requestId) {
     throw new Error(mode === 'order' ? '你沒有確認下單的權限' : '你沒有確認到貨的權限');
   }
 
+  state.mode = mode;
+  state.workflowRequest = request;
   const items = mode === 'order'
     ? request.items.filter((item) => item.status === '待確認')
     : request.items.filter((item) => ['已下單', '部分到貨'].includes(item.status) && item.outstandingQuantity > 0);
   elements.workflowTitle.textContent = mode === 'order' ? '確認下單' : '登記到貨';
   elements.requestId.textContent = request.requestId;
-  elements.workflowMeta.textContent = `申請人 ${request.applicant}｜共 ${request.items.length} 項`;
-  elements.workflowItems.replaceChildren(...items.map((item) => workflowItem(item, mode)));
+
+  if (mode === 'order' && items.length > 0) {
+    state.orderDraft.clear();
+    state.orderOriginalSkus = new Set(request.items.map((item) => item.sku));
+    for (const item of items) {
+      state.orderDraft.set(item.sku, {
+        item,
+        orderedQuantity: item.requestedQuantity,
+        expectedDate: item.expectedDate,
+        purchaseAdded: false
+      });
+    }
+    const catalog = await api('/api/skus');
+    setCatalogItems(catalog.items, state.orderOriginalSkus);
+    elements.catalogTitle.textContent = '追加商品／規格';
+    elements.catalogDescription.textContent = '可搜尋全部可補貨商品，選擇後會加入本張採購單';
+    elements.search.value = '';
+    elements.catalog.hidden = true;
+    elements.workflowAdd.hidden = false;
+    elements.workflowAdd.after(elements.catalog);
+    renderWorkflowOrderItems();
+    renderResults();
+  } else {
+    elements.workflowAdd.hidden = true;
+    elements.workflowMeta.textContent = `申請人 ${request.applicant}｜共 ${request.items.length} 項`;
+    elements.workflowItems.replaceChildren(...items.map((item) => workflowItem(item, mode)));
+  }
   elements.workflowSubmit.textContent = mode === 'order' ? '確認下單' : '確認本次到貨';
   elements.workflowSubmit.dataset.mode = mode;
   elements.workflowSubmit.dataset.requestId = request.requestId;
@@ -440,6 +552,8 @@ async function submitWorkflow() {
     });
     state.idempotencyKey = crypto.randomUUID().replaceAll('-', '');
     elements.workflowSubmit.hidden = true;
+    elements.workflowAdd.hidden = true;
+    elements.catalog.hidden = true;
     showStatus(
       mode === 'order' ? `已確認下單 ${result.requestId}` : `已登記到貨 ${result.requestId}`,
       'success'
@@ -479,11 +593,10 @@ async function initialize() {
       await loadWorkflow(mode, requestId);
     } else {
       const body = await api('/api/skus');
-      state.items = body.items;
-      state.groups = groupCatalog(state.items);
-      for (const group of state.groups) {
-        for (const item of group.items) state.groupsBySku.set(item.sku, group);
-      }
+      state.mode = 'request';
+      setCatalogItems(body.items);
+      elements.catalogTitle.textContent = '選擇商品';
+      elements.catalogDescription.textContent = '點商品卡片，再選規格與數量';
       elements.catalog.hidden = false;
       renderResults();
     }
@@ -498,6 +611,14 @@ elements.search.addEventListener('input', () => {
   if (!elements.variantDialog.hidden) renderVariantDialog();
 });
 elements.submit.addEventListener('click', submit);
+elements.workflowAdd.addEventListener('click', () => {
+  elements.catalog.hidden = !elements.catalog.hidden;
+  elements.workflowAdd.textContent = elements.catalog.hidden ? '＋ 追加商品／規格' : '收起商品選擇';
+  if (!elements.catalog.hidden) {
+    renderResults();
+    elements.catalog.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+});
 elements.cartDockButton.addEventListener('click', () => {
   closeVariantDialog();
   elements.cartSection.scrollIntoView({ behavior: 'smooth', block: 'start' });

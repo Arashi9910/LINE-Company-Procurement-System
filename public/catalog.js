@@ -80,6 +80,11 @@ export function visibleVariants(group, query) {
   return group.items.filter((item) => searchableItemText(item).includes(needle));
 }
 
+export function selectableCatalogItems(items, excludedSkus) {
+  const excluded = excludedSkus instanceof Set ? excludedSkus : new Set(excludedSkus ?? []);
+  return items.filter((item) => !excluded.has(item.sku));
+}
+
 export function cartTotals(entries) {
   const values = [...entries];
   return {
