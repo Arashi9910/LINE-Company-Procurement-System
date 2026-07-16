@@ -7,7 +7,8 @@ import { createGoogleSheetsClient, SheetsRepository } from './sheets/repository.
 const config = loadConfig();
 const repository = new SheetsRepository({
   sheets: createGoogleSheetsClient(),
-  spreadsheetId: config.spreadsheetId
+  spreadsheetId: config.spreadsheetId,
+  flyingmouseWritebackEnabled: config.flyingmouseWritebackEnabled
 });
 const identityVerifier = createLineIdentityVerifier({ channelId: config.lineLoginChannelId });
 const messenger = createLineMessenger({

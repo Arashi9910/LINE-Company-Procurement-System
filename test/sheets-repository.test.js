@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SheetsRepository } from '../src/sheets/repository.js';
+import { WRITEBACK_HEADERS } from '../src/flyingmouse/sheets-writeback.js';
 
 function fakeSheets({
   ids = [['RQ-1'], ['RQ-2'], ['RQ-3'], ['RQ-4']],
@@ -63,6 +64,29 @@ test('SheetsRepository health check reads only the settings header', async () =>
     range: "'系統設定'!A1:B1",
     valueRenderOption: 'UNFORMATTED_VALUE'
   }]);
+});
+
+test('SheetsRepository readiness validates the writeback sheet when the feature is enabled', async () => {
+  const ranges = [];
+  const repository = new SheetsRepository({
+    sheets: {
+      spreadsheets: {
+        values: {
+          async get(request) {
+            ranges.push(request.range);
+            return request.range.includes('飛鼠庫存回寫')
+              ? { data: { values: [WRITEBACK_HEADERS] } }
+              : { data: { values: [['Key', 'Value']] } };
+          }
+        }
+      }
+    },
+    spreadsheetId: 'sheet-123',
+    flyingmouseWritebackEnabled: true
+  });
+
+  assert.equal(await repository.checkHealth(), true);
+  assert.deepEqual(ranges, ["'系統設定'!A1:B1", "'飛鼠庫存回寫'!A1:O1"]);
 });
 
 test('SheetsRepository parses product image mappings and tolerates a missing sheet', async () => {
@@ -260,12 +284,13 @@ test('SheetsRepository lists tracking rows only through the last request row', a
   assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A2:N3"]);
 });
 
-function workflowSheets(trackingRow, onWrite) {
+function workflowSheets(trackingRow, onWrite, { operationRows = [], writebackRows = [] } = {}) {
   return {
     spreadsheets: {
       values: {
         async get({ range }) {
-          if (range.includes('操作紀錄')) return { data: { values: [] } };
+          if (range.includes('操作紀錄')) return { data: { values: operationRows } };
+          if (range.includes('飛鼠庫存回寫')) return { data: { values: writebackRows } };
           if (range.includes('補貨追蹤')) return { data: { values: [trackingRow] } };
           return { data: { values: [] } };
         },
@@ -598,6 +623,76 @@ test('SheetsRepository accumulates partial receipts and prevents over-receipt', 
     items: [{ sku: 'SKU-A', receivedQuantity: 4 }],
     idempotencyKey: 'receipt-key-5678'
   }), /不可超過下單量/);
+});
+
+test('SheetsRepository atomically enqueues one FlyingMouse event per received SKU when enabled', async () => {
+  const row = [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '已下單', 5, '2026/07/20', 2,
+    3, '', '', 'SKU-A', 'U1', 'C1', 'BUYER', '', 'create-key'
+  ];
+  let write;
+  const repository = new SheetsRepository({
+    sheets: workflowSheets(row, (request) => { write = request; }, {
+      writebackRows: [WRITEBACK_HEADERS]
+    }),
+    spreadsheetId: 'sheet-123',
+    flyingmouseWritebackEnabled: true,
+    now: () => new Date('2026-07-14T03:00:00.000Z')
+  });
+
+  await repository.confirmReceipt({
+    actor: { userId: 'RECEIVER' },
+    requestId: 'RQ-1',
+    items: [{ sku: 'SKU-A', receivedQuantity: 2 }],
+    idempotencyKey: 'receipt-key-1234'
+  });
+
+  const ranges = write.requestBody.data.map((entry) => entry.range);
+  assert.deepEqual(ranges, [
+    "'補貨追蹤'!G2",
+    "'補貨追蹤'!J2",
+    "'補貨追蹤'!Q2:R2",
+    "'操作紀錄'!A2:F2",
+    "'飛鼠庫存回寫'!A2:O2"
+  ]);
+  assert.deepEqual(write.requestBody.data[4].values[0], [
+    'receipt-key-1234:SKU-A',
+    '2026-07-14 11:00:00',
+    'RQ-1',
+    'SKU-A',
+    2,
+    '待處理',
+    0,
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    'RECEIVER',
+    ''
+  ]);
+});
+
+test('SheetsRepository stops the entire receipt when the writeback sheet is invalid', async () => {
+  const row = [
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '已下單', 5, '2026/07/20', 2,
+    3, '', '', 'SKU-A', 'U1', 'C1', 'BUYER', '', 'create-key'
+  ];
+  let writes = 0;
+  const repository = new SheetsRepository({
+    sheets: workflowSheets(row, () => { writes += 1; }, { writebackRows: [['錯誤表頭']] }),
+    spreadsheetId: 'sheet-123',
+    flyingmouseWritebackEnabled: true
+  });
+
+  await assert.rejects(repository.confirmReceipt({
+    actor: { userId: 'RECEIVER' },
+    requestId: 'RQ-1',
+    items: [{ sku: 'SKU-A', receivedQuantity: 1 }],
+    idempotencyKey: 'receipt-key-invalid'
+  }), /表頭不符/);
+  assert.equal(writes, 0);
 });
 
 test('SheetsRepository finds pending and overdue reminders at Taipei time boundaries', async () => {

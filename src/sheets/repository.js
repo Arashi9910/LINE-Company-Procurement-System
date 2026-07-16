@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { google } from 'googleapis';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
+import {
+  WRITEBACK_ROW_COUNT,
+  WRITEBACK_SHEET_NAME,
+  buildWritebackEvent,
+  exactWritebackHeaders,
+  parseWritebackRows,
+  writebackEventRow
+} from '../flyingmouse/sheets-writeback.js';
 
 const TRACKING_SHEET = '補貨追蹤';
 const SKU_SHEET = 'SKU主檔';
@@ -64,11 +72,18 @@ export function createGoogleSheetsClient() {
 }
 
 export class SheetsRepository {
-  constructor({ sheets, spreadsheetId, now = () => new Date(), uuid = randomUUID }) {
+  constructor({
+    sheets,
+    spreadsheetId,
+    now = () => new Date(),
+    uuid = randomUUID,
+    flyingmouseWritebackEnabled = false
+  }) {
     this.sheets = sheets;
     this.spreadsheetId = spreadsheetId;
     this.now = now;
     this.uuid = uuid;
+    this.flyingmouseWritebackEnabled = flyingmouseWritebackEnabled === true;
     this.writeChain = Promise.resolve();
   }
 
@@ -78,6 +93,14 @@ export class SheetsRepository {
       range: `'${SETTINGS_SHEET}'!A1:B1`,
       valueRenderOption: 'UNFORMATTED_VALUE'
     });
+    if (this.flyingmouseWritebackEnabled) {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `'${WRITEBACK_SHEET_NAME}'!A1:O1`,
+        valueRenderOption: 'UNFORMATTED_VALUE'
+      });
+      exactWritebackHeaders(response.data.values?.[0] ?? []);
+    }
     return true;
   }
 
@@ -611,7 +634,8 @@ export class SheetsRepository {
 
     const request = await this.getRequest(input.requestId);
     const requestMap = new Map(request.items.map((item) => [item.sku, item]));
-    const serial = sheetSerial(this.now());
+    const receivedAt = this.now();
+    const serial = sheetSerial(receivedAt);
     const updated = [];
     const data = [];
     for (const receipt of input.items) {
@@ -648,6 +672,9 @@ export class SheetsRepository {
         `本次 ${updated.length} 項`
       ]]
     });
+    if (this.flyingmouseWritebackEnabled) {
+      data.push(...await this.#buildWritebackData({ input, receivedAt }));
+    }
     await this.sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: this.spreadsheetId,
       requestBody: { valueInputOption: 'RAW', data }
@@ -659,6 +686,45 @@ export class SheetsRepository {
       items: request.items.map((item) => updatedMap.get(item.sku) ?? item),
       idempotentReplay: false
     };
+  }
+
+  async #buildWritebackData({ input, receivedAt }) {
+    const response = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${WRITEBACK_SHEET_NAME}'!A1:O${WRITEBACK_ROW_COUNT}`,
+      valueRenderOption: 'UNFORMATTED_VALUE'
+    });
+    const events = parseWritebackRows(response.data.values ?? []);
+    const existingIds = new Set(events.map((event) => event.eventId));
+    const occupiedRows = new Set(events.map((event) => event.rowNumber));
+    const additions = input.items.map((receipt) => buildWritebackEvent({
+      idempotencyKey: input.idempotencyKey,
+      requestId: input.requestId,
+      sku: receipt.sku,
+      receivedQuantity: receipt.receivedQuantity,
+      actorUserId: input.actor.userId,
+      createdAt: receivedAt
+    }));
+    for (const event of additions) {
+      if (existingIds.has(event.eventId)) {
+        throw new ConflictError(`飛鼠庫存回寫事件已存在：${event.eventId}`);
+      }
+    }
+    const takeEmptyRow = () => {
+      for (let rowNumber = 2; rowNumber <= WRITEBACK_ROW_COUNT; rowNumber += 1) {
+        if (occupiedRows.has(rowNumber)) continue;
+        occupiedRows.add(rowNumber);
+        return rowNumber;
+      }
+      throw new ConflictError(`${WRITEBACK_SHEET_NAME} 已滿，請先封存舊事件`);
+    };
+    return additions.map((event) => {
+      const rowNumber = takeEmptyRow();
+      return {
+        range: `'${WRITEBACK_SHEET_NAME}'!A${rowNumber}:O${rowNumber}`,
+        values: [writebackEventRow(event)]
+      };
+    });
   }
 
   async #findOperation(key) {

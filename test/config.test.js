@@ -12,6 +12,7 @@ test('loadConfig accepts a minimal test configuration', () => {
   assert.equal(config.port, 9090);
   assert.equal(config.spreadsheetId, 'sheet-123');
   assert.equal(config.lineChannelSecret, '');
+  assert.equal(config.flyingmouseWritebackEnabled, false);
 });
 
 test('loadConfig rejects missing production secrets', () => {
@@ -74,5 +75,23 @@ test('loadConfig rejects an invalid port', () => {
   assert.throws(
     () => loadConfig({ NODE_ENV: 'test', SPREADSHEET_ID: 'sheet-123', PORT: '99999' }),
     /PORT/
+  );
+});
+
+test('loadConfig parses and validates the FlyingMouse writeback feature flag', () => {
+  const enabled = loadConfig({
+    NODE_ENV: 'test',
+    SPREADSHEET_ID: 'sheet-123',
+    FLYINGMOUSE_WRITEBACK_ENABLED: 'true'
+  });
+  assert.equal(enabled.flyingmouseWritebackEnabled, true);
+
+  assert.throws(
+    () => loadConfig({
+      NODE_ENV: 'test',
+      SPREADSHEET_ID: 'sheet-123',
+      FLYINGMOUSE_WRITEBACK_ENABLED: 'yes'
+    }),
+    /FLYINGMOUSE_WRITEBACK_ENABLED/
   );
 });

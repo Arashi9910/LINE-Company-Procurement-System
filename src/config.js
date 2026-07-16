@@ -7,6 +7,13 @@ const REQUIRED_SECRETS = [
   'JOB_TOKEN'
 ];
 
+function booleanFlag(value, key, defaultValue = false) {
+  if (value == null || value === '') return defaultValue;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`${key} 必須是 true 或 false`);
+}
+
 export function loadConfig(env = process.env, options = {}) {
   const allowMissingSecrets = options.allowMissingSecrets ?? env.NODE_ENV === 'test';
   const missing = [];
@@ -40,6 +47,10 @@ export function loadConfig(env = process.env, options = {}) {
     liffId: env.LIFF_ID ?? '',
     linkSigningSecret: env.LINK_SIGNING_SECRET ?? env.LINE_CHANNEL_SECRET ?? '',
     jobToken: env.JOB_TOKEN ?? '',
-    googleCloudProject: env.GOOGLE_CLOUD_PROJECT ?? ''
+    googleCloudProject: env.GOOGLE_CLOUD_PROJECT ?? '',
+    flyingmouseWritebackEnabled: booleanFlag(
+      env.FLYINGMOUSE_WRITEBACK_ENABLED,
+      'FLYINGMOUSE_WRITEBACK_ENABLED'
+    )
   });
 }
