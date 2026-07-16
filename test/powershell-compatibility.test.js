@@ -110,3 +110,13 @@ test('deployment configures Cloud Run probes and verifies the ready revision', a
   assert.match(source, /Invoke-RestMethod[^\n]+\/ready/);
   assert.match(source, /ready\.commit -eq \$gitCommit/);
 });
+
+test('LINE deployment requires an explicit switch to enable FlyingMouse writeback enqueueing', async () => {
+  const source = await readFile('scripts/deploy-gcp.ps1', 'utf8');
+  assert.match(source, /\[switch\]\$EnableFlyingmouseWriteback/);
+  assert.match(
+    source,
+    /\$flyingmouseWritebackEnabled = if \(\$EnableFlyingmouseWriteback\) \{ 'true' \} else \{ 'false' \}/
+  );
+  assert.match(source, /FLYINGMOUSE_WRITEBACK_ENABLED=\$flyingmouseWritebackEnabled/);
+});

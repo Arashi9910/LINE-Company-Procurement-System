@@ -12,7 +12,8 @@ param(
   [string]$Region = 'asia-east1',
   [string]$ServiceName = 'line-replenishment',
   [string]$BillingAccountId = '',
-  [string]$BudgetAmount = '300TWD'
+  [string]$BudgetAmount = '300TWD',
+  [switch]$EnableFlyingmouseWriteback
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,6 +51,7 @@ if ($packageVersion -notmatch '^\d+\.\d+\.\d+') {
 }
 $appVersion = "$packageVersion+$gitShort"
 $deployedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+$flyingmouseWritebackEnabled = if ($EnableFlyingmouseWriteback) { 'true' } else { 'false' }
 
 function Resolve-GcloudCommand {
   $command = Get-Command 'gcloud.cmd' -ErrorAction SilentlyContinue
@@ -179,7 +181,7 @@ foreach ($secret in $secretNames) {
   '--service-account', $serviceAccountEmail,
   '--max-instances', '1',
   '--concurrency', '20',
-  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId,APP_VERSION=$appVersion,GIT_COMMIT=$gitCommit,DEPLOYED_AT=$deployedAt",
+  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId,APP_VERSION=$appVersion,GIT_COMMIT=$gitCommit,DEPLOYED_AT=$deployedAt,FLYINGMOUSE_WRITEBACK_ENABLED=$flyingmouseWritebackEnabled",
   '--update-labels', "git-commit=$gitCommit",
   '--startup-probe', 'httpGet.path=/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=10,failureThreshold=12',
   '--liveness-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=30,failureThreshold=3',
@@ -288,4 +290,5 @@ Write-Host "Cloud Run URL: $serviceUrl"
 Write-Host "Application version: $appVersion"
 Write-Host "Git commit: $gitCommit"
 Write-Host "Ready revision: $readyRevision"
+Write-Host "FlyingMouse writeback enqueueing: $flyingmouseWritebackEnabled"
 Write-Host 'Budget alerts do not cap spending or stop the service.'

@@ -36,6 +36,18 @@
      -LiffId '<LIFF_ID>'
    ```
 
+   部署腳本預設 `FLYINGMOUSE_WRITEBACK_ENABLED=false`。只有在庫存回寫 queue 與 dry-run Job 已完成驗收後，才可明確加入下列開關，讓確認到貨同步建立回寫事件：
+
+   ```powershell
+   .\scripts\deploy-gcp.ps1 `
+     -ProjectId '<PROJECT_ID>' `
+     -LineLoginChannelId '<LINE_LOGIN_CHANNEL_ID>' `
+     -LiffId '<LIFF_ID>' `
+     -EnableFlyingmouseWriteback
+   ```
+
+   此開關只控制 LINE 服務是否入列；飛鼠是否允許 PUT 仍由獨立 writeback Job 的 `dry-run`／`live` 模式控制。
+
 6. 記錄腳本輸出的 Application version、Git commit、Ready revision 與 Cloud Run URL。部署腳本會確認 `/ready` 回傳同一個 commit，否則部署視為失敗。
 7. 將腳本輸出的 Cloud Run 服務帳號 Email 以「編輯者」分享至補貨 Google Sheet。服務帳號不需要取得整個 Drive 的存取權。
 8. 將 Cloud Run URL 設為 LIFF Endpoint URL；LINE Webhook URL 設為 `<CLOUD_RUN_URL>/webhook`，再執行 Verify。
