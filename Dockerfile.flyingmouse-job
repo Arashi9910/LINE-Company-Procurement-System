@@ -1,0 +1,16 @@
+FROM mcr.microsoft.com/playwright:v1.61.0-noble
+
+ENV NODE_ENV=production
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+WORKDIR /app
+
+COPY jobs/flyingmouse/package.json jobs/flyingmouse/package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY src/flyingmouse ./src/flyingmouse
+COPY scripts/flyingmouse-sync.mjs ./scripts/flyingmouse-sync.mjs
+
+USER pwuser
+
+CMD ["node", "scripts/flyingmouse-sync.mjs", "--download-dir", "/tmp/flyingmouse/downloads", "--output-dir", "/tmp/flyingmouse/previews"]

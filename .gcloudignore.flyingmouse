@@ -1,0 +1,14 @@
+# Allow-list only the files required by the FlyingMouse job image.
+*
+!.gcloudignore.flyingmouse
+!Dockerfile.flyingmouse-job
+!cloudbuild.flyingmouse.yaml
+!jobs/
+!jobs/flyingmouse/
+!jobs/flyingmouse/package.json
+!jobs/flyingmouse/package-lock.json
+!src/
+!src/flyingmouse/
+!src/flyingmouse/**
+!scripts/
+!scripts/flyingmouse-sync.mjs

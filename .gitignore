@@ -1,6 +1,7 @@
 node_modules/
 coverage/
 dist/
+debug.log
 .env
 .env.*
 !.env.example
