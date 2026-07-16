@@ -1,3 +1,5 @@
+import { MAIN_HEADERS, MAIN_SHEET_NAME } from './sheets-review.js';
+
 export const WRITEBACK_SHEET_NAME = '飛鼠庫存回寫';
 export const WRITEBACK_HEADERS = Object.freeze([
   '事件ID',
@@ -396,6 +398,21 @@ export function transitionWritebackEvent(input, patch) {
   });
 }
 
+function writebackStateValues(event) {
+  return [
+    event.status,
+    event.attempts,
+    event.nextRetryAt,
+    event.partId,
+    event.beforeStock,
+    event.targetStock,
+    event.completedAt,
+    event.lastError,
+    event.actorUserId,
+    event.processedAt
+  ];
+}
+
 export async function writeWritebackEventState({ sheets, spreadsheetId, event }) {
   if (!sheets || !spreadsheetId) throw new Error('飛鼠庫存回寫狀態設定不完整');
   const normalized = normalizeEvent(event);
@@ -405,19 +422,54 @@ export async function writeWritebackEventState({ sheets, spreadsheetId, event })
     range: `'${WRITEBACK_SHEET_NAME}'!F${normalized.rowNumber}:O${normalized.rowNumber}`,
     valueInputOption: 'RAW',
     requestBody: {
-      values: [[
-        normalized.status,
-        normalized.attempts,
-        normalized.nextRetryAt,
-        normalized.partId,
-        normalized.beforeStock,
-        normalized.targetStock,
-        normalized.completedAt,
-        normalized.lastError,
-        normalized.actorUserId,
-        normalized.processedAt
-      ]]
+      values: [writebackStateValues(normalized)]
     }
   });
   return normalized;
+}
+
+export async function completeWritebackEvent({ sheets, spreadsheetId, event, completedAt }) {
+  if (!sheets || !spreadsheetId) throw new Error('飛鼠庫存回寫完成設定不完整');
+  const completed = transitionWritebackEvent(event, {
+    status: '已完成',
+    completedAt,
+    nextRetryAt: '',
+    lastError: '',
+    processedAt: completedAt
+  });
+  if (!completed.rowNumber || completed.rowNumber < 2) throw new Error('回寫事件缺少有效列號');
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${MAIN_SHEET_NAME}'!A1:E`,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const values = response.data.values ?? [];
+  const headers = Array.from({ length: 5 }, (_, index) => String(values[0]?.[index] ?? ''));
+  if (headers.some((header, index) => header !== MAIN_HEADERS[index])) {
+    throw new Error(`${MAIN_SHEET_NAME} 表頭不符，停止完成回寫`);
+  }
+  const matches = [];
+  for (let index = 1; index < values.length; index += 1) {
+    if (normalizeText(values[index]?.[0]) === completed.sku) matches.push(index + 1);
+  }
+  if (matches.length !== 1) {
+    throw new Error(`${MAIN_SHEET_NAME} 必須且只能有一筆 SKU ${completed.sku}`);
+  }
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      valueInputOption: 'RAW',
+      data: [
+        {
+          range: `'${WRITEBACK_SHEET_NAME}'!F${completed.rowNumber}:O${completed.rowNumber}`,
+          values: [writebackStateValues(completed)]
+        },
+        {
+          range: `'${MAIN_SHEET_NAME}'!E${matches[0]}`,
+          values: [[completed.targetStock]]
+        }
+      ]
+    }
+  });
+  return completed;
 }
