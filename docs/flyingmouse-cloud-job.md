@@ -116,9 +116,22 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - Review image digest：`sha256:6a2e9108b48e1b4d43601553a2a6a25125e582250cab84882b1d46a981352cb5`
 - Review execution：`flyingmouse-catalog-sync-nkgdv`
 - Review execution 結果：24.63 秒完成，912 對 912，零差異、零核准、零匯入
-- 審核分頁：`飛鼠目錄待確認`（sheetId `592816291`），建立成功且目前只有表頭
+- 審核分頁：`飛鼠目錄待確認`（sheetId `592816291`），首次驗收時建立成功且只有表頭
 
-## 到貨庫存回寫 Job（尚未部署）
+## 03:00 自動同步結果（2026-07-17）
+
+- Scheduler：`flyingmouse-catalog-sync-daily`，狀態 `ENABLED`
+- 實際啟動：2026-07-17 03:00:05（Asia/Taipei）
+- Execution：`flyingmouse-catalog-sync-wms8j`
+- 結果：30.76 秒完成，`succeededCount: 1`
+- 飛鼠來源：933 筆；`SKU主檔`：932 筆；成功配對 932 筆
+- 新品：1 筆，已新增至 `飛鼠目錄待確認`，尚未核准或匯入
+- 描述變更／來源缺漏／衝突：皆為 0
+- 庫存快照：更新 29 筆、未變 903 筆、配對率 100%
+- 圖片：新增 1 筆、更新 3 筆、未變 929 筆；未覆蓋人工保護資料
+- 下一次排程：2026-07-18 03:00（Asia/Taipei）
+
+## 到貨庫存回寫 Job（dry-run）
 
 庫存回寫使用獨立的 `flyingmouse-inventory-writeback` Cloud Run Job，與每日 03:00 的目錄同步分開。它會讀取 `飛鼠庫存回寫` 分頁，依序處理到貨事件；LINE 服務的 `FLYINGMOUSE_WRITEBACK_ENABLED` 預設為 `false`，在分頁與 worker 驗收完成前不得開啟。
 
@@ -168,3 +181,5 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - 飛鼠庫存 PUT：0 次
 
 目前 dry-run 部署、空 queue 驗收與 LINE 入列功能均已完成，`/health`、`/ready` 皆正常。下一階段是以一筆新到貨事件手動執行 dry-run，驗證飛鼠 GET 與目標庫存計算；切換 live 前仍需再次取得使用者同意。
+
+2026-07-17 已完成「寫入前先刷新本次到貨 SKU」程式：新 live 事件會先把 queue `已準備` 與飛鼠即時 `beforeStock` 原子寫入 `SKU主檔`，再次 GET 未變動才允許 PUT。154 項測試、lint 與 build 已通過；此版本尚未重新部署至 writeback Job，正式 PUT 仍為 0 次。
