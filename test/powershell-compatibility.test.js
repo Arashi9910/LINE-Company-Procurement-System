@@ -87,7 +87,7 @@ test('Scheduler updates use the update-only header flag', async () => {
     source,
     /\$jobHeaderFlag = if \(\$jobCommand -eq 'update'\) \{ '--update-headers' \} else \{ '--headers' \}/
   );
-  assert.match(source, /\$jobHeaderFlag, "Authorization=Bearer \$jobToken/);
+  assert.match(source, /\$jobHeaderFlag, "X-Job-Token=\$jobToken/);
 });
 
 test('deployment schedules approved catalog snapshots every minute', async () => {
@@ -100,7 +100,7 @@ test('deployment schedules approved catalog snapshots every minute', async () =>
     source,
     /\$approvedImportHeaderFlag = if \(\$approvedImportCommand -eq 'update'\) \{ '--update-headers' \} else \{ '--headers' \}/
   );
-  assert.match(source, /\$approvedImportHeaderFlag, "Authorization=Bearer \$jobToken/);
+  assert.match(source, /\$approvedImportHeaderFlag, "X-Job-Token=\$jobToken/);
 });
 
 test('deployment binds a clean Git commit to Cloud Run metadata', async () => {

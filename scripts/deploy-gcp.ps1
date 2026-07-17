@@ -256,7 +256,7 @@ $jobHeaderFlag = if ($jobCommand -eq 'update') { '--update-headers' } else { '--
   '--time-zone', 'Asia/Taipei',
   '--uri', "$serviceUrl/jobs/reminders",
   '--http-method', 'POST',
-  $jobHeaderFlag, "Authorization=Bearer $jobToken,Content-Type=application/json",
+  $jobHeaderFlag, "X-Job-Token=$jobToken,Content-Type=application/json",
   '--message-body', '{}',
   '--quiet'
 )).Output | Out-Null
@@ -278,7 +278,7 @@ $approvedImportHeaderFlag = if ($approvedImportCommand -eq 'update') { '--update
   '--time-zone', 'Asia/Taipei',
   '--uri', "$serviceUrl/jobs/flyingmouse-approved-imports",
   '--http-method', 'POST',
-  $approvedImportHeaderFlag, "Authorization=Bearer $jobToken,Content-Type=application/json",
+  $approvedImportHeaderFlag, "X-Job-Token=$jobToken,Content-Type=application/json",
   '--message-body', '{}',
   '--quiet'
 )).Output | Out-Null

@@ -5,8 +5,9 @@ import { runReminders } from '../services/reminders.js';
 
 function validJobToken(request, expected) {
   const match = (request.get('authorization') ?? '').match(/^Bearer\s+(.+)$/i);
-  if (!match || !expected) return false;
-  const actual = Buffer.from(match[1]);
+  const provided = request.get('x-job-token') ?? match?.[1];
+  if (!provided || !expected) return false;
+  const actual = Buffer.from(provided);
   const wanted = Buffer.from(expected);
   return actual.length === wanted.length && timingSafeEqual(actual, wanted);
 }

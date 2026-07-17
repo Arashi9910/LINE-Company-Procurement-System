@@ -167,7 +167,7 @@ test('approved catalog import job is token-protected and returns its import summ
 
   const accepted = await fetch(`${baseUrl}/jobs/flyingmouse-approved-imports`, {
     method: 'POST',
-    headers: { authorization: 'Bearer test-job-token' }
+    headers: { 'x-job-token': 'test-job-token' }
   });
   const body = await accepted.json();
 
