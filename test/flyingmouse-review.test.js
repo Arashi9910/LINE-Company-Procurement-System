@@ -6,6 +6,7 @@ import {
   buildReviewFindings,
   ensureReviewSheet,
   importApprovedNewItems,
+  importApprovedReviewSnapshots,
   sourceFingerprint,
   syncReviewFindings
 } from '../src/flyingmouse/sheets-review.js';
@@ -260,4 +261,98 @@ test('importApprovedNewItems treats an identical existing SKU as idempotent', as
     `'${REVIEW_SHEET_NAME}'!S2`
   ]);
   assert.deepEqual(write.requestBody.data[0].values, [['已匯入']]);
+});
+
+function snapshotImportSheets(reviewRows, mainRows = []) {
+  let write = null;
+  const sheets = {
+    spreadsheets: {
+      async get() {
+        return {
+          data: {
+            sheets: [
+              { properties: { title: REVIEW_SHEET_NAME, gridProperties: { rowCount: 5000, columnCount: 19 } } },
+              { properties: { title: 'SKU主檔', gridProperties: { rowCount: 1000, columnCount: 14 } } }
+            ]
+          }
+        };
+      },
+      values: {
+        async batchGet() {
+          return {
+            data: {
+              valueRanges: [
+                { values: [[...REVIEW_HEADERS], ...reviewRows] },
+                { values: [[...MAIN_HEADERS], ...mainRows] }
+              ]
+            }
+          };
+        },
+        async batchUpdate(request) {
+          write = request;
+          return { data: {} };
+        }
+      }
+    }
+  };
+  return { sheets, getWrite: () => write };
+}
+
+test('importApprovedReviewSnapshots imports an approved review snapshot without a FlyingMouse export', async () => {
+  const item = source('SKU-FAST', { stock: 9, productName: '快速新品' });
+  const finding = buildReviewFindings(emptyDiff({ newItems: [item] }))[0];
+  const state = snapshotImportSheets([reviewRow(finding, '核准匯入')]);
+
+  const result = await importApprovedReviewSnapshots({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    generatedAt: new Date('2026-07-17T02:03:04Z')
+  });
+
+  assert.deepEqual(result, { approved: 1, imported: 1, idempotent: 0, stale: 0 });
+  const data = state.getWrite().requestBody.data;
+  assert.deepEqual(data[0], {
+    range: "'SKU主檔'!A2:J2",
+    values: [['SKU-FAST', '快速新品', '紅色', '', 9, '00123', 'A-01', '快速新品｜紅色', '一般SKU', '是']]
+  });
+  assert.deepEqual(data[2].values, [['已匯入']]);
+});
+
+test('importApprovedReviewSnapshots performs no writes when nothing is approved', async () => {
+  const item = source('SKU-WAIT');
+  const finding = buildReviewFindings(emptyDiff({ newItems: [item] }))[0];
+  const state = snapshotImportSheets([reviewRow(finding, '待確認')]);
+
+  const result = await importApprovedReviewSnapshots({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    generatedAt: new Date('2026-07-17T02:03:04Z')
+  });
+
+  assert.deepEqual(result, { approved: 0, imported: 0, idempotent: 0, stale: 0 });
+  assert.equal(state.getWrite(), null);
+});
+
+test('importApprovedReviewSnapshots rejects a stale fingerprint or invalid stock', async () => {
+  const staleItem = source('SKU-STALE');
+  const invalidItem = source('SKU-BAD-STOCK');
+  const staleFinding = buildReviewFindings(emptyDiff({ newItems: [staleItem] }))[0];
+  const invalidFinding = buildReviewFindings(emptyDiff({ newItems: [invalidItem] }))[0];
+  const invalidRow = reviewRow(invalidFinding, '核准匯入');
+  invalidRow[8] = 'not-a-number';
+  const state = snapshotImportSheets([
+    reviewRow(staleFinding, '核准匯入', 'stale-fingerprint'),
+    invalidRow
+  ]);
+
+  const result = await importApprovedReviewSnapshots({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    generatedAt: new Date('2026-07-17T02:03:04Z')
+  });
+
+  assert.deepEqual(result, { approved: 2, imported: 0, idempotent: 0, stale: 2 });
+  assert.deepEqual(state.getWrite().requestBody.data.map((entry) => entry.values[0][0]), [
+    '需重新確認', '2026-07-17 10:03:04', '需重新確認', '2026-07-17 10:03:04'
+  ]);
 });

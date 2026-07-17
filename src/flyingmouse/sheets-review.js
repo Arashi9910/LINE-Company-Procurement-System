@@ -419,7 +419,32 @@ function sameCatalogIdentity(mainRow, source) {
     normalizeText(mainRow[6]) === normalizeText(source.location);
 }
 
-export async function importApprovedNewItems({ sheets, spreadsheetId, sourceItems, generatedAt }) {
+function sourceFromApprovedReviewRow(row) {
+  const partNumber = normalizeText(row[4]);
+  const productName = normalizeText(row[5]);
+  const stock = Number(row[8]);
+  if (!partNumber || !productName || row[0] !== `新增:${partNumber}` ||
+    !Number.isSafeInteger(stock) || stock < 0) {
+    return null;
+  }
+  return Object.freeze({
+    partNumber,
+    productName,
+    spec1: normalizeText(row[6]),
+    spec2: normalizeText(row[7]),
+    stock,
+    gtin: normalizeText(row[9]),
+    location: normalizeText(row[10])
+  });
+}
+
+async function importApprovedItems({
+  sheets,
+  spreadsheetId,
+  sourceItems,
+  generatedAt,
+  sourceMode
+}) {
   const properties = await listSheetProperties({ sheets, spreadsheetId });
   const reviewSheet = properties.find((sheet) => sheet.title === REVIEW_SHEET_NAME);
   const mainSheet = properties.find((sheet) => sheet.title === MAIN_SHEET_NAME);
@@ -470,7 +495,9 @@ export async function importApprovedNewItems({ sheets, spreadsheetId, sourceItem
     occupiedRows.add(rowNumber);
   }
 
-  const sourceBySku = new Map(sourceItems.map((item) => [normalizeText(item.partNumber), item]));
+  const sourceBySku = sourceMode === 'current-source'
+    ? new Map(sourceItems.map((item) => [normalizeText(item.partNumber), item]))
+    : null;
   const data = [];
   const timestamp = timestampInTaipei(generatedAt);
   let imported = 0;
@@ -486,7 +513,9 @@ export async function importApprovedNewItems({ sheets, spreadsheetId, sourceItem
 
   for (const approval of approved) {
     const sku = normalizeText(approval.row[4]);
-    const source = sourceBySku.get(sku);
+    const source = sourceMode === 'review-snapshot'
+      ? sourceFromApprovedReviewRow(approval.row)
+      : sourceBySku.get(sku);
     const expectedFingerprint = source ? findingFingerprint('新增', source, null) : '';
     if (!source || approval.row[14] !== expectedFingerprint) {
       data.push(
@@ -539,6 +568,15 @@ export async function importApprovedNewItems({ sheets, spreadsheetId, sourceItem
     });
   }
   return { approved: approved.length, imported, idempotent, stale };
+}
+
+export async function importApprovedNewItems(input) {
+  if (!Array.isArray(input?.sourceItems)) throw new Error('飛鼠最新目錄資料格式不正確');
+  return importApprovedItems({ ...input, sourceMode: 'current-source' });
+}
+
+export async function importApprovedReviewSnapshots(input) {
+  return importApprovedItems({ ...input, sourceItems: [], sourceMode: 'review-snapshot' });
 }
 
 export async function syncReviewAndImport(input) {
