@@ -58,7 +58,8 @@
 
 - Region：`asia-east1`。
 - Cloud Run：最多 1 個執行個體、並行數 20；搭配程式內寫入佇列降低 Sheet 競爭寫入。
-- Scheduler：週一至週五 10:00，時區 `Asia/Taipei`。
+- 提醒 Scheduler：週一至週五 10:00，時區 `Asia/Taipei`。
+- 新品核准 Scheduler：每分鐘呼叫 `/jobs/flyingmouse-approved-imports`；只讀取 `飛鼠目錄待確認` 與 `SKU主檔`，不登入飛鼠、不下載 Excel，也不執行圖片或全量庫存同步。
 - 預算警示：預設每月 `300TWD`，於 50%、90%、100% 通知；預算不會自動停止支出。
 - Secret Manager：Cloud Run 服務帳號僅取得四個指定秘密的 `roles/secretmanager.secretAccessor`。
 - Startup／readiness probe：`/ready`，確認 Sheet 可讀後才接收流量；liveness probe：`/health`，只判斷程序是否仍存活。持續 readiness 每 60 秒唯讀檢查 `系統設定` 表頭。
@@ -79,6 +80,7 @@ npm.cmd run build
 - 採購角色確認下單；到貨角色執行部分到貨與完成。
 - 原申請人輸入 `取消補貨 <補貨單號>` 可取消待確認案件；非原申請人、非管理員或已下單案件會被拒絕。
 - 手動執行 Scheduler job，確認群組只收到一次提醒。
+- 將一筆待確認新品改為 `核准匯入`，確認最慢在下一個每分鐘排程完成後寫入 `SKU主檔`，且同一 SKU 重跑不會重複新增。
 
 既有手機端「申請 → 下單 → 部分到貨 → 完成」流程已由使用者於 2026-07-15 完成一輪驗收。新 revision 上線後仍需核對 `/ready`、版本資訊與取消指令。
 

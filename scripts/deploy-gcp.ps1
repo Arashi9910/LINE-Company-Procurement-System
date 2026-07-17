@@ -260,6 +260,28 @@ $jobHeaderFlag = if ($jobCommand -eq 'update') { '--update-headers' } else { '--
   '--message-body', '{}',
   '--quiet'
 )).Output | Out-Null
+
+$approvedImportJobName = 'line-replenishment-approved-imports'
+$approvedImportProbe = Invoke-Gcloud -Arguments @(
+  'scheduler', 'jobs', 'describe', $approvedImportJobName,
+  '--project', $ProjectId,
+  '--location', $Region
+) -AllowFailure
+$approvedImportCommand = if ($approvedImportProbe.ExitCode -eq 0) { 'update' } else { 'create' }
+$approvedImportHeaderFlag = if ($approvedImportCommand -eq 'update') { '--update-headers' } else { '--headers' }
+
+(Invoke-Gcloud -Arguments @(
+  'scheduler', 'jobs', $approvedImportCommand, 'http', $approvedImportJobName,
+  '--project', $ProjectId,
+  '--location', $Region,
+  '--schedule', '* * * * *',
+  '--time-zone', 'Asia/Taipei',
+  '--uri', "$serviceUrl/jobs/flyingmouse-approved-imports",
+  '--http-method', 'POST',
+  $approvedImportHeaderFlag, "Authorization=Bearer $jobToken,Content-Type=application/json",
+  '--message-body', '{}',
+  '--quiet'
+)).Output | Out-Null
 $jobToken = $null
 
 if ($BillingAccountId) {

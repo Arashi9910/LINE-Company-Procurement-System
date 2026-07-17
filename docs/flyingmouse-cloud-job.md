@@ -183,3 +183,11 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 目前 dry-run 部署、空 queue 驗收與 LINE 入列功能均已完成，`/health`、`/ready` 皆正常。下一階段是以一筆新到貨事件手動執行 dry-run，驗證飛鼠 GET 與目標庫存計算；切換 live 前仍需再次取得使用者同意。
 
 2026-07-17 已完成「寫入前先刷新本次到貨 SKU」程式：新 live 事件會先把 queue `已準備` 與飛鼠即時 `beforeStock` 原子寫入 `SKU主檔`，再次 GET 未變動才允許 PUT。154 項測試、lint 與 build 已通過；此版本尚未重新部署至 writeback Job，正式 PUT 仍為 0 次。
+
+## 新品核准後一分鐘匯入（2026-07-17）
+
+- 03:00 的 `flyingmouse-catalog-sync-daily` 維持原流程，仍負責下載 Excel、比對新品、更新既有 SKU 庫存快照及同步圖片。
+- LINE Service 新增受 `JOB_TOKEN` 保護的 `/jobs/flyingmouse-approved-imports` 路由。
+- `line-replenishment-approved-imports` Scheduler 設定為每分鐘執行，只從 `飛鼠目錄待確認` 讀取 `核准匯入` 的新品快照並寫入 `SKU主檔`。
+- 快速匯入不登入飛鼠、不下載 Excel、不重跑圖片，也不全量重匯 SKU；沒有核准列時不寫入 Sheet。
+- 程式與部署設定已完成，正式 Cloud Run revision 與每分鐘 Scheduler 尚未部署，部署前仍需使用者明確同意。

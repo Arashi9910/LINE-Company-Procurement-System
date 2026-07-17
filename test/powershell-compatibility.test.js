@@ -90,6 +90,19 @@ test('Scheduler updates use the update-only header flag', async () => {
   assert.match(source, /\$jobHeaderFlag, "Authorization=Bearer \$jobToken/);
 });
 
+test('deployment schedules approved catalog snapshots every minute', async () => {
+  const source = await readFile('scripts/deploy-gcp.ps1', 'utf8');
+  assert.match(source, /\$approvedImportJobName = 'line-replenishment-approved-imports'/);
+  assert.match(source, /'--schedule', '\* \* \* \* \*'/);
+  assert.match(source, /'--time-zone', 'Asia\/Taipei'/);
+  assert.match(source, /"\$serviceUrl\/jobs\/flyingmouse-approved-imports"/);
+  assert.match(
+    source,
+    /\$approvedImportHeaderFlag = if \(\$approvedImportCommand -eq 'update'\) \{ '--update-headers' \} else \{ '--headers' \}/
+  );
+  assert.match(source, /\$approvedImportHeaderFlag, "Authorization=Bearer \$jobToken/);
+});
+
 test('deployment binds a clean Git commit to Cloud Run metadata', async () => {
   const source = await readFile('scripts/deploy-gcp.ps1', 'utf8');
   assert.match(source, /git status --porcelain --untracked-files=all/);
