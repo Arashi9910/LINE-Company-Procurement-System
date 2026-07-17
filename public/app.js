@@ -284,11 +284,9 @@ function variantRow(item) {
 function renderVariantDialog() {
   const group = state.groups.find((item) => item.key === state.activeGroupKey);
   if (!group) return;
-  const variants = visibleVariants(group, elements.search.value);
+  const variants = visibleVariants(group);
   elements.variantTitle.textContent = group.title;
-  elements.variantSubtitle.textContent = variants.length === group.items.length
-    ? `共 ${group.items.length} 個規格`
-    : `目前搜尋符合 ${variants.length} / ${group.items.length} 個規格`;
+  elements.variantSubtitle.textContent = `共 ${group.items.length} 個規格`;
   elements.variantItems.replaceChildren(...variants.map(variantRow));
   const selected = group.items.filter((item) => quantityFor(item) > 0);
   const totals = cartTotals(selected.map((item) => ({ quantity: quantityFor(item) })));

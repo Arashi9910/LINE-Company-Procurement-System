@@ -72,12 +72,8 @@ export function filterCatalog(groups, query) {
   return needle ? groups.filter((group) => group.searchText.includes(needle)) : groups;
 }
 
-export function visibleVariants(group, query) {
-  const needle = normalized(query);
-  if (!needle) return group.items;
-  const groupText = `${normalized(group.title)} ${normalized(group.productCode)}`;
-  if (groupText.includes(needle)) return group.items;
-  return group.items.filter((item) => searchableItemText(item).includes(needle));
+export function visibleVariants(group) {
+  return group.items;
 }
 
 export function selectableCatalogItems(items, excludedSkus) {

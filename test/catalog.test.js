@@ -37,12 +37,11 @@ test('groupCatalog groups variants by product code and keeps safe image fallback
   assert.equal(groups[1].key, 'name:隨行杯');
 });
 
-test('filterCatalog finds a group through SKU and visibleVariants narrows its rows', () => {
+test('filterCatalog finds a group through SKU without hiding sibling variants', () => {
   const groups = groupCatalog(items);
   const matches = filterCatalog(groups, 'SKU-BLUE');
   assert.equal(matches.length, 1);
-  assert.deepEqual(visibleVariants(matches[0], 'SKU-BLUE').map((item) => item.sku), ['SKU-BLUE']);
-  assert.equal(visibleVariants(matches[0], '旅行收納袋').length, 2);
+  assert.deepEqual(visibleVariants(matches[0]).map((item) => item.sku), ['SKU-RED', 'SKU-BLUE']);
 });
 
 test('variantLabel and cartTotals provide stable UI values', () => {
