@@ -5,7 +5,7 @@ import { createApp } from '../src/app.js';
 import { createGroupContext } from '../src/line/context.js';
 
 function fixture() {
-  const calls = { create: [], order: [], push: [] };
+  const calls = { create: [], order: [], push: [], approvedImports: 0 };
   const repository = {
     async checkHealth() { return true; },
     async listAvailableSkus() {
@@ -15,6 +15,10 @@ function fixture() {
     async getNotificationGroupId() { return 'C-FALLBACK'; },
     async listReminderCandidates() { return []; },
     async reserveReminder() { return true; },
+    async importApprovedCatalogSnapshots() {
+      calls.approvedImports += 1;
+      return { approved: 1, imported: 1, idempotent: 0, stale: 0 };
+    },
     async getAuthorization() { return { role: '管理員', enabled: true }; },
     async getRequest(requestId) {
       return {
@@ -153,4 +157,21 @@ test('reminder job rejects missing credentials and accepts the scheduler token',
   const body = await accepted.json();
   assert.equal(accepted.status, 200);
   assert.deepEqual(body, { candidates: 0, sent: [] });
+});
+
+test('approved catalog import job is token-protected and returns its import summary', async (t) => {
+  const dependencies = fixture();
+  const baseUrl = await start(t, dependencies);
+  const denied = await fetch(`${baseUrl}/jobs/flyingmouse-approved-imports`, { method: 'POST' });
+  assert.equal(denied.status, 401);
+
+  const accepted = await fetch(`${baseUrl}/jobs/flyingmouse-approved-imports`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer test-job-token' }
+  });
+  const body = await accepted.json();
+
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(body, { approved: 1, imported: 1, idempotent: 0, stale: 0 });
+  assert.equal(dependencies.calls.approvedImports, 1);
 });

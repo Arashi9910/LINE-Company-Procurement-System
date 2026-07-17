@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { google } from 'googleapis';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
+import { importApprovedReviewSnapshots } from '../flyingmouse/sheets-review.js';
 import {
   WRITEBACK_ROW_COUNT,
   WRITEBACK_SHEET_NAME,
@@ -218,6 +219,14 @@ export class SheetsRepository {
 
   cancelRequest(input) {
     return this.#enqueue(() => this.#cancelRequest(input));
+  }
+
+  importApprovedCatalogSnapshots(input = {}) {
+    return this.#enqueue(() => importApprovedReviewSnapshots({
+      sheets: this.sheets,
+      spreadsheetId: this.spreadsheetId,
+      generatedAt: input.at ?? this.now()
+    }));
   }
 
   #enqueue(run) {

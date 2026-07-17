@@ -21,5 +21,13 @@ export function createJobsRouter({ config, repository, messenger }) {
       next(error);
     }
   });
+  router.post('/flyingmouse-approved-imports', async (request, response, next) => {
+    try {
+      if (!validJobToken(request, config.jobToken)) throw new AuthenticationError('排程驗證失敗');
+      response.json(await repository.importApprovedCatalogSnapshots());
+    } catch (error) {
+      next(error);
+    }
+  });
   return router;
 }
