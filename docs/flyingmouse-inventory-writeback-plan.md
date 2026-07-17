@@ -149,7 +149,31 @@
 
 **Verify：** 比對飛鼠 GET 前後資料、Cloud Run execution、Cloud Logging 與 Git commit。
 
-## Task 7：經核准後 live 驗收與正式啟用
+## Task 7：寫入前刷新本次到貨 SKU 快照
+
+**Files：**
+
+- `src/flyingmouse/sheets-writeback.js`
+- `src/flyingmouse/writeback-worker.js`
+- `test/flyingmouse-writeback-sheets.test.js`
+- `test/flyingmouse-writeback-worker.test.js`
+
+**內容：**
+
+- 第一次 GET 後，以同一次 Sheets batch update 寫入 queue `已準備` 與 `SKU主檔` 更新前庫存。
+- 快照成功後再次 GET；貨品 ID 或庫存已變動時停止並轉人工確認。
+- PUT 驗證成功後，將 queue 完成狀態與最終快照原子更新。
+- dry-run 維持零 Sheet 寫入、零 PUT。
+
+**Acceptance：**
+
+- 新 live 事件的順序固定為 GET → 快照與 prepared batch → GET → PUT → GET → 完成 batch。
+- `SKU主檔` 缺少／重複 SKU、表頭錯誤或快照 batch 失敗時 PUT 次數為 0。
+- 第二次 GET 不等於準備庫存時不得 PUT，並保留 before／target 供人工確認。
+
+**Verify：** `node --test test/flyingmouse-writeback-sheets.test.js test/flyingmouse-writeback-worker.test.js`
+
+## Task 8：經核准後 live 驗收與正式啟用
 
 **Files：** 無預期程式碼修改；只變更已核准的雲端設定與正式資料。
 
@@ -183,5 +207,6 @@
 
 - Task 1–5 程式與測試完成。
 - Task 6 dry-run 無任何正式庫存異動。
-- Task 7 經使用者明確核准並完成一筆真實到貨驗收。
+- Task 7 寫入前快照預檢已完成測試與 dry-run 部署。
+- Task 8 經使用者明確核准並完成一筆真實到貨驗收。
 - 所有部署版本、Job、Scheduler 與 commit 已更新交接文件並推送 GitHub。

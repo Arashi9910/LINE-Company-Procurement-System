@@ -4,7 +4,7 @@
 
 當有權限的人員在 LINE 補貨系統完成「到貨確認」後，系統將本次各 SKU 的實到數量可靠地排入佇列，並由獨立的 Cloud Run Job 登入飛鼠後台，將該 SKU 的飛鼠庫存增加相同數量。
 
-本功能需支援部分到貨、多次到貨、重送冪等、失敗重試及人工稽核；飛鼠暫時不可用時，不得遺失已在 LINE 確認的到貨資料，也不得盲目重複加庫存。
+本功能需支援部分到貨、多次到貨、重送冪等、失敗重試及人工稽核；飛鼠暫時不可用時，不得遺失已在 LINE 確認的到貨資料，也不得盲目重複加庫存。正式寫入前必須先將本次到貨 SKU 的飛鼠即時庫存更新至 `SKU主檔`，再次確認飛鼠庫存未變動後才可 PUT。
 
 ## 技術棧
 
@@ -52,7 +52,7 @@ export function expectedStock(currentStock, receivedQuantity) {
 
 ## 邊界
 
-- 一律執行：驗證貨號／數量／API 結構、先寫 prepared 狀態、PUT 後再 GET、提交前跑全部測試。
+- 一律執行：驗證貨號／數量／API 結構、先將 prepared 狀態與即時庫存快照原子寫入、再次 GET 未變動才 PUT、PUT 後再 GET、提交前跑全部測試。
 - 需要先詢問：新增雲端服務、建立正式分頁、部署、切 live、第一筆正式 PUT、變更重試頻率。
 - 絕不執行：提交帳密或 session、dry-run 發出 PUT、模糊狀態下猜測成功、修改非 stock 欄位、刪除失敗測試。
 
@@ -78,9 +78,10 @@ export function expectedStock(currentStock, receivedQuantity) {
 3. API 回覆到貨成功；飛鼠故障不會讓已排入佇列的事件遺失。
 4. `flyingmouse-inventory-writeback` Cloud Run Job 每 5 分鐘讀取可處理事件，依建立順序逐筆執行。
 5. Job 以貨號查詢飛鼠最新貨品，計算 `更新後庫存 = 更新前庫存 + 本次到貨量`。
-6. Job 先把更新前／後數量與狀態持久化為 `已準備`，再送出 PUT。
-7. Job 重新 GET；只有精確等於預期庫存才標記 `已完成`，並更新 `SKU主檔` 的庫存快照。
-8. 無法確定是否已成功的事件停止自動處理，標記 `需人工確認`，不再盲目重試。
+6. Job 在同一次 Google Sheets batch update 中，將 queue 狀態與更新前／後數量持久化為 `已準備`，並把該 SKU 的 `SKU主檔` 庫存快照更新為即時的更新前庫存；這一步失敗時不得 PUT。
+7. Job 再次 GET 同一 SKU；貨品 ID 與庫存仍精確等於準備階段資料才可送出 PUT，否則轉為 `需人工確認`。
+8. PUT 後 Job 再次 GET；只有精確等於預期庫存才標記 `已完成`，並將 `SKU主檔` 庫存快照更新為最終庫存。
+9. 無法確定是否已成功的事件停止自動處理，標記 `需人工確認`，不再盲目重試。
 
 ## 4. 佇列資料結構
 
@@ -116,13 +117,15 @@ export function expectedStock(currentStock, receivedQuantity) {
 
 ### 飛鼠更新
 
-- `待處理`：重新 GET 最新庫存，保存 `before` 與 `target`，再進入 `已準備`。
+- `待處理`：重新 GET 最新庫存，保存 `before` 與 `target`，並將 `before` 同步到 `SKU主檔`，再進入 `已準備`；queue 與快照必須使用同一個 batch update。
 - `已準備` 重跑時：
   - 飛鼠目前庫存等於 `target`：視為前次 PUT 已成功，只補登完成。
   - 飛鼠目前庫存等於 `before`：可安全重送同一個 PUT。
   - 其他數量：狀態改為 `需人工確認`，不再自動修改。
 - PUT 成功但驗證 GET 失敗時保持 `已準備`，下次依上述規則判斷。
 - 不使用「目前庫存大於等於 target」等模糊條件猜測成功。
+- `SKU主檔` 缺少該 SKU、出現重複 SKU、表頭不符或快照寫入失敗時不得 PUT，事件轉人工確認。
+- dry-run 只計算並輸出安全摘要，不修改 queue、`SKU主檔` 或飛鼠。
 
 這個設計能處理多數網路中斷與程序崩潰，但飛鼠沒有公開 API／條件式更新，因此無法提供資料庫等級的絕對 exactly-once；遇到同一瞬間人工改庫存時，以停止並人工確認為優先。
 
@@ -165,7 +168,8 @@ export function expectedStock(currentStock, receivedQuantity) {
 
 - 單元測試：事件 ID、佇列欄位、部分到貨、多 SKU、重送、不合法數量。
 - repository 測試：追蹤表、操作紀錄、回寫事件在同一 batch；任何驗證失敗不得部分寫入。
-- worker 測試：精確 SKU、正常加庫存、GET／PUT／驗證順序、白名單 payload。
+- worker 測試：精確 SKU、正常加庫存、第一次 GET → 原子刷新快照 → 第二次 GET → PUT → 驗證 GET 的順序、白名單 payload。
+- 快照預檢測試：快照更新失敗不得 PUT；第二次 GET 與準備庫存不同時轉人工確認；dry-run 不寫 Sheet。
 - 模糊成功測試：`current == target` 補登成功、`current == before` 安全重送、其他數量轉人工確認。
 - 失敗測試：登入失敗、API 結構改變、404、5xx、驗證 GET 不一致、最大重試。
 - dry-run 整合測試：登入正式飛鼠並 GET 真實 SKU，但禁止 PUT。
@@ -179,7 +183,8 @@ export function expectedStock(currentStock, receivedQuantity) {
 4. worker 中斷後可依 `before/target` 恢復，不盲目重複加庫存。
 5. 飛鼠庫存發生非預期變動時自動停止並留下可查的人工確認狀態。
 6. 飛鼠故障不會遺失 LINE 已確認且已排入佇列的到貨事件。
-7. 所有測試、lint、build 通過；dry-run 不產生任何 PUT。
+7. 每筆新 live 事件在 PUT 前，`SKU主檔` 該 SKU 快照已更新為第一次 GET 的即時庫存；快照寫入失敗時 PUT 次數為 0。
+8. 所有測試、lint、build 通過；dry-run 不產生任何 Sheet 寫入或 PUT。
 
 ## 12. 待核准的預設決策
 
@@ -187,4 +192,5 @@ export function expectedStock(currentStock, receivedQuantity) {
 - 新增 `飛鼠庫存回寫` 分頁作為稽核佇列。
 - 飛鼠不可用時保留 LINE 到貨結果並重試，不讓到貨人員卡在頁面上。
 - 不確定是否成功時停止自動處理，不猜測、不再次加庫存。
+- 只刷新本次到貨涉及的 SKU，不因單筆到貨重新下載全部貨品 Excel；每日 03:00 全量同步維持不變。
 - 第一版不處理負向調整與 LINE 失敗通知。
