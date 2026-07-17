@@ -190,4 +190,9 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - LINE Service 新增受 `JOB_TOKEN` 保護的 `/jobs/flyingmouse-approved-imports` 路由。
 - `line-replenishment-approved-imports` Scheduler 設定為每分鐘執行，只從 `飛鼠目錄待確認` 讀取 `核准匯入` 的新品快照並寫入 `SKU主檔`。
 - 快速匯入不登入飛鼠、不下載 Excel、不重跑圖片，也不全量重匯 SKU；沒有核准列時不寫入 Sheet。
-- 程式與部署設定已完成，正式 Cloud Run revision 與每分鐘 Scheduler 尚未部署，部署前仍需使用者明確同意。
+- 正式 Cloud Run revision：`line-replenishment-00018-9sc`
+- 正式 Git commit：`e491ca0acd2d99e67787a83c4d6a0486b194ff83`
+- `line-replenishment-approved-imports`：`ENABLED`，排程 `* * * * *`，時區 `Asia/Taipei`
+- 首次確認成功：2026-07-17 12:42（Asia/Taipei），Cloud Run 請求狀態 `200`
+- 部署驗收時發現舊 `line-job-token` Secret 尾端含 CR/LF；服務載入設定時已正規化前後空白，並以回歸測試防止相同問題再次造成 Scheduler `401`。
+- 既有 `line-replenishment-reminders` 也已更新為相同 `X-Job-Token` 驗證方式；為避免非排程時間額外發送 LINE 訊息，未手動觸發提醒，保留下一個工作日 10:00 自動執行。
