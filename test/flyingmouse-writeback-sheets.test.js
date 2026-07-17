@@ -8,6 +8,7 @@ import {
   ensureWritebackSheet,
   listProcessableWritebacks,
   parseWritebackRows,
+  prepareWritebackEvent,
   transitionWritebackEvent,
   writeWritebackEventState,
   writebackEventRow
@@ -225,4 +226,43 @@ test('completeWritebackEvent atomically completes the queue and refreshes SKU主
     "'SKU主檔'!E2"
   ]);
   assert.equal(write.requestBody.data[1].values[0][0], 12);
+});
+
+test('prepareWritebackEvent atomically persists prepared state and refreshes the current SKU snapshot', async () => {
+  const prepared = transitionWritebackEvent({ ...event(), rowNumber: 7 }, {
+    status: '已準備',
+    attempts: 1,
+    partId: 933,
+    beforeStock: 10,
+    targetStock: 12,
+    processedAt: '2026-07-16 10:05:00'
+  });
+  let write;
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get() {
+          return { data: { values: [MAIN_HEADERS.slice(0, 5), ['SKU-A', '商品 A', '', '', 99]] } };
+        },
+        async batchUpdate(request) {
+          write = request;
+          return { data: {} };
+        }
+      }
+    }
+  };
+
+  const result = await prepareWritebackEvent({
+    sheets,
+    spreadsheetId: 'sheet-123',
+    event: prepared
+  });
+
+  assert.equal(result.status, '已準備');
+  assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
+    `'${WRITEBACK_SHEET_NAME}'!F7:O7`,
+    "'SKU主檔'!E2"
+  ]);
+  assert.equal(write.requestBody.data[0].values[0][0], '已準備');
+  assert.equal(write.requestBody.data[1].values[0][0], 10);
 });

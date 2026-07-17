@@ -39,7 +39,7 @@ function queueEvent(overrides = {}) {
   };
 }
 
-function sheetsFor(event) {
+function sheetsFor(event, timeline = []) {
   const updates = [];
   const batches = [];
   const sheets = {
@@ -60,6 +60,9 @@ function sheetsFor(event) {
         },
         async batchUpdate(request) {
           batches.push(request);
+          const queueStatus = request.requestBody.data?.[0]?.values?.[0]?.[0];
+          const snapshot = request.requestBody.data?.[1]?.values?.[0]?.[0];
+          timeline.push(`sheet:${queueStatus}:${snapshot}`);
           return { data: {} };
         }
       }
@@ -71,12 +74,20 @@ function sheetsFor(event) {
 const silentLogger = { info() {}, warn() {}, error() {} };
 
 test('processWritebackQueue prepares, applies, verifies, and completes one live event', async () => {
-  const state = sheetsFor(queueEvent());
+  const timeline = [];
+  const state = sheetsFor(queueEvent(), timeline);
   const reads = [part(10), part(10), part(12)];
   const puts = [];
   const client = {
-    async getBySku() { return reads.shift(); },
-    async putPart(id, payload) { puts.push({ id, payload }); }
+    async getBySku() {
+      const result = reads.shift();
+      timeline.push(`get:${result.stock}`);
+      return result;
+    },
+    async putPart(id, payload) {
+      puts.push({ id, payload });
+      timeline.push(`put:${payload.stock}`);
+    }
   };
 
   const result = await processWritebackQueue({
@@ -92,11 +103,16 @@ test('processWritebackQueue prepares, applies, verifies, and completes one live 
     mode: 'live', found: 1, completed: 1, dryRun: 0, retryScheduled: 0, manualReview: 0, failed: 0
   });
   assert.equal(puts.length, 1);
-  assert.equal(state.updates.length, 1);
-  assert.equal(state.updates[0].requestBody.values[0][0], '已準備');
-  assert.equal(state.batches.length, 1);
-  assert.equal(state.batches[0].requestBody.data[0].values[0][0], '已完成');
-  assert.equal(state.batches[0].requestBody.data[1].values[0][0], 12);
+  assert.equal(state.updates.length, 0);
+  assert.equal(state.batches.length, 2);
+  assert.deepEqual(timeline, [
+    'get:10',
+    'sheet:已準備:10',
+    'get:10',
+    'put:12',
+    'get:12',
+    'sheet:已完成:12'
+  ]);
 });
 
 test('processWritebackQueue dry-run performs no PUT and no Sheet writes', async () => {
@@ -168,12 +184,38 @@ test('processWritebackQueue moves an ambiguous prepared event to manual review',
   });
 
   assert.equal(result.manualReview, 1);
-  assert.deepEqual(state.updates.map((request) => request.requestBody.values[0][0]), [
-    '已準備', '需人工確認'
-  ]);
-  assert.equal(state.updates[1].requestBody.values[0][3], 933);
-  assert.equal(state.updates[1].requestBody.values[0][4], 10);
-  assert.equal(state.updates[1].requestBody.values[0][5], 12);
+  assert.equal(state.batches[0].requestBody.data[0].values[0][0], '已準備');
+  assert.deepEqual(state.updates.map((request) => request.requestBody.values[0][0]), ['需人工確認']);
+  assert.equal(state.updates[0].requestBody.values[0][3], 933);
+  assert.equal(state.updates[0].requestBody.values[0][4], 10);
+  assert.equal(state.updates[0].requestBody.values[0][5], 12);
+});
+
+test('processWritebackQueue never PUTs when the pre-write snapshot batch fails', async () => {
+  const state = sheetsFor(queueEvent());
+  state.sheets.spreadsheets.values.batchUpdate = async () => {
+    throw new Error('Google Sheets snapshot failed');
+  };
+  let puts = 0;
+  const client = {
+    async getBySku() { return part(10); },
+    async putPart() { puts += 1; }
+  };
+
+  const result = await processWritebackQueue({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    withClient: async (operation) => operation(client),
+    mode: 'live',
+    now: () => new Date('2026-07-16T02:05:00Z'),
+    logger: silentLogger
+  });
+
+  assert.equal(result.manualReview, 1);
+  assert.equal(puts, 0);
+  assert.equal(state.updates[0].requestBody.values[0][0], '需人工確認');
+  assert.equal(state.updates[0].requestBody.values[0][4], 10);
+  assert.equal(state.updates[0].requestBody.values[0][5], 12);
 });
 
 test('processWritebackQueue stops retrying after the fifth attempt', async () => {

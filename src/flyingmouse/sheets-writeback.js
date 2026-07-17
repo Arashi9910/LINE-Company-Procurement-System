@@ -428,6 +428,57 @@ export async function writeWritebackEventState({ sheets, spreadsheetId, event })
   return normalized;
 }
 
+async function findMainSkuRow({ sheets, spreadsheetId, sku, operation }) {
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${MAIN_SHEET_NAME}'!A1:E`,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const values = response.data.values ?? [];
+  const headers = Array.from({ length: 5 }, (_, index) => String(values[0]?.[index] ?? ''));
+  if (headers.some((header, index) => header !== MAIN_HEADERS[index])) {
+    throw new Error(`${MAIN_SHEET_NAME} 表頭不符，停止${operation}`);
+  }
+  const matches = [];
+  for (let index = 1; index < values.length; index += 1) {
+    if (normalizeText(values[index]?.[0]) === sku) matches.push(index + 1);
+  }
+  if (matches.length !== 1) {
+    throw new Error(`${MAIN_SHEET_NAME} 必須且只能有一筆 SKU ${sku}`);
+  }
+  return matches[0];
+}
+
+export async function prepareWritebackEvent({ sheets, spreadsheetId, event }) {
+  if (!sheets || !spreadsheetId) throw new Error('飛鼠庫存回寫準備設定不完整');
+  const prepared = normalizeEvent(event);
+  if (prepared.status !== '已準備') throw new Error('只有已準備事件可以刷新庫存快照');
+  if (!prepared.rowNumber || prepared.rowNumber < 2) throw new Error('回寫事件缺少有效列號');
+  const mainRow = await findMainSkuRow({
+    sheets,
+    spreadsheetId,
+    sku: prepared.sku,
+    operation: '準備回寫'
+  });
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      valueInputOption: 'RAW',
+      data: [
+        {
+          range: `'${WRITEBACK_SHEET_NAME}'!F${prepared.rowNumber}:O${prepared.rowNumber}`,
+          values: [writebackStateValues(prepared)]
+        },
+        {
+          range: `'${MAIN_SHEET_NAME}'!E${mainRow}`,
+          values: [[prepared.beforeStock]]
+        }
+      ]
+    }
+  });
+  return prepared;
+}
+
 export async function completeWritebackEvent({ sheets, spreadsheetId, event, completedAt }) {
   if (!sheets || !spreadsheetId) throw new Error('飛鼠庫存回寫完成設定不完整');
   const completed = transitionWritebackEvent(event, {
@@ -438,23 +489,12 @@ export async function completeWritebackEvent({ sheets, spreadsheetId, event, com
     processedAt: completedAt
   });
   if (!completed.rowNumber || completed.rowNumber < 2) throw new Error('回寫事件缺少有效列號');
-  const response = await sheets.spreadsheets.values.get({
+  const mainRow = await findMainSkuRow({
+    sheets,
     spreadsheetId,
-    range: `'${MAIN_SHEET_NAME}'!A1:E`,
-    valueRenderOption: 'UNFORMATTED_VALUE'
+    sku: completed.sku,
+    operation: '完成回寫'
   });
-  const values = response.data.values ?? [];
-  const headers = Array.from({ length: 5 }, (_, index) => String(values[0]?.[index] ?? ''));
-  if (headers.some((header, index) => header !== MAIN_HEADERS[index])) {
-    throw new Error(`${MAIN_SHEET_NAME} 表頭不符，停止完成回寫`);
-  }
-  const matches = [];
-  for (let index = 1; index < values.length; index += 1) {
-    if (normalizeText(values[index]?.[0]) === completed.sku) matches.push(index + 1);
-  }
-  if (matches.length !== 1) {
-    throw new Error(`${MAIN_SHEET_NAME} 必須且只能有一筆 SKU ${completed.sku}`);
-  }
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId,
     requestBody: {
@@ -465,7 +505,7 @@ export async function completeWritebackEvent({ sheets, spreadsheetId, event, com
           values: [writebackStateValues(completed)]
         },
         {
-          range: `'${MAIN_SHEET_NAME}'!E${matches[0]}`,
+          range: `'${MAIN_SHEET_NAME}'!E${mainRow}`,
           values: [[completed.targetStock]]
         }
       ]

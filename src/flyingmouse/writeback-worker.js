@@ -6,6 +6,7 @@ import {
 import {
   completeWritebackEvent,
   listProcessableWritebacks,
+  prepareWritebackEvent,
   timestampInTaipei,
   transitionWritebackEvent,
   writeWritebackEventState
@@ -89,8 +90,12 @@ async function liveEvent({ sheets, spreadsheetId, client, event, processedAt }) 
       processedAt
     });
   }
-  await writeWritebackEventState({ sheets, spreadsheetId, event: prepared });
   try {
+    if (event.status !== '已準備') {
+      await prepareWritebackEvent({ sheets, spreadsheetId, event: prepared });
+    } else {
+      await writeWritebackEventState({ sheets, spreadsheetId, event: prepared });
+    }
     const result = await applyPreparedFlyingMouseWriteback({ client, event: prepared, mode: 'live' });
     await completeWritebackEvent({
       sheets,
