@@ -46,7 +46,7 @@ export function loadConfig(env = process.env, options = {}) {
     lineChannelAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN ?? '',
     liffId: env.LIFF_ID ?? '',
     linkSigningSecret: env.LINK_SIGNING_SECRET ?? env.LINE_CHANNEL_SECRET ?? '',
-    jobToken: env.JOB_TOKEN ?? '',
+    jobToken: (env.JOB_TOKEN ?? '').trim(),
     googleCloudProject: env.GOOGLE_CLOUD_PROJECT ?? '',
     flyingmouseWritebackEnabled: booleanFlag(
       env.FLYINGMOUSE_WRITEBACK_ENABLED,

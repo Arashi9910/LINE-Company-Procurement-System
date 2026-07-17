@@ -37,6 +37,16 @@ test('loadConfig uses the LINE Login channel ID for LIFF identity verification',
   assert.equal(config.lineLoginChannelId, 'login-channel-123');
 });
 
+test('loadConfig removes accidental surrounding whitespace from the job token', () => {
+  const config = loadConfig({
+    NODE_ENV: 'test',
+    SPREADSHEET_ID: 'sheet-123',
+    JOB_TOKEN: 'job-token\r\n'
+  });
+
+  assert.equal(config.jobToken, 'job-token');
+});
+
 test('loadConfig exposes deployment metadata with safe local defaults', () => {
   const local = loadConfig({
     NODE_ENV: 'test',

@@ -60,7 +60,7 @@
 - Cloud Run：最多 1 個執行個體、並行數 20；搭配程式內寫入佇列降低 Sheet 競爭寫入。
 - 提醒 Scheduler：週一至週五 10:00，時區 `Asia/Taipei`。
 - 新品核准 Scheduler：每分鐘呼叫 `/jobs/flyingmouse-approved-imports`；只讀取 `飛鼠目錄待確認` 與 `SKU主檔`，不登入飛鼠、不下載 Excel，也不執行圖片或全量庫存同步。
-- 兩個 HTTP Scheduler 均以自訂 `X-Job-Token` header 傳送 `line-job-token`；不要改用自訂 `Authorization` header，Cloud Scheduler 實際送出時可能不會保留該值。
+- 兩個 HTTP Scheduler 均以自訂 `X-Job-Token` header 傳送 `line-job-token`。Secret 不應包含前後空白或換行；服務端仍會在載入 `JOB_TOKEN` 時移除意外的前後空白，以相容早期建立的 Secret 版本。
 - 預算警示：預設每月 `300TWD`，於 50%、90%、100% 通知；預算不會自動停止支出。
 - Secret Manager：Cloud Run 服務帳號僅取得四個指定秘密的 `roles/secretmanager.secretAccessor`。
 - Startup／readiness probe：`/ready`，確認 Sheet 可讀後才接收流量；liveness probe：`/health`，只判斷程序是否仍存活。持續 readiness 每 60 秒唯讀檢查 `系統設定` 表頭。
