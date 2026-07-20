@@ -6,6 +6,11 @@ import {
   variantLabel,
   visibleVariants
 } from './catalog.js';
+import {
+  selectWorkflowItems,
+  workflowConfig,
+  workflowItemView
+} from './workflow.js';
 
 const MAX_CART_ITEMS = 50;
 const MAX_QUANTITY = 999999;
@@ -402,6 +407,7 @@ function renderWorkflowOrderItems() {
 function workflowItem(item, mode) {
   const draft = mode === 'order' ? state.orderDraft.get(item.sku) : null;
   const purchaseAdded = Boolean(draft?.purchaseAdded);
+  const view = workflowItemView(item, mode, { purchaseAdded });
   const row = document.createElement('article');
   row.className = `workflow-row${purchaseAdded ? ' purchase-added' : ''}`;
   row.dataset.sku = item.sku;
@@ -418,13 +424,11 @@ function workflowItem(item, mode) {
   title.textContent = item.displayName;
   const meta = document.createElement('p');
   meta.className = 'muted';
-  meta.textContent = mode === 'order'
-    ? purchaseAdded
-      ? `原申請未包含｜${item.sku}`
-      : `申請 ${item.requestedQuantity} ${item.unit}｜${item.sku}`
-    : `已到 ${item.receivedQuantity}/${item.orderedQuantity} ${item.unit}｜尚缺 ${item.outstandingQuantity}`;
+  meta.textContent = view.meta;
   heading.append(title, meta);
   row.append(heading);
+
+  if (view.readOnly) return row;
 
   const fields = document.createElement('div');
   fields.className = 'workflow-fields';
@@ -480,17 +484,16 @@ function workflowItem(item, mode) {
 
 async function loadWorkflow(mode, requestId) {
   const request = await api(`/api/requests/${encodeURIComponent(requestId)}`);
-  const allowedRoles = mode === 'order' ? ['採購確認', '管理員'] : ['到貨確認', '管理員'];
-  if (!allowedRoles.includes(request.actorRole)) {
-    throw new Error(mode === 'order' ? '你沒有確認下單的權限' : '你沒有確認到貨的權限');
+  const config = workflowConfig(mode);
+  if (!config) throw new Error('補貨單連結格式不正確');
+  if (config.allowedRoles.length > 0 && !config.allowedRoles.includes(request.actorRole)) {
+    throw new Error(config.authorizationMessage);
   }
 
   state.mode = mode;
   state.workflowRequest = request;
-  const items = mode === 'order'
-    ? request.items.filter((item) => item.status === '待確認')
-    : request.items.filter((item) => ['已下單', '部分到貨'].includes(item.status) && item.outstandingQuantity > 0);
-  elements.workflowTitle.textContent = mode === 'order' ? '確認下單' : '登記到貨';
+  const items = selectWorkflowItems(request.items, mode);
+  elements.workflowTitle.textContent = config.title;
   elements.requestId.textContent = request.requestId;
 
   if (mode === 'order' && items.length > 0) {
@@ -516,15 +519,16 @@ async function loadWorkflow(mode, requestId) {
     renderResults();
   } else {
     elements.workflowAdd.hidden = true;
-    elements.workflowMeta.textContent = `申請人 ${request.applicant}｜共 ${request.items.length} 項`;
+    const suffix = config.readOnly ? '｜唯讀' : '';
+    elements.workflowMeta.textContent = `申請人 ${request.applicant}｜共 ${request.items.length} 項${suffix}`;
     elements.workflowItems.replaceChildren(...items.map((item) => workflowItem(item, mode)));
   }
-  elements.workflowSubmit.textContent = mode === 'order' ? '確認下單' : '確認本次到貨';
+  elements.workflowSubmit.textContent = config.submitLabel;
   elements.workflowSubmit.dataset.mode = mode;
   elements.workflowSubmit.dataset.requestId = request.requestId;
-  elements.workflowSubmit.hidden = items.length === 0;
+  elements.workflowSubmit.hidden = config.readOnly || items.length === 0;
   elements.workflowSection.hidden = false;
-  if (items.length === 0) showStatus(mode === 'order' ? '此補貨單已確認處理' : '此補貨單目前沒有待到貨品項', 'success');
+  if (items.length === 0) showStatus(config.emptyMessage, 'success');
 }
 
 async function submitWorkflow() {
@@ -587,7 +591,7 @@ async function initialize() {
     const params = new URLSearchParams(location.search);
     const mode = params.get('mode');
     const requestId = params.get('requestId');
-    if (['order', 'receipt'].includes(mode) && requestId) {
+    if (workflowConfig(mode) && requestId) {
       await loadWorkflow(mode, requestId);
     } else {
       const body = await api('/api/skus');
