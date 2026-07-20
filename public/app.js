@@ -7,6 +7,12 @@ import {
   visibleVariants
 } from './catalog.js';
 import {
+  hasLineReauthMarker,
+  idTokenNeedsRefresh,
+  withLineReauthMarker,
+  withoutLineReauthMarker
+} from './line-session.js';
+import {
   selectWorkflowItems,
   workflowConfig,
   workflowItemView
@@ -72,6 +78,19 @@ function showStatus(message, kind = '') {
   elements.status.hidden = false;
 }
 
+function restartLineLogin() {
+  if (liff.isInClient() || hasLineReauthMarker(location.href)) return false;
+  const redirectUri = withLineReauthMarker(location.href);
+  liff.logout();
+  liff.login({ redirectUri });
+  return true;
+}
+
+function clearLineReauthMarker() {
+  if (!hasLineReauthMarker(location.href)) return;
+  history.replaceState(null, '', withoutLineReauthMarker(location.href));
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -82,7 +101,13 @@ async function api(path, options = {}) {
     }
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error?.message ?? '系統暫時無法處理');
+  if (!response.ok) {
+    if (response.status === 401 && restartLineLogin()) {
+      throw new Error('LINE 登入已過期，正在重新登入…');
+    }
+    throw new Error(body.error?.message ?? '系統暫時無法處理');
+  }
+  clearLineReauthMarker();
   return body;
 }
 
@@ -576,13 +601,18 @@ async function initialize() {
     if (!config.liffId) throw new Error('尚未設定 LIFF ID');
     if (!window.liff) throw new Error('LINE LIFF SDK 載入失敗');
 
-    await liff.init({ liffId: config.liffId });
+    await liff.init({ liffId: config.liffId, withLoginOnExternalBrowser: true });
     if (!liff.isLoggedIn()) {
       liff.login({ redirectUri: location.href });
       return;
     }
-    state.idToken = liff.getIDToken();
-    if (!state.idToken) throw new Error('無法取得 LINE 登入憑證');
+    const idToken = liff.getIDToken();
+    if (!idToken) throw new Error('無法取得 LINE 登入憑證');
+    if (idTokenNeedsRefresh(liff.getDecodedIDToken())) {
+      if (restartLineLogin()) return;
+      throw new Error('LINE 登入已過期，請關閉頁面後重新開啟');
+    }
+    state.idToken = idToken;
     const profile = await liff.getProfile();
     elements.userName.textContent = profile.displayName;
 
