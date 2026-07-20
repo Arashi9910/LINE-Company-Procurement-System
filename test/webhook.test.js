@@ -57,6 +57,10 @@ async function start(t, calls) {
     messenger: {
       async replyReplenishmentLink(replyToken, url) { calls.links.push({ replyToken, url }); },
       async replyText(replyToken, text) { calls.texts.push({ replyToken, text }); },
+      async replyStatusCards(replyToken, filter, result) {
+        calls.statusCards ??= [];
+        calls.statusCards.push({ replyToken, filter, result });
+      },
       async getGroupMemberProfile(groupId, userId) {
         calls.profileReads ??= [];
         calls.profileReads.push({ groupId, userId });
@@ -129,7 +133,7 @@ test('webhook keeps the existing private-chat guidance for the replenishment com
   }]);
 });
 
-test('webhook replies with request-level status in the company group', async (t) => {
+test('webhook replies with actionable request cards in the company group', async (t) => {
   const calls = {
     groups: [], links: [], texts: [],
     rows: [
@@ -152,9 +156,22 @@ test('webhook replies with request-level status in the company group', async (t)
 
   assert.equal(response.status, 200);
   assert.equal(calls.statusReads, 1);
-  assert.equal(calls.texts.length, 1);
-  assert.match(calls.texts[0].text, /【未結案】共 1 筆/);
-  assert.match(calls.texts[0].text, /RQ-1｜待確認｜小明｜2 項/);
+  assert.equal(calls.texts.length, 0);
+  assert.deepEqual(calls.statusCards, [{
+    replyToken: 'reply-status',
+    filter: '未結案',
+    result: {
+      total: 1,
+      items: [{
+        requestId: 'RQ-1',
+        requestedAt: 2,
+        applicant: '小明',
+        firstItem: '商品 A',
+        itemCount: 2,
+        status: '待確認'
+      }]
+    }
+  }]);
 });
 
 test('webhook rejects a command from another group without reading requests', async (t) => {

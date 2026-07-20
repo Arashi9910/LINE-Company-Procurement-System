@@ -4,7 +4,6 @@ import { createGroupContext } from '../line/context.js';
 import {
   executeAuthorizationCommand,
   executeCancellationCommand,
-  formatStatusReply,
   GROUP_COMMAND_HELP,
   parseGroupCommand,
   summarizeRequests
@@ -106,7 +105,7 @@ export function createWebhookHandler({ config, repository, messenger }) {
         const rows = await repository.listRequestRows();
         const result = summarizeRequests(rows, command.status);
         if (event.replyToken) {
-          await messenger.replyText(event.replyToken, formatStatusReply(command.status, result));
+          await messenger.replyStatusCards(event.replyToken, command.status, result);
         }
       }));
 
