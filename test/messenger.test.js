@@ -97,6 +97,7 @@ test('LINE status reply limits the carousel to ten cards and keeps the total', (
 
   assert.equal(message.altText, '【待確認】共 12 筆補貨單（顯示最近 10 筆）');
   assert.equal(message.contents.contents.length, 10);
+  assert.ok(Buffer.byteLength(JSON.stringify(message.contents), 'utf8') < 50 * 1024);
   const productText = message.contents.contents[0].body.contents[3].text;
   assert.ok(productText.length < 90);
   assert.match(productText, /…$/);
