@@ -15,13 +15,13 @@
 
 ### 第一階段：LINE 卡片
 
-- [ ] 任務 1：建立狀態卡片與 LIFF 動作
+- [x] 任務 1：建立狀態卡片與 LIFF 動作
   - 驗收：五種狀態都產生正確按鈕，最多 10 張 bubble，空結果回純文字。
   - 驗證：`npm.cmd test -- test/messenger.test.js`
   - 檔案：`src/line/messenger.js`、`test/messenger.test.js`
   - 相依：無
 
-- [ ] 任務 2：將狀態 Webhook 接到互動回覆
+- [x] 任務 2：將狀態 Webhook 接到互動回覆
   - 驗收：狀態查詢呼叫卡片方法，不再輸出舊純文字清單；群組限制不變。
   - 驗證：`npm.cmd test -- test/webhook.test.js test/group-commands.test.js`
   - 檔案：`src/routes/webhook.js`、`test/webhook.test.js`
@@ -29,12 +29,12 @@
 
 ### 檢查點：LINE 卡片
 
-- [ ] Messenger 與 Webhook 測試通過
-- [ ] Flex JSON 符合 carousel、bubble、URI action 結構
+- [x] Messenger 與 Webhook 測試通過
+- [x] Flex JSON 符合 carousel、bubble、URI action 結構
 
 ### 第二階段：LIFF 唯讀明細
 
-- [ ] 任務 3：加入 `detail` 模式與唯讀品項摘要
+- [x] 任務 3：加入 `detail` 模式與唯讀品項摘要
   - 驗收：所有品項皆顯示狀態、申請量、下單量與到貨量；沒有輸入框或送出按鈕。
   - 驗證：`npm.cmd test -- test/workflow-view.test.js`
   - 檔案：`public/workflow.js`、`public/app.js`、`test/workflow-view.test.js`
@@ -42,9 +42,9 @@
 
 ### 檢查點：完整功能
 
-- [ ] `order` 與 `receipt` 行為未改變
-- [ ] `detail` URL 能載入整張單據
-- [ ] 完整 test、lint、build 通過
+- [x] `order` 與 `receipt` 行為未改變
+- [x] `detail` URL 能以既有單據 API 載入整張單據
+- [x] 完整 test、lint、build 通過（167/167）
 
 ## 風險與緩解
 
