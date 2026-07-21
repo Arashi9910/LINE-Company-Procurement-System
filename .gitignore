@@ -9,3 +9,4 @@ debug.log
 *.key
 .DS_Store
 work/
+outputs/claude-reviews/
