@@ -16,7 +16,7 @@ function deploymentMetadata(config, ok) {
 }
 
 export function createApp(dependencies = {}) {
-  const { config, repository, identityVerifier, messenger } = dependencies;
+  const { config, repository, identityVerifier, messenger, catalogSyncRunner } = dependencies;
   for (const [name, value] of Object.entries({ config, repository, identityVerifier, messenger })) {
     if (!value) throw new Error(`缺少核心相依物件：${name}`);
   }
@@ -46,7 +46,7 @@ export function createApp(dependencies = {}) {
   });
 
   app.post('/webhook', express.raw({ type: 'application/json', limit: '1mb' }),
-    createWebhookHandler({ config, repository, messenger }));
+    createWebhookHandler({ config, repository, messenger, catalogSyncRunner }));
   app.use(express.json({ limit: '64kb' }));
   app.use('/jobs', createJobsRouter({ config, repository, messenger }));
   app.use('/api', createApiRouter({ config, repository, identityVerifier, messenger }));

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   executeAuthorizationCommand,
   executeCancellationCommand,
+  executeCatalogSyncCommand,
   formatStatusReply,
   parseGroupCommand,
   summarizeRequests
@@ -39,6 +40,8 @@ test('parseGroupCommand recognizes every status query and help', () => {
     ['查部分到貨', { type: 'status', status: '部分到貨' }],
     ['查已完成', { type: 'status', status: '已完成' }],
     ['查取消', { type: 'status', status: '取消' }],
+    ['同步飛鼠商品', { type: 'catalog-sync', action: 'start' }],
+    ['查飛鼠同步', { type: 'catalog-sync', action: 'status' }],
     ['補貨指令', { type: 'help' }]
   ];
 
@@ -304,6 +307,122 @@ test('executeCancellationCommand permits enabled administrators and rejects othe
     actorUserId: 'BUYER', groupId: 'COMPANY', idempotencyKey: 'line-event-buyer-1'
   }, member.dependencies), /只有原申請人或已啟用的管理員/);
   assert.equal(member.writes.length, 0);
+});
+
+test('executeCatalogSyncCommand only allows enabled administrators', async () => {
+  const dependencyFixture = (authorization) => ({
+    repository: {
+      async getAuthorization() { return authorization; },
+      async reserveCatalogSyncTrigger() { throw new Error('must not reserve'); }
+    },
+    catalogSyncRunner: {
+      async status() { throw new Error('must not query'); },
+      async start() { throw new Error('must not start'); }
+    }
+  });
+
+  await assert.rejects(executeCatalogSyncCommand({
+    command: { type: 'catalog-sync', action: 'start' },
+    actorUserId: 'MEMBER',
+    idempotencyKey: 'line-sync-denied'
+  }, dependencyFixture({ role: '申請人', enabled: true })), /只有已啟用的管理員/);
+
+  await assert.rejects(executeCatalogSyncCommand({
+    command: { type: 'catalog-sync', action: 'status' },
+    actorUserId: '',
+    idempotencyKey: ''
+  }, dependencyFixture({ role: '管理員', enabled: true })), /LINE 未提供你的使用者識別資料/);
+});
+
+test('executeCatalogSyncCommand reserves the event before starting the job', async () => {
+  const calls = [];
+  const text = await executeCatalogSyncCommand({
+    command: { type: 'catalog-sync', action: 'start' },
+    actorUserId: 'ADMIN',
+    idempotencyKey: 'line-sync-123'
+  }, {
+    repository: {
+      async getAuthorization() { return { role: '管理員', enabled: true }; },
+      async reserveCatalogSyncTrigger(input) {
+        calls.push(['reserve', input]);
+        return { idempotentReplay: false };
+      }
+    },
+    catalogSyncRunner: {
+      async start() {
+        calls.push(['start']);
+        return { state: 'accepted', operation: 'operation-123', execution: 'execution-123' };
+      }
+    }
+  });
+
+  assert.deepEqual(calls, [
+    ['reserve', { actor: { userId: 'ADMIN' }, idempotencyKey: 'line-sync-123' }],
+    ['start']
+  ]);
+  assert.match(text, /已受理飛鼠商品同步/);
+  assert.match(text, /execution-123/);
+  assert.match(text, /查飛鼠同步/);
+});
+
+test('executeCatalogSyncCommand does not start again for a repeated LINE event', async () => {
+  let starts = 0;
+  const text = await executeCatalogSyncCommand({
+    command: { type: 'catalog-sync', action: 'start' },
+    actorUserId: 'ADMIN',
+    idempotencyKey: 'line-sync-replay'
+  }, {
+    repository: {
+      async getAuthorization() { return { role: '管理員', enabled: true }; },
+      async reserveCatalogSyncTrigger() { return { idempotentReplay: true }; }
+    },
+    catalogSyncRunner: { async start() { starts += 1; } }
+  });
+
+  assert.equal(starts, 0);
+  assert.match(text, /已受理過/);
+  assert.match(text, /未重複啟動/);
+});
+
+test('executeCatalogSyncCommand formats latest job status without exposing resource paths', async () => {
+  const base = {
+    command: { type: 'catalog-sync', action: 'status' },
+    actorUserId: 'ADMIN',
+    idempotencyKey: ''
+  };
+  const repository = {
+    async getAuthorization() { return { role: '管理員', enabled: true }; }
+  };
+  const running = await executeCatalogSyncCommand(base, {
+    repository,
+    catalogSyncRunner: {
+      async status() {
+        return {
+          state: 'running', execution: 'execution-123', startedAt: '2026-07-22T10:00:00Z'
+        };
+      }
+    }
+  });
+  assert.match(running, /執行中/);
+  assert.match(running, /execution-123/);
+
+  const succeeded = await executeCatalogSyncCommand(base, {
+    repository,
+    catalogSyncRunner: {
+      async status() {
+        return {
+          state: 'succeeded', execution: 'execution-456', completedAt: '2026-07-22T10:01:00Z'
+        };
+      }
+    }
+  });
+  assert.match(succeeded, /同步成功/);
+
+  const never = await executeCatalogSyncCommand(base, {
+    repository,
+    catalogSyncRunner: { async status() { return { state: 'never' }; } }
+  });
+  assert.match(never, /尚未有飛鼠商品同步紀錄/);
 });
 
 test('executeCancellationCommand restricts ordered cancellation to purchasing staff and administrators', async () => {

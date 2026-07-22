@@ -2,6 +2,7 @@ import { google } from 'googleapis';
 import { ConflictError } from '../errors.js';
 
 const CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+const EXECUTION_VISIBILITY_GUARD_MS = 30_000;
 
 function shortResourceName(value) {
   return String(value ?? '').split('/').filter(Boolean).at(-1) ?? '';
@@ -45,15 +46,18 @@ export class FlyingmouseCatalogJobRunner {
     runClient = createCloudRunJobsClient(),
     projectId,
     region = 'asia-east1',
-    jobName = 'flyingmouse-catalog-sync'
+    jobName = 'flyingmouse-catalog-sync',
+    now = Date.now
   }) {
     if (!projectId) {
       throw new Error('GOOGLE_CLOUD_PROJECT 未設定，無法控制飛鼠商品同步 Job');
     }
 
     this.runClient = runClient;
+    this.now = now;
     this.jobResource = `projects/${projectId}/locations/${region}/jobs/${jobName}`;
     this.startQueue = Promise.resolve();
+    this.recentStartUntil = 0;
   }
 
   async status() {
@@ -74,6 +78,9 @@ export class FlyingmouseCatalogJobRunner {
   }
 
   async #start() {
+    if (this.recentStartUntil > this.now()) {
+      throw new ConflictError('已有飛鼠商品同步正在執行，請稍後輸入「查飛鼠同步」。');
+    }
     const latest = await this.status();
     if (latest.state === 'running') {
       throw new ConflictError('已有飛鼠商品同步正在執行，請稍後輸入「查飛鼠同步」。');
@@ -83,6 +90,7 @@ export class FlyingmouseCatalogJobRunner {
       name: this.jobResource,
       requestBody: {}
     });
+    this.recentStartUntil = this.now() + EXECUTION_VISIBILITY_GUARD_MS;
 
     return {
       state: 'accepted',

@@ -13,6 +13,20 @@ test('loadConfig accepts a minimal test configuration', () => {
   assert.equal(config.spreadsheetId, 'sheet-123');
   assert.equal(config.lineChannelSecret, '');
   assert.equal(config.flyingmouseWritebackEnabled, false);
+  assert.equal(config.googleCloudRegion, 'asia-east1');
+  assert.equal(config.flyingmouseCatalogJobName, 'flyingmouse-catalog-sync');
+});
+
+test('loadConfig exposes custom FlyingMouse catalog job location', () => {
+  const config = loadConfig({
+    NODE_ENV: 'test',
+    SPREADSHEET_ID: 'sheet-123',
+    GOOGLE_CLOUD_REGION: 'us-central1',
+    FLYINGMOUSE_CATALOG_JOB_NAME: 'custom-catalog-job'
+  });
+
+  assert.equal(config.googleCloudRegion, 'us-central1');
+  assert.equal(config.flyingmouseCatalogJobName, 'custom-catalog-job');
 });
 
 test('loadConfig rejects missing production secrets', () => {

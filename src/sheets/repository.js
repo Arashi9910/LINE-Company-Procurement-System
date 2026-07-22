@@ -221,6 +221,10 @@ export class SheetsRepository {
     return this.#enqueue(() => this.#cancelRequest(input));
   }
 
+  reserveCatalogSyncTrigger(input) {
+    return this.#enqueue(() => this.#reserveCatalogSyncTrigger(input));
+  }
+
   importApprovedCatalogSnapshots(input = {}) {
     return this.#enqueue(() => importApprovedReviewSnapshots({
       sheets: this.sheets,
@@ -512,6 +516,39 @@ export class SheetsRepository {
       items: request.items.map((item) => ({ ...item, status: '取消', outstandingQuantity: 0 })),
       idempotentReplay: false
     };
+  }
+
+  async #reserveCatalogSyncTrigger(input) {
+    const actorUserId = String(input.actor?.userId ?? '');
+    const idempotencyKey = String(input.idempotencyKey ?? '');
+    if (!actorUserId || !idempotencyKey) {
+      throw new ValidationError('飛鼠商品同步缺少操作人或事件識別碼');
+    }
+
+    const operationType = '同步飛鼠商品';
+    const jobName = 'flyingmouse-catalog-sync';
+    const operation = await this.#findOperation(idempotencyKey);
+    if (operation.existing) {
+      if (operation.type !== operationType || operation.requestId !== jobName) {
+        throw new ConflictError('操作金鑰已被其他操作使用');
+      }
+      return { idempotentReplay: true };
+    }
+
+    await this.sheets.spreadsheets.values.update({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${OPERATIONS_SHEET}'!A${operation.nextRow}:F${operation.nextRow}`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[
+        idempotencyKey,
+        operationType,
+        jobName,
+        actorUserId,
+        sheetSerial(this.now()),
+        'LINE 管理員觸發自動飛鼠商品同步'
+      ]] }
+    });
+    return { idempotentReplay: false };
   }
 
   async #confirmOrder(input) {

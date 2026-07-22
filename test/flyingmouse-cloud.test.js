@@ -37,10 +37,20 @@ test('FlyingMouse deployment keeps credentials in Secret Manager and requires an
   assert.match(deploy, /\[string\]\$SheetMode = 'read-only'/);
   assert.match(deploy, /\[ValidateSet\('read-only', 'review', 'auto'\)\]/);
   assert.match(deploy, /FLYINGMOUSE_SHEET_MODE=\$SheetMode/);
+  assert.match(deploy, /'roles\/run\.invoker'/);
+  assert.match(deploy, /'roles\/run\.viewer'/);
   assert.match(sheets, /spreadsheets\.readonly/);
   assert.doesNotMatch(sheets, /values\.(?:update|append|batchUpdate)/);
   assert.match(review, /auth\/spreadsheets'/);
   assert.match(review, /核准匯入/);
+});
+
+test('LINE service deployment receives the FlyingMouse job resource configuration', async () => {
+  const deploy = await read('scripts/deploy-gcp.ps1');
+
+  assert.match(deploy, /\[string\]\$FlyingmouseCatalogJobName = 'flyingmouse-catalog-sync'/);
+  assert.match(deploy, /GOOGLE_CLOUD_REGION=\$Region/);
+  assert.match(deploy, /FLYINGMOUSE_CATALOG_JOB_NAME=\$FlyingmouseCatalogJobName/);
 });
 
 test('FlyingMouse writeback deployment defaults to dry-run and disables platform retries', async () => {

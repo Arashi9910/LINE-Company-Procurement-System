@@ -1,4 +1,9 @@
-import { AuthenticationError, AuthorizationError } from '../errors.js';
+import {
+  AppError,
+  AuthenticationError,
+  AuthorizationError,
+  ValidationError
+} from '../errors.js';
 
 const STATUS_COMMANDS = new Map([
   ['查未結案', '未結案'],
@@ -21,6 +26,8 @@ export const GROUP_COMMAND_HELP = [
   '取消採購 <補貨單號>',
   '',
   '管理員指令：',
+  '同步飛鼠商品',
+  '查飛鼠同步',
   '授權 @成員 申請人／採購確認／到貨確認／管理員',
   '停用 @成員',
   '查權限 @成員'
@@ -31,6 +38,8 @@ export function parseGroupCommand(message) {
   const text = message.text.trim();
   if (STATUS_COMMANDS.has(text)) return { type: 'status', status: STATUS_COMMANDS.get(text) };
   if (text === '補貨指令') return { type: 'help' };
+  if (text === '同步飛鼠商品') return { type: 'catalog-sync', action: 'start' };
+  if (text === '查飛鼠同步') return { type: 'catalog-sync', action: 'status' };
 
   const cancellationMatch = /^取消補貨\s+(RQ-\d{8}-\d{6}-[0-9a-f]{4})$/i.exec(text);
   if (cancellationMatch) {
@@ -142,6 +151,81 @@ export async function executeCancellationCommand(input, { repository, messenger 
       ? ['注意：此操作只取消補貨系統紀錄；採購平台上的訂單仍需另外取消。']
       : []),
     ...(result.idempotentReplay ? ['（此事件已處理過，未重複寫入）'] : [])
+  ].join('\n');
+}
+
+function formatCatalogSyncTime(value) {
+  if (!value) return '尚未提供';
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return '尚未提供';
+  return new Intl.DateTimeFormat('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  }).format(new Date(timestamp));
+}
+
+function formatCatalogSyncStatus(status) {
+  if (status.state === 'never') return '尚未有飛鼠商品同步紀錄。';
+  const execution = status.execution || '尚未提供';
+  if (status.state === 'running') {
+    return [
+      '飛鼠商品同步執行中',
+      `執行編號：${execution}`,
+      `開始時間：${formatCatalogSyncTime(status.startedAt || status.createdAt)}`
+    ].join('\n');
+  }
+  const succeeded = status.state === 'succeeded';
+  return [
+    `最近一次飛鼠商品同步${succeeded ? '成功' : '失敗'}`,
+    `執行編號：${execution}`,
+    `完成時間：${formatCatalogSyncTime(status.completedAt)}`,
+    ...(!succeeded ? ['請查看 Cloud Run Job 日誌後再重試。'] : [])
+  ].join('\n');
+}
+
+export async function executeCatalogSyncCommand(input, { repository, catalogSyncRunner }) {
+  const { command, actorUserId, idempotencyKey } = input;
+  if (!actorUserId) {
+    throw new AuthenticationError('LINE 未提供你的使用者識別資料，無法操作飛鼠商品同步。');
+  }
+  const authorization = await repository.getAuthorization(actorUserId);
+  if (!authorization.enabled || authorization.role !== '管理員') {
+    throw new AuthorizationError('只有已啟用的管理員可以操作飛鼠商品同步。');
+  }
+  if (!catalogSyncRunner) {
+    throw new AppError('飛鼠商品同步服務尚未設定', {
+      code: 'CATALOG_SYNC_UNAVAILABLE',
+      status: 503
+    });
+  }
+
+  if (command.action === 'status') {
+    return formatCatalogSyncStatus(await catalogSyncRunner.status());
+  }
+  if (!idempotencyKey) {
+    throw new ValidationError('LINE 事件缺少識別碼，請重新送出「同步飛鼠商品」。');
+  }
+
+  const reservation = await repository.reserveCatalogSyncTrigger({
+    actor: { userId: actorUserId },
+    idempotencyKey
+  });
+  if (reservation.idempotentReplay) {
+    return '這筆飛鼠商品同步指令已受理過，未重複啟動。\n請輸入「查飛鼠同步」查看狀態。';
+  }
+
+  const result = await catalogSyncRunner.start();
+  return [
+    '已受理飛鼠商品同步。',
+    ...(result.execution ? [`執行編號：${result.execution}`] : []),
+    ...(result.operation && !result.execution ? [`操作編號：${result.operation}`] : []),
+    '請稍後輸入「查飛鼠同步」查看結果。'
   ].join('\n');
 }
 

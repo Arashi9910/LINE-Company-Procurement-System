@@ -1,15 +1,16 @@
 import { validateSignature } from '@line/bot-sdk';
-import { AuthenticationError, ValidationError } from '../errors.js';
+import { AppError, AuthenticationError, ValidationError } from '../errors.js';
 import { createGroupContext } from '../line/context.js';
 import {
   executeAuthorizationCommand,
   executeCancellationCommand,
+  executeCatalogSyncCommand,
   GROUP_COMMAND_HELP,
   parseGroupCommand,
   summarizeRequests
 } from '../services/group-commands.js';
 
-export function createWebhookHandler({ config, repository, messenger }) {
+export function createWebhookHandler({ config, repository, messenger, catalogSyncRunner }) {
   return async function webhookHandler(request, response, next) {
     try {
       const rawBody = request.body;
@@ -60,6 +61,29 @@ export function createWebhookHandler({ config, repository, messenger }) {
           return;
         }
 
+        if (command.type === 'catalog-sync') {
+          let reply;
+          try {
+            reply = await executeCatalogSyncCommand({
+              command,
+              actorUserId: event.source?.userId,
+              idempotencyKey: event.webhookEventId ? `line-${event.webhookEventId}` : ''
+            }, { repository, catalogSyncRunner });
+          } catch (error) {
+            if (error instanceof AppError && error.status < 500) {
+              reply = error.message;
+            } else {
+              console.error('FlyingMouse catalog command failed', {
+                name: error?.name ?? 'Error',
+                code: Number.isInteger(error?.status) ? error.status : 'unknown'
+              });
+              reply = '飛鼠商品同步服務暫時無法使用，請稍後重試。';
+            }
+          }
+          if (event.replyToken) await messenger.replyText(event.replyToken, reply);
+          return;
+        }
+
         if (['cancellation', 'cancellation-error'].includes(command.type)) {
           let reply;
           try {
@@ -73,7 +97,7 @@ export function createWebhookHandler({ config, repository, messenger }) {
               idempotencyKey: event.webhookEventId ? `line-${event.webhookEventId}` : ''
             }, { repository, messenger });
           } catch (error) {
-            if (!Number.isInteger(error.status) || error.status >= 500) throw error;
+            if (!(error instanceof AppError) || error.status >= 500) throw error;
             reply = error.message;
           }
           if (event.replyToken) await messenger.replyText(event.replyToken, reply);
@@ -95,7 +119,7 @@ export function createWebhookHandler({ config, repository, messenger }) {
               idempotencyKey: event.webhookEventId ? `line-${event.webhookEventId}` : ''
             }, { repository, messenger });
           } catch (error) {
-            if (!Number.isInteger(error.status) || error.status >= 500) throw error;
+            if (!(error instanceof AppError) || error.status >= 500) throw error;
             reply = error.message;
           }
           if (event.replyToken) await messenger.replyText(event.replyToken, reply);

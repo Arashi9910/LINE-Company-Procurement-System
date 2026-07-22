@@ -50,6 +50,11 @@ async function start(t, calls) {
           idempotentReplay: false
         };
       },
+      async reserveCatalogSyncTrigger(input) {
+        calls.catalogReservations ??= [];
+        calls.catalogReservations.push(input);
+        return calls.catalogReservation ?? { idempotentReplay: false };
+      },
       async listAvailableSkus() { return []; },
       async listOpenRequests() { return []; }
     },
@@ -67,6 +72,20 @@ async function start(t, calls) {
         return { displayName: calls.profileNames?.[userId] ?? 'LINE 成員' };
       },
       async pushRequestCreated() {}
+    },
+    catalogSyncRunner: {
+      async status() {
+        calls.catalogStatusReads = (calls.catalogStatusReads ?? 0) + 1;
+        if (calls.catalogStatusError) throw calls.catalogStatusError;
+        return calls.catalogStatus ?? { state: 'never' };
+      },
+      async start() {
+        calls.catalogStarts = (calls.catalogStarts ?? 0) + 1;
+        if (calls.catalogStartError) throw calls.catalogStartError;
+        return calls.catalogStartResult ?? {
+          state: 'accepted', operation: 'operation-123', execution: 'execution-123'
+        };
+      }
     }
   });
   const server = app.listen(0);
@@ -341,4 +360,86 @@ test('webhook refuses a cancellation event without an idempotency identifier', a
   assert.equal(response.status, 200);
   assert.equal(calls.cancelWrites, undefined);
   assert.match(calls.texts[0].text, /缺少識別碼/);
+});
+
+test('webhook lets an administrator start FlyingMouse catalog sync once', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    authorizations: { ADMIN: { role: '管理員', enabled: true, exists: true } }
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: 'event-catalog-sync-123',
+    replyToken: 'reply-catalog-sync',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'ADMIN' },
+    message: { type: 'text', text: '同步飛鼠商品' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.catalogReservations, [{
+    actor: { userId: 'ADMIN' },
+    idempotencyKey: 'line-event-catalog-sync-123'
+  }]);
+  assert.equal(calls.catalogStarts, 1);
+  assert.match(calls.texts[0].text, /已受理飛鼠商品同步/);
+  assert.match(calls.texts[0].text, /execution-123/);
+});
+
+test('webhook lets an administrator query FlyingMouse catalog sync status', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    authorizations: { ADMIN: { role: '管理員', enabled: true, exists: true } },
+    catalogStatus: {
+      state: 'succeeded', execution: 'execution-456', completedAt: '2026-07-22T10:01:00Z'
+    }
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    replyToken: 'reply-catalog-status',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'ADMIN' },
+    message: { type: 'text', text: '查飛鼠同步' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.catalogStatusReads, 1);
+  assert.equal(calls.catalogStarts, undefined);
+  assert.match(calls.texts[0].text, /同步成功/);
+  assert.match(calls.texts[0].text, /execution-456/);
+});
+
+test('webhook returns a safe reply when the FlyingMouse catalog job API fails', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    authorizations: { ADMIN: { role: '管理員', enabled: true, exists: true } },
+    catalogStartError: Object.assign(new Error('private project id and API detail'), { status: 403 })
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: 'event-catalog-sync-failed',
+    replyToken: 'reply-catalog-failed',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'ADMIN' },
+    message: { type: 'text', text: '同步飛鼠商品' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.match(calls.texts[0].text, /同步服務暫時無法使用/);
+  assert.doesNotMatch(calls.texts[0].text, /private project id/);
 });

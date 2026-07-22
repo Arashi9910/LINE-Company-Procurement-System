@@ -944,3 +944,72 @@ test('SheetsRepository treats a repeated authorization event as idempotent', asy
   }), { role: '採購確認', enabled: true, idempotentReplay: true });
   assert.equal(writes, 0);
 });
+
+function catalogTriggerSheets({ operationRows = [], onWrite }) {
+  return {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          if (range.includes('操作紀錄')) return { data: { values: operationRows } };
+          throw new Error(`unexpected range: ${range}`);
+        },
+        async update(request) {
+          onWrite?.(request);
+          return { data: {} };
+        }
+      }
+    }
+  };
+}
+
+test('SheetsRepository reserves one FlyingMouse catalog trigger in the operation log', async () => {
+  let write;
+  const repository = new SheetsRepository({
+    sheets: catalogTriggerSheets({ onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123',
+    now: () => new Date('2026-07-22T04:00:00.000Z')
+  });
+
+  const result = await repository.reserveCatalogSyncTrigger({
+    actor: { userId: 'ADMIN' },
+    idempotencyKey: 'line-sync-123'
+  });
+
+  assert.deepEqual(result, { idempotentReplay: false });
+  assert.equal(write.range, "'操作紀錄'!A2:F2");
+  assert.deepEqual(write.requestBody.values[0].slice(0, 4), [
+    'line-sync-123', '同步飛鼠商品', 'flyingmouse-catalog-sync', 'ADMIN'
+  ]);
+  assert.match(write.requestBody.values[0][5], /LINE 管理員觸發/);
+});
+
+test('SheetsRepository treats a repeated FlyingMouse catalog trigger as idempotent', async () => {
+  let writes = 0;
+  const repository = new SheetsRepository({
+    sheets: catalogTriggerSheets({
+      operationRows: [['line-sync-123', '同步飛鼠商品', 'flyingmouse-catalog-sync']],
+      onWrite: () => { writes += 1; }
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  assert.deepEqual(await repository.reserveCatalogSyncTrigger({
+    actor: { userId: 'ADMIN' },
+    idempotencyKey: 'line-sync-123'
+  }), { idempotentReplay: true });
+  assert.equal(writes, 0);
+});
+
+test('SheetsRepository rejects a catalog trigger key already used by another operation', async () => {
+  const repository = new SheetsRepository({
+    sheets: catalogTriggerSheets({
+      operationRows: [['line-sync-conflict', '取消補貨', 'RQ-1']]
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  await assert.rejects(repository.reserveCatalogSyncTrigger({
+    actor: { userId: 'ADMIN' },
+    idempotencyKey: 'line-sync-conflict'
+  }), /操作金鑰已被其他操作使用/);
+});

@@ -113,3 +113,23 @@ test('FlyingmouseCatalogJobRunner refuses to start while an execution is active'
   await assert.rejects(runner.start(), /已有飛鼠商品同步正在執行/);
   assert.equal(fixture.calls.run.length, 0);
 });
+
+test('FlyingmouseCatalogJobRunner blocks a second start while the new execution is not listed yet', async () => {
+  const fixture = runClient({
+    operation: {
+      name: 'projects/project-1/locations/asia-east1/operations/operation-pending',
+      metadata: { target: `${JOB}/executions/pending-run` }
+    }
+  });
+  let timestamp = 1_000;
+  const runner = new FlyingmouseCatalogJobRunner({
+    runClient: fixture.client,
+    projectId: 'project-1',
+    now: () => timestamp
+  });
+
+  await runner.start();
+  timestamp += 1_000;
+  await assert.rejects(runner.start(), /已有飛鼠商品同步正在執行/);
+  assert.equal(fixture.calls.run.length, 1);
+});

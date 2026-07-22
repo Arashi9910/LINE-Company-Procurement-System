@@ -18,7 +18,7 @@
 
 - Job 與現有 LINE Cloud Run Service 分開部署。
 - 飛鼠帳密只存 `flyingmouse-username`、`flyingmouse-password` 兩個 Secret Manager secret。
-- `read-only` 模式使用 `spreadsheets.readonly`；只有明確部署為 `review` 時使用 `spreadsheets` 寫入 scope。
+- `read-only` 模式使用 `spreadsheets.readonly`；只有明確部署為 `review` 或 `auto` 時使用 `spreadsheets` 寫入 scope。
 - Cloud Build 使用 `.gcloudignore.flyingmouse` allow-list，不上傳 `.env`、`work/`、測試、文件或 Claude 橋接檔。
 - Playwright 套件與 Docker image 固定為相同版本。
 - 登入驗證碼、OTP、官方表頭變更、重複貨品編號或下載異常都會讓 Job 失敗。
@@ -99,7 +99,21 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 
 描述變更、來源缺漏與衝突仍只供審核，不自動修改或刪除主檔。完整資料契約見 `docs/flyingmouse-sheet-review-spec.md`。
 
-## 目前部署狀態（2026-07-15）
+## 完全自動模式
+
+`自動同步` 功能部署時必須明確指定可寫模式：
+
+```powershell
+.\scripts\deploy-flyingmouse-job.ps1 `
+  -ProjectId 'line-restock-20260714' `
+  -SheetMode 'auto'
+```
+
+`auto` 模式會將飛鼠作為飛鼠 SKU 的主要資料來源：新品直接加入 `SKU主檔`，既有飛鼠 SKU 更新 B:H，並保留 K/N 公式與來源缺漏列。服務帳號在 Job 層級需要 `roles/run.invoker` 以啟動 Job，以及 `roles/run.viewer` 以查詢 execution；部署腳本會同時設定。
+
+切換 `auto`、首次執行及正式 Sheet 驗收都是獨立的正式環境關卡，不會因程式合併而自動執行。
+
+## 目前部署狀態（2026-07-15 最後驗證）
 
 - GCP project：`line-restock-20260714`
 - Region：`asia-east1`

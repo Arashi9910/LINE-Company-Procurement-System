@@ -129,16 +129,25 @@ if ($repositoryProbe.ExitCode -ne 0) {
   '--quiet'
 )).Output | Out-Null
 
-if (-not $SkipSchedule) {
-  (Invoke-Gcloud -Arguments @(
-    'run', 'jobs', 'add-iam-policy-binding', $JobName,
-    '--project', $ProjectId,
-    '--region', $Region,
-    '--member', "serviceAccount:$serviceAccount",
-    '--role', 'roles/run.invoker',
-    '--quiet'
-  )).Output | Out-Null
+(Invoke-Gcloud -Arguments @(
+  'run', 'jobs', 'add-iam-policy-binding', $JobName,
+  '--project', $ProjectId,
+  '--region', $Region,
+  '--member', "serviceAccount:$serviceAccount",
+  '--role', 'roles/run.invoker',
+  '--quiet'
+)).Output | Out-Null
 
+(Invoke-Gcloud -Arguments @(
+  'run', 'jobs', 'add-iam-policy-binding', $JobName,
+  '--project', $ProjectId,
+  '--region', $Region,
+  '--member', "serviceAccount:$serviceAccount",
+  '--role', 'roles/run.viewer',
+  '--quiet'
+)).Output | Out-Null
+
+if (-not $SkipSchedule) {
   $schedulerProbe = Invoke-Gcloud -Arguments @(
     'scheduler', 'jobs', 'describe', $schedulerName,
     '--project', $ProjectId,
