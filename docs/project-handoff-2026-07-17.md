@@ -1,6 +1,6 @@
 # LINE 公司補貨系統：專案進度交接
 
-最後更新：2026-07-21（Asia/Taipei）
+最後更新：2026-07-22（Asia/Taipei）
 
 ## 一句話狀態
 
@@ -12,9 +12,9 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 - Region：`asia-east1`
 - LINE Cloud Run service：`line-replenishment`
 - URL：`https://line-replenishment-nskmggnorq-de.a.run.app`
-- 正式 revision：`line-replenishment-00018-9sc`
-- 正式程式 commit：`e491ca0acd2d99e67787a83c4d6a0486b194ff83`
-- `/health`、`/ready`：2026-07-17 部署驗收均為正常
+- 正式 revision：`line-replenishment-00022-hgt`
+- 正式程式 commit：`431e15b26d469abee6d93bb1ae2084977bca99b2`
+- `/health`、`/ready`：2026-07-22 `line-job-token` 輪替後均為正常，revision 100% 接收流量
 - `FLYINGMOUSE_WRITEBACK_ENABLED=true`：LINE 確認到貨時會建立飛鼠回寫事件
 - Google Sheet：`16ko37-omRLDxdKXOX-VRwsCG3VyMerAO4EPBX_T10M8`
 
@@ -22,8 +22,8 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 
 - 目前分支：`codex/workspace-cleanup-20260721`
 - 本次正式驗收使用的乾淨 commit：`4626336`
-- GitHub `main`：`431e15b`
-- 部署時工作樹乾淨；正式驗收完成後只修改本交接文件與 Cloud Job 文件以保存證據。
+- GitHub 收尾：PR #1，target 為 `main`；以 GitHub 的 merge commit 作為最終整合紀錄。
+- 部署時工作樹乾淨；收尾分支另包含測試探索範圍固定、Claude 輸出忽略規則與驗收文件更新。
 
 ## 已完成功能
 
@@ -38,6 +38,7 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 9. 新品快速匯入首次正式自動執行於 2026-07-17 12:42，Cloud Run 回傳 `200`。
 10. 到貨回寫 queue、冪等事件、錯誤退避、人工確認，以及 live PUT 前刷新飛鼠即時庫存的程式與測試已完成。
 11. 到貨回寫已完成真實 SKU dry-run、首筆 live PUT、三方對帳與每 5 分鐘 Scheduler 驗收。
+12. `line-replenishment-reminders` 已於 2026-07-21、2026-07-22 10:00 自然執行並回傳 `200`；2026-07-22 另完成 `line-job-token` 輪替與每分鐘核准匯入自然排程驗證。
 
 最後一次完整驗證：169 項測試、lint、build 全部通過。
 
@@ -50,7 +51,7 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 | `line-replenishment-approved-imports` | ENABLED | 每分鐘 | 只匯入人工核准新品 |
 | `line-replenishment-reminders` | ENABLED | 週一至週五 10:00 | 待確認與逾期到貨提醒 |
 
-提醒 Scheduler 已改用 `X-Job-Token`，但修正後尚未等到下一個工作日 10:00 自然驗收。不要為了測試直接手動觸發，除非接受 LINE 群組可能立即收到提醒。
+提醒 Scheduler 已改用 `X-Job-Token`，並於 2026-07-21、2026-07-22 10:00 自然執行成功。2026-07-22 token 輪替後，兩個 HTTP Scheduler 均已確認與最新 Secret 一致；`line-replenishment-approved-imports` 於新 revision 的下一次自然排程回傳 `200`。
 
 ## 已完成：到貨後回寫飛鼠庫存
 
@@ -68,10 +69,9 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 - Scheduler：`flyingmouse-inventory-writeback-every-5-minutes`，`ENABLED`，每 5 分鐘，`Asia/Taipei`。
 - Scheduler 手動驗證 execution：`flyingmouse-inventory-writeback-xzr9r`，空 queue `found=0`、錯誤 0，成功結束。
 
-## 其他待辦與暫緩項目
+## 暫緩與後續項目
 
-- 本次驗收後的兩份文件更新尚待提交或合併回 `main`。
-- 10:00 提醒修正待下一個工作日自然驗收。
+- 本次驗收證據由 GitHub PR #1 管理；是否已進入 `main` 以 PR merge 狀態為準。
 - LIFF 公司／群組邊界強化：使用者先前明確決定暫緩。
 - 報關 APP 自動撈資料核對：只有構想，尚未研究可取得的資料與自動化方式。
 - 獨立 staging LINE Channel、Sheet、Cloud Run：尚未建立，屬後續維運強化。
@@ -80,7 +80,7 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 ## 重要部署注意事項
 
 - 部署 LINE service 必須帶 `-EnableFlyingmouseWriteback`，否則部署腳本預設會把入列功能設回 `false`。
-- `line-job-token` 的舊 Secret 原始值尾端含 CR/LF；程式自 `e491ca0` 起會在載入 `JOB_TOKEN` 時移除前後空白。未來若旋轉 Secret，應寫入無 BOM、無換行的純 token。
+- `line-job-token` 的舊 Secret 原始值尾端含 CR/LF；程式自 `e491ca0` 起會在載入 `JOB_TOKEN` 時移除前後空白。2026-07-22 已輪替為 Secret Manager version 3，內容為無 BOM、無換行的隨機 token；兩個 HTTP Scheduler 已同步，舊 versions 1、2 均為 disabled。
 - 快速核准匯入只讀 `飛鼠目錄待確認` 與 `SKU主檔`，不可改成每分鐘登入飛鼠或重新下載 Excel。
 - writeback 已通過首筆 live 驗收；未來若要改回 dry-run、重建 Job、變更重試／批次上限或人工修改 queue，仍需先確認正式資料影響。
 - 飛鼠帳密只存在 Secret Manager／本機忽略檔，不可提交 GitHub 或輸出到日誌。
