@@ -239,3 +239,17 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - `line-replenishment-reminders` 已於 2026-07-21、2026-07-22 10:00 自然執行並回傳 `200`，不需再以人工觸發驗收。
 - 2026-07-22 已將 `line-job-token` 輪替為 Secret Manager version 3（無 BOM、無換行），舊 versions 1、2 均已 disabled；Cloud Run 更新為 `line-replenishment-00022-hgt`，兩個 HTTP Scheduler header 均與最新 Secret 一致。
 - 輪替後 `line-replenishment-approved-imports` 在 2026-07-22 13:02（Asia/Taipei）由新 revision 自然執行並回傳 `200`；`/health`、`/ready` 亦正常。
+
+## 2026-07-22 每小時合併 Job 正式狀態
+
+- 正式 Job：`flyingmouse-catalog-sync`，入口改為 `scripts/flyingmouse-combined-job.mjs`。
+- 執行順序：商品主檔與圖片同步成功後，才執行庫存正式回寫。
+- 模式：商品 `auto`、庫存 `live`、每次庫存上限 20、平台重試 0、timeout 6 分鐘。
+- Scheduler：沿用 `flyingmouse-catalog-sync-daily` 資源名稱，實際排程為 `0 * * * *`、`Asia/Taipei`。
+- 正式 image：`flyingmouse-sync:20260722112109`。
+- 驗收 execution：`flyingmouse-catalog-sync-5xlrb`，35.33 秒，`succeededCount=1`。
+- 商品驗收：959 項全數吻合，新增 0、更新 0、缺漏 0、衝突 0；圖片 959 項全數吻合。
+- 庫存驗收：live mode，queue found 0、failed 0、manual review 0。
+- 舊 Scheduler `flyingmouse-inventory-writeback-every-5-minutes` 已刪除，避免重複登入及額外最低一分鐘計費。
+- 舊 Cloud Run Job `flyingmouse-inventory-writeback` 暫時保留但沒有排程，供緊急回復使用，不會自行執行或產生運算費。
+- 本節取代文件內較早的 5 分鐘商品／庫存排程記錄；舊段落保留為歷史驗收資料。

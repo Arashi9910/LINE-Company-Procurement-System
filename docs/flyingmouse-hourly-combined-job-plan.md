@@ -40,11 +40,11 @@
 
 ### Phase 3: Production Cutover
 
-- [ ] 暫停商品 Scheduler，部署並手動執行合併 Job。
-- [ ] 驗證 execution 與 Cloud Logging 的兩階段結果。
-- [ ] 將商品 Scheduler 設為整點每小時並恢復。
-- [ ] 刪除舊庫存五分鐘 Scheduler，保留舊 Job 本體。
-- [ ] 回讀正式 Job、Scheduler、LINE health 與 Git 狀態。
+- [x] 暫停商品 Scheduler，部署並手動執行合併 Job。
+- [x] 驗證 execution 與 Cloud Logging 的兩階段結果。
+- [x] 將商品 Scheduler 設為整點每小時並恢復。
+- [x] 刪除舊庫存五分鐘 Scheduler，保留舊 Job 本體。
+- [x] 回讀正式 Job、Scheduler、LINE health 與 Git 狀態。
 
 ## Risks and Mitigations
 
