@@ -44,7 +44,7 @@ npm.cmd run build
 
 ## 部署 Job
 
-預設排程為每天台北時間 03:00：
+預設排程為每 5 分鐘一次：
 
 ```powershell
 .\scripts\deploy-flyingmouse-job.ps1 `
@@ -60,7 +60,7 @@ npm.cmd run build
   -ExecuteNow
 ```
 
-手動驗收成功後，再以不含 `-SkipSchedule` 的命令建立每日排程。
+手動驗收成功後，再以不含 `-SkipSchedule` 的命令建立每 5 分鐘排程。為避免重疊，單次 Job timeout 為 4 分鐘、Cloud Run 平台重試為 0；失敗時由下一個 5 分鐘排程重試。Scheduler 資源名稱為了相容既有部署仍保留 `-daily` 後綴。
 
 ## 成功訊號
 
@@ -112,6 +112,16 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 `auto` 模式會將飛鼠作為飛鼠 SKU 的主要資料來源：新品直接加入 `SKU主檔`，既有飛鼠 SKU 更新 B:H，並保留 K/N 公式與來源缺漏列。服務帳號在 Job 層級需要 `roles/run.invoker` 以啟動 Job，以及 `roles/run.viewer` 以查詢 execution；部署腳本會同時設定。
 
 切換 `auto`、首次執行及正式 Sheet 驗收都是獨立的正式環境關卡，不會因程式合併而自動執行。
+
+## 正式 auto 上線（2026-07-22）
+
+- LINE Cloud Run revision：`line-replenishment-00024-2lv`
+- Git commit：`3e6964b067f6eb8c7a976c3775062ef8606dff7e`
+- 目錄 Job mode：`auto`
+- 首次成功 execution：`flyingmouse-catalog-sync-vjkbn`（32.65 秒）
+- 來源 959 個 SKU；正式主檔新增 5、更新 11，圖片 959／959 全部配對。
+- 舊基準 912 個 SKU 的 `主要供應商` 空白已一次性識別為 `飛鼠`；不同供應商的未來衝突仍會整批停止。
+- 自動排程：每 5 分鐘，`Asia/Taipei`；單次 timeout 4 分鐘，平台重試 0。
 
 ## 目前部署狀態（2026-07-15 最後驗證）
 

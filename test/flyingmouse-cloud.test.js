@@ -37,6 +37,9 @@ test('FlyingMouse deployment keeps credentials in Secret Manager and requires an
   assert.match(deploy, /\[string\]\$SheetMode = 'read-only'/);
   assert.match(deploy, /\[ValidateSet\('read-only', 'review', 'auto'\)\]/);
   assert.match(deploy, /FLYINGMOUSE_SHEET_MODE=\$SheetMode/);
+  assert.match(deploy, /\[string\]\$Schedule = '\*\/5 \* \* \* \*'/);
+  assert.match(deploy, /'--max-retries', '0'/);
+  assert.match(deploy, /'--task-timeout', '4m'/);
   assert.match(deploy, /'roles\/run\.invoker'/);
   assert.match(deploy, /'roles\/run\.viewer'/);
   assert.match(sheets, /spreadsheets\.readonly/);
