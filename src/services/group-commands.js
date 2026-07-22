@@ -18,6 +18,7 @@ export const GROUP_COMMAND_HELP = [
   '查未結案｜查待確認｜查已下單',
   '查部分到貨｜查已完成｜查取消',
   '取消補貨 <補貨單號>',
+  '取消採購 <補貨單號>',
   '',
   '管理員指令：',
   '授權 @成員 申請人／採購確認／到貨確認／管理員',
@@ -41,6 +42,19 @@ export function parseGroupCommand(message) {
   }
   if (/^取消補貨(?:\s|$)/.test(text)) {
     return { type: 'cancellation-error', reason: 'invalid-syntax' };
+  }
+
+  const orderedCancellationMatch = /^取消採購\s+(RQ-\d{8}-\d{6}-[0-9a-f]{4})$/i.exec(text);
+  if (orderedCancellationMatch) {
+    const requestId = orderedCancellationMatch[1];
+    return {
+      type: 'cancellation',
+      requestId: `${requestId.slice(0, -4).toUpperCase()}${requestId.slice(-4).toLowerCase()}`,
+      mode: 'ordered'
+    };
+  }
+  if (/^取消採購(?:\s|$)/.test(text)) {
+    return { type: 'cancellation-error', reason: 'invalid-syntax', mode: 'ordered' };
   }
 
   let action;
@@ -81,7 +95,8 @@ export function parseGroupCommand(message) {
 export async function executeCancellationCommand(input, { repository, messenger }) {
   const { command, actorUserId, groupId, idempotencyKey } = input;
   if (command.type === 'cancellation-error') {
-    return '指令格式不正確。可用格式：取消補貨 RQ-20260715-123456-abcd';
+    const commandName = command.mode === 'ordered' ? '取消採購' : '取消補貨';
+    return `指令格式不正確。可用格式：${commandName} RQ-20260715-123456-abcd`;
   }
   if (!actorUserId) {
     throw new AuthenticationError('LINE 未提供你的使用者識別資料，無法取消補貨單。');
@@ -96,14 +111,21 @@ export async function executeCancellationCommand(input, { repository, messenger 
   }
   const isApplicant = request.requesterUserId === actorUserId;
   const isEnabledAdmin = authorization.enabled && authorization.role === '管理員';
-  if (!isApplicant && !isEnabledAdmin) {
+  const isOrderedCancellation = command.mode === 'ordered';
+  const canCancelOrdered = authorization.enabled
+    && ['採購確認', '管理員'].includes(authorization.role);
+  if (isOrderedCancellation && !canCancelOrdered) {
+    throw new AuthorizationError('只有已啟用的採購確認或管理員可以取消已下單補貨單。');
+  }
+  if (!isOrderedCancellation && !isApplicant && !isEnabledAdmin) {
     throw new AuthorizationError('只有原申請人或已啟用的管理員可以取消補貨單。');
   }
 
   const result = await repository.cancelRequest({
     actor: { userId: actorUserId },
     requestId: command.requestId,
-    idempotencyKey
+    idempotencyKey,
+    ...(isOrderedCancellation ? { mode: 'ordered' } : {})
   });
   let displayName = 'LINE 成員';
   try {
@@ -113,9 +135,12 @@ export async function executeCancellationCommand(input, { repository, messenger 
     // 取消已完成，不因顯示名稱查詢失敗而回報操作失敗。
   }
   return [
-    `已取消補貨單 ${result.requestId}`,
+    `${isOrderedCancellation ? '已取消採購單' : '已取消補貨單'} ${result.requestId}`,
     `操作人：${displayName}`,
     `共 ${result.items.length} 項`,
+    ...(isOrderedCancellation
+      ? ['注意：此操作只取消補貨系統紀錄；採購平台上的訂單仍需另外取消。']
+      : []),
     ...(result.idempotentReplay ? ['（此事件已處理過，未重複寫入）'] : [])
   ].join('\n');
 }

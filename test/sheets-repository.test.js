@@ -402,6 +402,89 @@ test('SheetsRepository rejects cancellation after ordering has started', async (
   assert.equal(writes, 0);
 });
 
+test('SheetsRepository cancels ordered items that have not started receiving', async () => {
+  const rows = [
+    [
+      'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '已下單', 5, '2026/07/20', 0,
+      5, '', '', 'SKU-A', 'OWNER', 'COMPANY'
+    ],
+    [
+      'RQ-1', '2026/07/14 10:00', '小明', '商品 B', '件', 2, '取消', 0, '', 0,
+      0, '', '', 'SKU-B', 'OWNER', 'COMPANY'
+    ]
+  ];
+  let write;
+  const repository = new SheetsRepository({
+    sheets: cancellationSheets({ rows, onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123',
+    now: () => new Date('2026-07-15T08:00:00.000Z')
+  });
+
+  const result = await repository.cancelRequest({
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-1',
+    idempotencyKey: 'line-event-cancel-ordered-1',
+    mode: 'ordered'
+  });
+
+  assert.deepEqual(result.items.map((item) => item.status), ['取消', '取消']);
+  assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
+    "'補貨追蹤'!G2",
+    "'補貨追蹤'!Q2:R2",
+    "'操作紀錄'!A2:F2"
+  ]);
+  assert.deepEqual(write.requestBody.data[2].values[0].slice(0, 4), [
+    'line-event-cancel-ordered-1', '取消採購', 'RQ-1', 'BUYER'
+  ]);
+});
+
+test('SheetsRepository rejects ordered cancellation after receiving has started', async () => {
+  const rows = [[
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '部分到貨', 5, '2026/07/20', 2,
+    3, '', '', 'SKU-A', 'OWNER', 'COMPANY'
+  ]];
+  let writes = 0;
+  const repository = new SheetsRepository({
+    sheets: cancellationSheets({ rows, onWrite: () => { writes += 1; } }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  await assert.rejects(repository.cancelRequest({
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-1',
+    idempotencyKey: 'line-event-cancel-ordered-2',
+    mode: 'ordered'
+  }), /尚未到貨且狀態為已下單/);
+  assert.equal(writes, 0);
+});
+
+test('SheetsRepository replays ordered cancellation idempotently', async () => {
+  const rows = [[
+    'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '取消', 5, '2026/07/20', 0,
+    5, '', '', 'SKU-A', 'OWNER', 'COMPANY'
+  ]];
+  let writes = 0;
+  const repository = new SheetsRepository({
+    sheets: cancellationSheets({
+      rows,
+      operationRows: [['line-event-cancel-ordered-1', '取消採購', 'RQ-1']],
+      onWrite: () => { writes += 1; }
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  const result = await repository.cancelRequest({
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-1',
+    idempotencyKey: 'line-event-cancel-ordered-1',
+    mode: 'ordered'
+  });
+
+  assert.equal(result.idempotentReplay, true);
+  assert.equal(result.items[0].status, '取消');
+  assert.equal(writes, 0);
+});
+
 test('SheetsRepository treats a repeated cancellation event as idempotent', async () => {
   const rows = [[
     'RQ-1', '2026/07/14 10:00', '小明', '商品 A', '件', 5, '取消', '', '', 0,

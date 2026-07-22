@@ -21,6 +21,14 @@ test('parseGroupCommand recognizes and normalizes cancellation commands', () => 
     parseGroupCommand({ type: 'text', text: '取消補貨 RQ-123' }),
     { type: 'cancellation-error', reason: 'invalid-syntax' }
   );
+  assert.deepEqual(
+    parseGroupCommand({ type: 'text', text: ' 取消採購 rq-20260715-123456-ABCD ' }),
+    { type: 'cancellation', requestId: 'RQ-20260715-123456-abcd', mode: 'ordered' }
+  );
+  assert.deepEqual(
+    parseGroupCommand({ type: 'text', text: '取消採購 RQ-123' }),
+    { type: 'cancellation-error', reason: 'invalid-syntax', mode: 'ordered' }
+  );
 });
 
 test('parseGroupCommand recognizes every status query and help', () => {
@@ -298,6 +306,42 @@ test('executeCancellationCommand permits enabled administrators and rejects othe
   assert.equal(member.writes.length, 0);
 });
 
+test('executeCancellationCommand restricts ordered cancellation to purchasing staff and administrators', async () => {
+  const buyer = cancellationDependencies({ owner: 'OWNER', role: '採購確認', enabled: true, status: '已下單' });
+  const text = await executeCancellationCommand({
+    command: {
+      type: 'cancellation',
+      requestId: 'RQ-20260715-123456-abcd',
+      mode: 'ordered'
+    },
+    actorUserId: 'BUYER',
+    groupId: 'COMPANY',
+    idempotencyKey: 'line-event-cancel-ordered-1'
+  }, buyer.dependencies);
+
+  assert.match(text, /已取消採購單 RQ-20260715-123456-abcd/);
+  assert.match(text, /採購平台上的訂單仍需另外取消/);
+  assert.deepEqual(buyer.writes, [{
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-20260715-123456-abcd',
+    idempotencyKey: 'line-event-cancel-ordered-1',
+    mode: 'ordered'
+  }]);
+
+  const applicant = cancellationDependencies({ owner: 'OWNER', role: '申請人', enabled: true, status: '已下單' });
+  await assert.rejects(executeCancellationCommand({
+    command: {
+      type: 'cancellation',
+      requestId: 'RQ-20260715-123456-abcd',
+      mode: 'ordered'
+    },
+    actorUserId: 'OWNER',
+    groupId: 'COMPANY',
+    idempotencyKey: 'line-event-cancel-ordered-2'
+  }, applicant.dependencies), /採購確認或管理員/);
+  assert.equal(applicant.writes.length, 0);
+});
+
 test('executeCancellationCommand rejects another group and gives syntax guidance', async () => {
   const fixture = cancellationDependencies();
   await assert.rejects(executeCancellationCommand({
@@ -309,4 +353,9 @@ test('executeCancellationCommand rejects another group and gives syntax guidance
     command: { type: 'cancellation-error', reason: 'invalid-syntax' }
   }, fixture.dependencies);
   assert.match(guidance, /取消補貨 RQ-/);
+
+  const orderedGuidance = await executeCancellationCommand({
+    command: { type: 'cancellation-error', reason: 'invalid-syntax', mode: 'ordered' }
+  }, fixture.dependencies);
+  assert.match(orderedGuidance, /取消採購 RQ-/);
 });

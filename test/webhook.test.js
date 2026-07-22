@@ -286,6 +286,43 @@ test('webhook lets the original applicant cancel a pending request', async (t) =
   assert.match(calls.texts[0].text, /操作人：小明/);
 });
 
+test('webhook lets purchasing staff cancel an ordered request', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    authorizations: { BUYER: { role: '採購確認', enabled: true, exists: true } },
+    cancellationContext: {
+      requestId: 'RQ-20260715-123456-abcd',
+      requesterUserId: 'OWNER',
+      groupId: 'COMPANY',
+      items: [{ sku: 'SKU-A', status: '已下單' }]
+    },
+    profileNames: { BUYER: '採購小美' }
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: 'event-cancel-ordered-123456',
+    replyToken: 'reply-cancel-ordered',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'BUYER' },
+    message: { type: 'text', text: '取消採購 RQ-20260715-123456-abcd' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.cancelWrites, [{
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-20260715-123456-abcd',
+    idempotencyKey: 'line-event-cancel-ordered-123456',
+    mode: 'ordered'
+  }]);
+  assert.match(calls.texts[0].text, /已取消採購單 RQ-20260715-123456-abcd/);
+  assert.match(calls.texts[0].text, /操作人：採購小美/);
+});
+
 test('webhook refuses a cancellation event without an idempotency identifier', async (t) => {
   const calls = { groups: [], links: [], texts: [] };
   const baseUrl = await start(t, calls);

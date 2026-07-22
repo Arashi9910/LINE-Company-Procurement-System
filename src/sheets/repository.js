@@ -458,21 +458,33 @@ export class SheetsRepository {
   }
 
   async #cancelRequest(input) {
+    const isOrderedCancellation = input.mode === 'ordered';
+    const operationType = isOrderedCancellation ? '取消採購' : '取消補貨';
     const operation = await this.#findOperation(input.idempotencyKey);
     if (operation.existing) {
-      if (operation.requestId !== input.requestId || operation.type !== '取消補貨') {
+      if (operation.requestId !== input.requestId || operation.type !== operationType) {
         throw new ConflictError('操作金鑰已被其他操作使用');
       }
       return { ...(await this.getRequest(input.requestId)), idempotentReplay: true };
     }
 
     const request = await this.getRequest(input.requestId);
-    if (request.items.some((item) => item.status !== '待確認')) {
+    if (isOrderedCancellation) {
+      const validStatuses = request.items.every((item) => ['已下單', '取消'].includes(item.status));
+      const hasOrderedItem = request.items.some((item) => item.status === '已下單');
+      const hasReceivedItem = request.items.some((item) => item.receivedQuantity !== 0);
+      if (!validStatuses || !hasOrderedItem || hasReceivedItem) {
+        throw new ConflictError('只有尚未到貨且狀態為已下單的補貨單可以取消採購');
+      }
+    } else if (request.items.some((item) => item.status !== '待確認')) {
       throw new ConflictError('只有尚未下單且所有品項皆為待確認的補貨單可以取消');
     }
 
+    const itemsToCancel = isOrderedCancellation
+      ? request.items.filter((item) => item.status === '已下單')
+      : request.items;
     const serial = sheetSerial(this.now());
-    const data = request.items.flatMap((item) => [
+    const data = itemsToCancel.flatMap((item) => [
       { range: `'${TRACKING_SHEET}'!G${item.rowNumber}`, values: [['取消']] },
       {
         range: `'${TRACKING_SHEET}'!Q${item.rowNumber}:R${item.rowNumber}`,
@@ -483,11 +495,11 @@ export class SheetsRepository {
       range: `'${OPERATIONS_SHEET}'!A${operation.nextRow}:F${operation.nextRow}`,
       values: [[
         input.idempotencyKey,
-        '取消補貨',
+        operationType,
         input.requestId,
         input.actor.userId,
         serial,
-        `共 ${request.items.length} 項`
+        `取消 ${itemsToCancel.length} 項；原單共 ${request.items.length} 項`
       ]]
     });
     await this.sheets.spreadsheets.values.batchUpdate({
