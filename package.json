@@ -11,6 +11,7 @@
     "start": "node src/server.js",
     "flyingmouse:sync": "node scripts/flyingmouse-sync.mjs",
     "flyingmouse:writeback": "node scripts/flyingmouse-inventory-writeback.mjs",
+    "flyingmouse:combined": "node scripts/flyingmouse-combined-job.mjs",
     "test": "node --test \"test/*.test.js\"",
     "lint": "node scripts/check.mjs",
     "build": "node scripts/build.mjs"
