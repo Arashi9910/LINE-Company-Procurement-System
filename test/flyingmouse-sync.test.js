@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import ExcelJS from 'exceljs';
 import { FLYINGMOUSE_HEADERS } from '../src/flyingmouse/catalog.js';
-import { REVIEW_HEADERS, REVIEW_SHEET_NAME } from '../src/flyingmouse/sheets-review.js';
+import { MAIN_HEADERS, REVIEW_HEADERS, REVIEW_SHEET_NAME } from '../src/flyingmouse/sheets-review.js';
 import { parseArguments, runFlyingMouseSync } from '../scripts/flyingmouse-sync.mjs';
 
 async function writeWorkbook(filePath, headers, rows) {
@@ -31,7 +31,9 @@ test('parseArguments defaults to read-only browser export paths', () => {
   assert.equal(parseArguments(['--headed'], {}).headless, false);
   assert.equal(parseArguments([], { SPREADSHEET_ID: 'sheet-123' }).spreadsheetId, 'sheet-123');
   assert.equal(parseArguments([], { FLYINGMOUSE_SHEET_MODE: 'review', SPREADSHEET_ID: 'sheet-123' }).sheetMode, 'review');
+  assert.equal(parseArguments([], { FLYINGMOUSE_SHEET_MODE: 'auto', SPREADSHEET_ID: 'sheet-123' }).sheetMode, 'auto');
   assert.throws(() => parseArguments(['--sheet-mode', 'review'], {}), /需要 --spreadsheet-id/);
+  assert.throws(() => parseArguments(['--sheet-mode', 'auto'], {}), /需要 --spreadsheet-id/);
   assert.throws(() => parseArguments(['--sheet-mode', 'unsafe'], {}), /不支援的 sheet mode/);
   assert.throws(() => parseArguments(['--unknown'], {}), /未知參數/);
 });
@@ -173,4 +175,82 @@ test('runFlyingMouseSync review mode performs a zero-diff review pass without ma
   assert.equal(result.reviewSync.review.findings, 0);
   assert.equal(result.reviewSync.approvals.approved, 0);
   assert.equal(writes, 0);
+});
+
+test('runFlyingMouseSync auto mode bypasses approvals and writes the source catalog directly', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'flyingmouse-auto-sync-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sourcePath = join(directory, 'source.xlsx');
+  await writeWorkbook(sourcePath, FLYINGMOUSE_HEADERS, [
+    ['A', '新版商品 A', '紅色', '', 8, '001', 'A-01'],
+    ['B', '全新商品 B', '', '二入組', 4, '002', 'B-02']
+  ]);
+  let write;
+  let writable;
+  const sheets = {
+    spreadsheets: {
+      async get() {
+        return {
+          data: {
+            sheets: [{
+              properties: {
+                sheetId: 3,
+                title: 'SKU主檔',
+                gridProperties: { rowCount: 10, columnCount: MAIN_HEADERS.length }
+              }
+            }]
+          }
+        };
+      },
+      values: {
+        async get({ range }) {
+          if (range === "'SKU主檔'!A2:D") {
+            return { data: { values: [['A', '舊商品 A', '', '']] } };
+          }
+          if (range === "'SKU主檔'!A1:N10") {
+            return {
+              data: {
+                values: [
+                  [...MAIN_HEADERS],
+                  ['A', '舊商品 A', '', '', 3, '', '', '人工舊名', '一般SKU', '是', '', '件', '飛鼠', '']
+                ]
+              }
+            };
+          }
+          throw new Error(`unexpected range: ${range}`);
+        },
+        async batchUpdate(request) {
+          write = request;
+          return { data: {} };
+        }
+      }
+    }
+  };
+  const options = parseArguments([
+    '--input', sourcePath,
+    '--spreadsheet-id', 'sheet-123',
+    '--sheet-mode', 'auto',
+    '--output-dir', join(directory, 'reports')
+  ], {});
+
+  const result = await runFlyingMouseSync(options, {
+    now: () => new Date('2026-07-22T10:20:30.000Z'),
+    env: {},
+    sheetsFactory: (input) => {
+      writable = input.writable;
+      return sheets;
+    }
+  });
+
+  assert.equal(writable, true);
+  assert.equal(result.readOnly, false);
+  assert.equal(result.reviewSync, null);
+  assert.equal(result.inventorySync, null);
+  assert.equal(result.catalogSync.inserted, 1);
+  assert.equal(result.catalogSync.updated, 1);
+  assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
+    "'SKU主檔'!B2:H2",
+    "'SKU主檔'!A3:J3",
+    "'SKU主檔'!L3:M3"
+  ]);
 });

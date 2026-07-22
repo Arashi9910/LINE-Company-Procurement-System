@@ -9,7 +9,7 @@ param(
   [string]$ServiceAccountName = 'line-replenishment',
   [string]$Schedule = '0 3 * * *',
   [string]$TimeZone = 'Asia/Taipei',
-  [ValidateSet('read-only', 'review')]
+  [ValidateSet('read-only', 'review', 'auto')]
   [string]$SheetMode = 'read-only',
   [switch]$SkipSchedule,
   [switch]$ExecuteNow
@@ -176,8 +176,8 @@ if ($ExecuteNow) {
 Write-Host "Cloud Run Job: $JobName"
 Write-Host "Image: $image"
 if (-not $SkipSchedule) { Write-Host "Schedule: $Schedule ($TimeZone)" }
-if ($SheetMode -eq 'review') {
-  Write-Host 'Mode: review sheet sync and approved-new-item import'
-} else {
-  Write-Host 'Mode: read-only export, validation, and diff summary'
+switch ($SheetMode) {
+  'review' { Write-Host 'Mode: review sheet sync and approved-new-item import' }
+  'auto' { Write-Host 'Mode: fully automatic catalog and image sync' }
+  default { Write-Host 'Mode: read-only export, validation, and diff summary' }
 }

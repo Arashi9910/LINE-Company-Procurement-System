@@ -26,7 +26,7 @@ test('FlyingMouse Cloud Build context is an allow-list that never includes secre
   assert.equal(lines.some((line) => /claude/i.test(line)), false);
 });
 
-test('FlyingMouse deployment keeps credentials in Secret Manager and requires an explicit review mode', async () => {
+test('FlyingMouse deployment keeps credentials in Secret Manager and requires an explicit writable mode', async () => {
   const deploy = await read('scripts/deploy-flyingmouse-job.ps1');
   const sheets = await read('src/flyingmouse/sheets-baseline.js');
   const review = await read('src/flyingmouse/sheets-review.js');
@@ -35,6 +35,7 @@ test('FlyingMouse deployment keeps credentials in Secret Manager and requires an
   assert.match(deploy, /FLYINGMOUSE_PASSWORD=flyingmouse-password:latest/);
   assert.doesNotMatch(deploy, /\.env\.flyingmouse-login\.txt/);
   assert.match(deploy, /\[string\]\$SheetMode = 'read-only'/);
+  assert.match(deploy, /\[ValidateSet\('read-only', 'review', 'auto'\)\]/);
   assert.match(deploy, /FLYINGMOUSE_SHEET_MODE=\$SheetMode/);
   assert.match(sheets, /spreadsheets\.readonly/);
   assert.doesNotMatch(sheets, /values\.(?:update|append|batchUpdate)/);
