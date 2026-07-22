@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PRODUCT_IMAGE_HEADERS,
+  syncCatalogItems,
   syncInventorySnapshots,
   syncProductImages
 } from '../src/flyingmouse/sheets-operational.js';
@@ -10,6 +11,158 @@ import { MAIN_HEADERS } from '../src/flyingmouse/sheets-review.js';
 function source(partNumber, stock) {
   return { partNumber, stock };
 }
+
+function catalogSource(overrides = {}) {
+  return {
+    partNumber: 'SKU-A',
+    productName: '新版商品 A',
+    spec1: '紅色',
+    spec2: '大',
+    stock: 8,
+    gtin: '0012345',
+    location: 'A-01',
+    ...overrides
+  };
+}
+
+function catalogSheets({ rows, rowCount = 20, onWrite }) {
+  return {
+    spreadsheets: {
+      async get() {
+        return {
+          data: {
+            sheets: [{
+              properties: {
+                sheetId: 3,
+                title: 'SKU主檔',
+                gridProperties: { rowCount, columnCount: MAIN_HEADERS.length }
+              }
+            }]
+          }
+        };
+      },
+      values: {
+        async get({ range }) {
+          assert.equal(range, `'SKU主檔'!A1:N${rowCount}`);
+          return { data: { values: [[...MAIN_HEADERS], ...rows] } };
+        },
+        async batchUpdate(request) {
+          onWrite?.(request);
+          return { data: {} };
+        }
+      }
+    }
+  };
+}
+
+test('catalog sync inserts new SKUs and refreshes every source-owned B:H field', async () => {
+  const rows = [
+    [
+      'SKU-A', '舊商品', '藍色', '', 3, 'old-gtin', 'OLD', '人工舊顯示名',
+      '組合品', '否', '=FORMULA', '盒', '飛鼠', '=UPDATED'
+    ],
+    [],
+    ['MANUAL', '人工商品', '', '', 2, '', '', '人工商品', '一般SKU', '是', '', '件', '人工', '']
+  ];
+  let write;
+  const result = await syncCatalogItems({
+    sheets: catalogSheets({ rows, onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [
+      catalogSource(),
+      catalogSource({
+        partNumber: 'SKU-B', productName: '全新商品', spec1: '', spec2: '二入組',
+        stock: 4, gtin: '0099', location: 'B-02'
+      })
+    ]
+  });
+
+  assert.deepEqual(result, {
+    dryRun: false,
+    sourceRows: 2,
+    mainRows: 2,
+    managedRows: 1,
+    matched: 1,
+    coverage: 1,
+    inserted: 1,
+    updated: 1,
+    unchanged: 0,
+    sourceOnly: 1,
+    mainOnly: 0
+  });
+  assert.deepEqual(write.requestBody.data, [
+    {
+      range: "'SKU主檔'!B2:H2",
+      values: [['新版商品 A', '紅色', '大', 8, '0012345', 'A-01', '新版商品 A｜紅色｜大']]
+    },
+    {
+      range: "'SKU主檔'!A3:J3",
+      values: [[
+        'SKU-B', '全新商品', '', '二入組', 4, '0099', 'B-02', '全新商品｜二入組',
+        '一般SKU', '是'
+      ]]
+    },
+    { range: "'SKU主檔'!L3:M3", values: [['件', '飛鼠']] }
+  ]);
+});
+
+test('catalog sync rejects a source collision with a non-FlyingMouse supplier', async () => {
+  let writes = 0;
+  await assert.rejects(syncCatalogItems({
+    sheets: catalogSheets({
+      rows: [[
+        'SKU-A', '人工商品', '', '', 1, '', '', '人工商品', '一般SKU', '是', '', '件', '人工', ''
+      ]],
+      onWrite: () => { writes += 1; }
+    }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [catalogSource()]
+  }), /主要供應商不是飛鼠/);
+  assert.equal(writes, 0);
+});
+
+test('catalog sync stops before writes when managed SKU coverage is too low', async () => {
+  let writes = 0;
+  const rows = [
+    ['SKU-A', '商品 A', '', '', 1, '', '', '商品 A', '一般SKU', '是', '', '件', '飛鼠', ''],
+    ['SKU-B', '商品 B', '', '', 1, '', '', '商品 B', '一般SKU', '是', '', '件', '飛鼠', '']
+  ];
+  await assert.rejects(syncCatalogItems({
+    sheets: catalogSheets({ rows, onWrite: () => { writes += 1; } }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [catalogSource({ partNumber: 'SKU-A', productName: '商品 A', spec1: '', spec2: '' })]
+  }), /配對率 50\.0%/);
+  assert.equal(writes, 0);
+});
+
+test('catalog sync preserves source-missing rows and fails safely when the sheet is full', async () => {
+  const rows = [
+    ['SKU-A', '商品 A', '', '', 1, '', '', '商品 A', '一般SKU', '是', '', '件', '飛鼠', ''],
+    ['SKU-B', '商品 B', '', '', 1, '', '', '商品 B', '一般SKU', '是', '', '件', '飛鼠', '']
+  ];
+  const preserved = await syncCatalogItems({
+    sheets: catalogSheets({ rows }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [catalogSource({
+      partNumber: 'SKU-A', productName: '商品 A', spec1: '', spec2: '', stock: 1,
+      gtin: '', location: ''
+    })],
+    minimumCoverage: 0.5
+  });
+  assert.equal(preserved.mainOnly, 1);
+  assert.equal(preserved.updated, 0);
+
+  let writes = 0;
+  await assert.rejects(syncCatalogItems({
+    sheets: catalogSheets({ rows: [rows[0]], rowCount: 2, onWrite: () => { writes += 1; } }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [
+      catalogSource({ partNumber: 'SKU-A', productName: '商品 A', spec1: '', spec2: '', stock: 1, gtin: '', location: '' }),
+      catalogSource({ partNumber: 'SKU-C', productName: '商品 C' })
+    ]
+  }), /SKU主檔已滿/);
+  assert.equal(writes, 0);
+});
 
 function image(overrides = {}) {
   return {

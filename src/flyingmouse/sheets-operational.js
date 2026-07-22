@@ -55,6 +55,177 @@ function uniqueSourceBySku(sourceItems) {
   return result;
 }
 
+function uniqueCatalogSourceBySku(sourceItems) {
+  const stockValidated = uniqueSourceBySku(sourceItems);
+  const result = new Map();
+  for (const [sku, item] of stockValidated) {
+    const productName = normalizeText(item.productName);
+    if (!productName) throw new Error(`官方 Excel SKU ${sku} 缺少商品名稱`);
+    result.set(sku, Object.freeze({
+      partNumber: sku,
+      productName,
+      spec1: normalizeText(item.spec1),
+      spec2: normalizeText(item.spec2),
+      stock: item.stock,
+      gtin: normalizeText(item.gtin),
+      location: normalizeText(item.location)
+    }));
+  }
+  return result;
+}
+
+function buildDisplayName(item) {
+  return [item.productName, item.spec1, item.spec2].filter(Boolean).join('｜');
+}
+
+function readCatalogRows(values) {
+  exactHeaders(values[0] ?? [], MAIN_HEADERS, MAIN_SHEET_NAME);
+  const bySku = new Map();
+  const rows = [];
+  const occupiedRows = new Set([1]);
+  for (let index = 1; index < values.length; index += 1) {
+    const row = paddedRow(values[index], MAIN_HEADERS.length);
+    if (!hasValues(row)) continue;
+    const rowNumber = index + 1;
+    const sku = normalizeText(row[0]);
+    if (!sku) throw new Error(`${MAIN_SHEET_NAME} 第 ${rowNumber} 列缺少 SKU`);
+    if (bySku.has(sku)) throw new Error(`${MAIN_SHEET_NAME} SKU 重複：${sku}`);
+    const value = { sku, row, rowNumber, supplier: normalizeText(row[12]) };
+    bySku.set(sku, value);
+    rows.push(value);
+    occupiedRows.add(rowNumber);
+  }
+  return { bySku, rows, occupiedRows };
+}
+
+async function getMainSheetProperties({ sheets, spreadsheetId }) {
+  const response = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: 'sheets.properties(sheetId,title,gridProperties)'
+  });
+  const properties = response.data.sheets
+    ?.map((sheet) => sheet.properties)
+    .find((sheet) => sheet.title === MAIN_SHEET_NAME);
+  if (!properties) throw new Error(`缺少 ${MAIN_SHEET_NAME} 分頁`);
+  if ((properties.gridProperties?.columnCount ?? 0) < MAIN_HEADERS.length) {
+    throw new Error(`${MAIN_SHEET_NAME} 欄數不足`);
+  }
+  return properties;
+}
+
+export async function syncCatalogItems({
+  sheets,
+  spreadsheetId,
+  sourceItems,
+  minimumCoverage = 0.9,
+  dryRun = false
+}) {
+  if (!sheets || !spreadsheetId) throw new Error('商品主檔同步設定不完整');
+  if (typeof minimumCoverage !== 'number' || minimumCoverage <= 0 || minimumCoverage > 1) {
+    throw new Error('商品主檔最低配對率必須介於 0 與 1 之間');
+  }
+  const sourceBySku = uniqueCatalogSourceBySku(sourceItems);
+  const properties = await getMainSheetProperties({ sheets, spreadsheetId });
+  const rowCount = properties.gridProperties?.rowCount ?? 0;
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${MAIN_SHEET_NAME}'!A1:N${rowCount}`,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const main = readCatalogRows(response.data.values ?? []);
+
+  for (const [sku] of sourceBySku) {
+    const existing = main.bySku.get(sku);
+    if (existing && existing.supplier !== '飛鼠') {
+      throw new Error(`${MAIN_SHEET_NAME} SKU ${sku} 的主要供應商不是飛鼠，停止自動同步`);
+    }
+  }
+
+  const managed = main.rows.filter((item) => item.supplier === '飛鼠');
+  const matched = managed.filter((item) => sourceBySku.has(item.sku));
+  const coverage = managed.length === 0 ? 1 : matched.length / managed.length;
+  if (coverage < minimumCoverage) {
+    throw new Error(
+      `${MAIN_SHEET_NAME} 飛鼠 SKU 配對率 ${(coverage * 100).toFixed(1)}% 低於 ${(minimumCoverage * 100).toFixed(1)}%，已停止寫入`
+    );
+  }
+
+  const sourceOnly = [...sourceBySku.keys()].filter((sku) => !main.bySku.has(sku));
+  const availableRows = Math.max(0, rowCount - main.occupiedRows.size);
+  if (sourceOnly.length > availableRows) throw new Error(`${MAIN_SHEET_NAME}已滿，停止自動同步`);
+
+  let nextCandidate = 2;
+  const takeEmptyRow = () => {
+    while (main.occupiedRows.has(nextCandidate)) nextCandidate += 1;
+    if (nextCandidate > rowCount) throw new Error(`${MAIN_SHEET_NAME}已滿，停止自動同步`);
+    main.occupiedRows.add(nextCandidate);
+    return nextCandidate;
+  };
+
+  const data = [];
+  let inserted = 0;
+  let updated = 0;
+  let unchanged = 0;
+  for (const [sku, source] of sourceBySku) {
+    const catalogValues = [
+      source.productName,
+      source.spec1,
+      source.spec2,
+      source.stock,
+      source.gtin,
+      source.location,
+      buildDisplayName(source)
+    ];
+    const existing = main.bySku.get(sku);
+    if (existing) {
+      const current = existing.row.slice(1, 8);
+      if (catalogValues.every((value, index) => String(current[index] ?? '') === String(value))) {
+        unchanged += 1;
+        continue;
+      }
+      data.push({
+        range: `'${MAIN_SHEET_NAME}'!B${existing.rowNumber}:H${existing.rowNumber}`,
+        values: [catalogValues]
+      });
+      updated += 1;
+      continue;
+    }
+
+    const targetRow = takeEmptyRow();
+    data.push(
+      {
+        range: `'${MAIN_SHEET_NAME}'!A${targetRow}:J${targetRow}`,
+        values: [[sku, ...catalogValues, '一般SKU', '是']]
+      },
+      {
+        range: `'${MAIN_SHEET_NAME}'!L${targetRow}:M${targetRow}`,
+        values: [['件', '飛鼠']]
+      }
+    );
+    inserted += 1;
+  }
+
+  if (!dryRun && data.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: { valueInputOption: 'RAW', data }
+    });
+  }
+  return Object.freeze({
+    dryRun,
+    sourceRows: sourceBySku.size,
+    mainRows: main.rows.length,
+    managedRows: managed.length,
+    matched: matched.length,
+    coverage: Number(coverage.toFixed(4)),
+    inserted,
+    updated,
+    unchanged,
+    sourceOnly: sourceOnly.length,
+    mainOnly: managed.length - matched.length
+  });
+}
+
 function readMainRows(values, width = 5) {
   exactHeaders(values[0] ?? [], MAIN_HEADERS.slice(0, width), MAIN_SHEET_NAME);
   const bySku = new Map();
