@@ -164,7 +164,7 @@
 
 **Files likely touched：**
 
-- `docs/PROJECT-HANDOFF-2026-07-15.md`
+- `docs/project-handoff-2026-07-17.md`
 - `docs/purchase-order-item-addition-spec.md`
 - `docs/purchase-order-item-addition-plan.md`
 
@@ -175,7 +175,7 @@
 - [x] 規格全部成功標準已滿足。
 - [x] 自動測試、lint、build 與本機手機操作均通過。
 - [x] 未修改正式 Sheet 結構、飛鼠資料或正式 Cloud Run。
-- [ ] 取得使用者部署同意後，才部署正式版本並進行手機驗收。
+- [x] 已取得使用者部署同意並完成正式版本上線驗收（2026-07-17，見交接文件）。
 
 ## Risks and Mitigations
 
