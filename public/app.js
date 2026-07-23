@@ -2,6 +2,7 @@ import {
   cartTotals,
   filterCatalog,
   groupCatalog,
+  parseQuantityInput,
   selectableCatalogItems,
   variantLabel,
   visibleVariants
@@ -219,10 +220,35 @@ function quantityStepper(item, label) {
   minus.setAttribute('aria-label', `${label} 減少數量`);
   minus.addEventListener('click', () => updateQuantity(item, quantity - 1));
 
-  const value = document.createElement('output');
-  value.className = 'quantity-value';
-  value.textContent = String(quantity);
-  value.setAttribute('aria-label', `${label} 目前數量 ${quantity}`);
+  const value = document.createElement('input');
+  value.type = 'number';
+  value.className = 'quantity-input';
+  value.min = '0';
+  value.max = String(MAX_QUANTITY);
+  value.step = '1';
+  value.inputMode = 'numeric';
+  value.enterKeyHint = 'done';
+  value.autocomplete = 'off';
+  value.value = String(quantity);
+  value.setAttribute('aria-label', `${label} 數量，可直接輸入`);
+  value.addEventListener('input', () => value.setCustomValidity(''));
+  value.addEventListener('change', () => {
+    const nextQuantity = parseQuantityInput(value.value, MAX_QUANTITY);
+    if (nextQuantity == null) {
+      value.setCustomValidity(`請輸入 0 到 ${MAX_QUANTITY} 的整數`);
+      value.reportValidity();
+      value.setCustomValidity('');
+      value.value = String(quantity);
+      return;
+    }
+    updateQuantity(item, nextQuantity);
+  });
+  value.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    value.blur();
+  });
+  value.addEventListener('focus', () => value.select());
 
   const plus = document.createElement('button');
   plus.type = 'button';

@@ -18,3 +18,15 @@ test('variant sheet keeps the footer visible when the variant list is long', asy
   assert.match(css, /\.variant-header,\s*\.inline-notice,\s*\.variant-footer\s*\{[^}]*flex:\s*0 0 auto;/s);
 });
 
+test('quantity stepper exposes a mobile-friendly direct number input', async () => {
+  const [app, css] = await Promise.all([
+    readFile(new URL('../public/app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../public/styles.css', import.meta.url), 'utf8')
+  ]);
+
+  assert.match(app, /value\.type = 'number'/);
+  assert.match(app, /value\.inputMode = 'numeric'/);
+  assert.match(app, /parseQuantityInput\(value\.value, MAX_QUANTITY\)/);
+  assert.match(css, /\.quantity-input\s*\{[^}]*width:\s*58px;[^}]*text-align:\s*center;/s);
+});
+

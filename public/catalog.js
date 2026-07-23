@@ -81,6 +81,16 @@ export function selectableCatalogItems(items, excludedSkus) {
   return items.filter((item) => !excluded.has(item.sku));
 }
 
+export function parseQuantityInput(value, maxQuantity) {
+  const text = String(value ?? '').trim();
+  if (!/^\d+$/.test(text)) return null;
+  const quantity = Number(text);
+  const maximum = Number(maxQuantity);
+  if (!Number.isSafeInteger(quantity) || quantity < 0) return null;
+  if (!Number.isSafeInteger(maximum) || maximum < 0 || quantity > maximum) return null;
+  return quantity;
+}
+
 export function cartTotals(entries) {
   const values = [...entries];
   return {
