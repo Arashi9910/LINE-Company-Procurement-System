@@ -16,6 +16,15 @@ const STATUS_COLORS = new Map([
   ['取消', '#777777']
 ]);
 
+const STATUS_COMMANDS = new Map([
+  ['未結案', '查未結案'],
+  ['待確認', '查待確認'],
+  ['已下單', '查已下單'],
+  ['部分到貨', '查部分到貨'],
+  ['已完成', '查已完成'],
+  ['取消', '查取消']
+]);
+
 function workflowUrl(liffId, mode, requestId) {
   return `https://liff.line.me/${liffId}?mode=${mode}&requestId=${encodeURIComponent(requestId)}`;
 }
@@ -96,19 +105,41 @@ function statusBubble(liffId, item) {
   };
 }
 
+function statusPageQuickReply(filter, page, totalPages) {
+  const command = STATUS_COMMANDS.get(filter);
+  if (!command || totalPages <= 1) return undefined;
+
+  const pageAction = (label, targetPage) => ({
+    type: 'action',
+    action: {
+      type: 'message',
+      label,
+      text: `${command} ${targetPage}`
+    }
+  });
+  const items = [];
+  if (page > 1) items.push(pageAction('上一頁', page - 1));
+  if (page < totalPages) items.push(pageAction('下一頁', page + 1));
+  return items.length > 0 ? { items } : undefined;
+}
+
 export function buildStatusReply(liffId, filter, result) {
   if (result.total === 0) {
     return { type: 'text', text: `【${filter}】目前沒有符合的補貨單。` };
   }
   const items = result.items.slice(0, 10);
-  const shownNote = result.total > items.length ? `（顯示最近 ${items.length} 筆）` : '';
+  const pageSize = result.pageSize ?? 10;
+  const totalPages = result.totalPages ?? Math.ceil(result.total / pageSize);
+  const page = Math.min(Math.max(result.page ?? 1, 1), Math.max(totalPages, 1));
+  const quickReply = statusPageQuickReply(filter, page, totalPages);
   return {
     type: 'flex',
-    altText: `【${filter}】共 ${result.total} 筆補貨單${shownNote}`,
+    altText: `【${filter}】共 ${result.total} 筆補貨單${totalPages > 1 ? `（第 ${page}/${totalPages} 頁）` : ''}`,
     contents: {
       type: 'carousel',
       contents: items.map((item) => statusBubble(liffId, item))
-    }
+    },
+    ...(quickReply ? { quickReply } : {})
   };
 }
 

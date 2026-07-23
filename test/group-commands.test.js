@@ -52,6 +52,14 @@ test('parseGroupCommand recognizes every status query and help', () => {
   assert.equal(parseGroupCommand({ type: 'text', text: '今天要補貨嗎' }), null);
 });
 
+test('parseGroupCommand recognizes a status query page number', () => {
+  assert.deepEqual(
+    parseGroupCommand({ type: 'text', text: ' 查待確認 2 ' }),
+    { type: 'status', status: '待確認', page: 2 }
+  );
+  assert.equal(parseGroupCommand({ type: 'text', text: '查待確認 0' }), null);
+});
+
 test('summarizeRequests aggregates SKU rows and applies request status precedence', () => {
   const rows = [
     { requestId: 'RQ-1', requestedAt: 10, applicant: '小明', displayName: '紅色水壺', status: '已完成' },
@@ -87,6 +95,18 @@ test('summarizeRequests returns the newest ten requests and keeps the total coun
   assert.equal(result.items.length, 10);
   assert.equal(result.items[0].requestId, 'RQ-12');
   assert.equal(result.items[9].requestId, 'RQ-3');
+  assert.deepEqual(
+    { page: result.page, pageSize: result.pageSize, totalPages: result.totalPages },
+    { page: 1, pageSize: 10, totalPages: 2 }
+  );
+
+  const secondPage = summarizeRequests(rows, '待確認', 10, 2);
+  assert.equal(secondPage.page, 2);
+  assert.deepEqual(secondPage.items.map((item) => item.requestId), ['RQ-2', 'RQ-1']);
+
+  const clampedPage = summarizeRequests(rows, '待確認', 10, 99);
+  assert.equal(clampedPage.page, 2);
+  assert.deepEqual(clampedPage.items.map((item) => item.requestId), ['RQ-2', 'RQ-1']);
 });
 
 test('formatStatusReply gives a compact request-level list', () => {
@@ -101,7 +121,7 @@ test('formatStatusReply gives a compact request-level list', () => {
     }]
   });
 
-  assert.match(text, /【未結案】共 12 筆（顯示最近 10 筆）/);
+  assert.match(text, /【未結案】共 12 筆（第 1\/2 頁）/);
   assert.match(text, /RQ-20260714-120000-abcd｜待確認｜小明｜3 項/);
   assert.match(text, /…等/);
 });

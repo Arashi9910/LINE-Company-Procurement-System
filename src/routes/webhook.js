@@ -127,7 +127,7 @@ export function createWebhookHandler({ config, repository, messenger, catalogSyn
         }
 
         const rows = await repository.listRequestRows();
-        const result = summarizeRequests(rows, command.status);
+        const result = summarizeRequests(rows, command.status, 10, command.page);
         if (event.replyToken) {
           await messenger.replyStatusCards(event.replyToken, command.status, result);
         }

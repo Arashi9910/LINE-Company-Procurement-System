@@ -181,6 +181,9 @@ test('webhook replies with actionable request cards in the company group', async
     filter: '未結案',
     result: {
       total: 1,
+      page: 1,
+      pageSize: 10,
+      totalPages: 1,
       items: [{
         requestId: 'RQ-1',
         requestedAt: 2,
@@ -191,6 +194,42 @@ test('webhook replies with actionable request cards in the company group', async
       }]
     }
   }]);
+});
+
+test('webhook returns the requested status-card page', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    rows: Array.from({ length: 12 }, (_, index) => ({
+      requestId: `RQ-${index + 1}`,
+      requestedAt: index + 1,
+      applicant: '小明',
+      displayName: `商品 ${index + 1}`,
+      status: '待確認'
+    }))
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    replyToken: 'reply-status-page-2',
+    source: { type: 'group', groupId: 'COMPANY' },
+    message: { type: 'text', text: '查待確認 2' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-line-signature': sign(body, 'line-secret')
+    },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.statusCards[0].result.page, 2);
+  assert.equal(calls.statusCards[0].result.totalPages, 2);
+  assert.deepEqual(
+    calls.statusCards[0].result.items.map((item) => item.requestId),
+    ['RQ-2', 'RQ-1']
+  );
 });
 
 test('webhook rejects a command from another group without reading requests', async (t) => {
