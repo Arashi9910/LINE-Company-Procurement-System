@@ -1,6 +1,6 @@
 # LINE Company Procurement System
 
-以 LINE 工作群組作為入口、LIFF 作為手機表單、Google Sheets 作為資料後台、Google Cloud Run 作為應用伺服器的公司內部補貨管理系統。
+以 LINE 工作群組作為入口、LIFF 作為手機表單、Google Sheets 作為資料後台、Google Cloud Run Service 作為應用伺服器，並以獨立 Cloud Run Job 同步飛鼠商品與庫存的公司內部補貨管理系統。
 
 系統解決以下問題：
 
@@ -17,10 +17,11 @@
 | LINE Official Account／Messaging API | 員工入口、群組指令、回覆與主動通知 |
 | LINE Login | 確認目前操作表單的人員身分 |
 | LIFF | 在 LINE 裡開啟的手機版商品與補貨表單 |
-| Cloud Run | 執行程式、API、Webhook、權限與補貨流程的系統大腦 |
+| Cloud Run Service | 執行 API、Webhook、權限與補貨流程的系統大腦 |
+| Cloud Run Job | 每小時同步飛鼠商品、圖片、庫存快照與到貨回寫 |
 | Google Sheets | SKU、補貨單、權限、設定與操作紀錄的資料後台 |
-| Cloud Scheduler | 工作日上午自動觸發未處理及逾期提醒 |
-| Secret Manager | 保存 LINE 密鑰與系統簽章金鑰 |
+| Cloud Scheduler | 觸發提醒、核准匯入及每小時飛鼠合併工作 |
+| Secret Manager | 保存 LINE、系統簽章與飛鼠登入密鑰 |
 | Cloud Logging | 保存 Cloud Run 執行與錯誤日誌 |
 
 ## 系統架構
@@ -34,12 +35,17 @@ flowchart LR
     LIFF -->|LINE Login ID token| RUN
     LIFF -->|SKU、申請、下單、到貨 API| RUN
     RUN <-->|Google Sheets API| SHEET[Google Sheets]
-    SCHED[Cloud Scheduler] -->|工作日 10:00| RUN
+    HTTP_SCHED[HTTP Scheduler] -->|提醒與核准匯入| RUN
+    JOB_SCHED[每小時 Scheduler] --> JOB[Cloud Run Job<br/>Playwright + Node.js]
+    JOB -->|登入、下載與庫存 API| FLYING[飛鼠]
+    JOB <-->|目錄、圖片與回寫佇列| SHEET
     SECRET[Secret Manager] -->|執行時掛載密鑰| RUN
+    SECRET -->|執行時掛載飛鼠帳密| JOB
     RUN --> LOG[Cloud Logging]
+    JOB --> LOG
 ```
 
-這是一個小型單體式應用程式：前端網頁、API、Webhook 與排程入口部署在同一個 Cloud Run Service 中。元件少、維護成本低，適合目前公司內部使用規模。
+LINE 主系統是小型分層式單體：前端網頁、API、Webhook 與 HTTP 排程入口部署在同一個 Cloud Run Service。需要瀏覽器登入飛鼠的同步流程則部署為獨立 Cloud Run Job，避免與即時 LINE 請求互相影響。
 
 ## 主要功能
 
@@ -85,7 +91,7 @@ flowchart LR
 查權限 @成員
 ```
 
-`取消補貨` 只接受仍全部處於「待確認」的補貨單，限原申請人或已啟用的管理員使用。`取消採購` 只接受尚未開始到貨且所有有效品項皆為「已下單」的補貨單，限已啟用的 `採購確認` 或 `管理員` 使用；它只取消補貨系統紀錄，採購平台上的訂單仍需另外取消。`同步飛鼠商品`、`查飛鼠同步` 與授權指令只有已啟用的管理員能使用。飛鼠同步指令會非同步啟動 Cloud Run Job，不會讓 LINE Webhook 等待瀑覽器作業完成。系統使用 LINE Webhook 提供的 user ID 識別成員，不依賴可能重複或變更的顯示名稱。
+`取消補貨` 只接受仍全部處於「待確認」的補貨單，限原申請人或已啟用的管理員使用。`取消採購` 只接受尚未開始到貨且所有有效品項皆為「已下單」的補貨單，限已啟用的 `採購確認` 或 `管理員` 使用；它只取消補貨系統紀錄，採購平台上的訂單仍需另外取消。`同步飛鼠商品`、`查飛鼠同步` 與授權指令只有已啟用的管理員能使用。飛鼠同步指令會非同步啟動 Cloud Run Job，不會讓 LINE Webhook 等待瀏覽器作業完成。系統使用 LINE Webhook 提供的 user ID 識別成員，不依賴可能重複或變更的顯示名稱。
 
 ### 自動提醒
 
@@ -94,6 +100,13 @@ Cloud Scheduler 於 `Asia/Taipei` 時區的週一至週五上午 10:00 呼叫提
 - 補貨申請超過 24 小時仍待確認。
 - 已超過預計到貨日，但仍有未到數量。
 - 同一案件同一天不重複提醒。
+
+### 飛鼠自動同步與庫存回寫
+
+- `flyingmouse-catalog-sync` Cloud Run Job 每小時整點執行，資源名稱沿用早期的 `-daily` 後綴。
+- 合併工作先同步商品主檔、庫存快照與商品圖片；商品階段成功後，才處理到貨回寫佇列。
+- 正式商品模式為 `auto`、庫存模式為 `live`，每次最多處理 20 筆回寫事件，Cloud Run 平台重試為 0。
+- 舊的獨立庫存回寫 Job 保留作緊急回復，但已無 Scheduler，不會自行執行。
 
 ## 一次補貨的資料流程
 
@@ -127,6 +140,8 @@ sequenceDiagram
 | `授權人員` | LINE user ID、顯示名稱、角色、啟用狀態 |
 | `操作紀錄` | 申請、下單、到貨及授權稽核 |
 | `系統設定` | 工作群組 ID 等非機密設定 |
+| `飛鼠目錄待確認` | 歷史審核模式及人工核准新品快照 |
+| `飛鼠庫存回寫` | 到貨回寫事件、重試狀態與三方對帳資料 |
 
 Google Sheets 由 Cloud Run 專用服務帳號存取。LINE Channel Secret、Access Token 等機密不得存放在試算表。
 
@@ -158,11 +173,14 @@ src/
     context.js           群組連結簽章
   sheets/
     repository.js        Google Sheets 資料存取
+  flyingmouse/           飛鼠 Excel、圖片、目錄同步與庫存回寫
 
 test/                    Node.js 自動測試
-scripts/                 建置、密鑰及 Google Cloud 部署腳本
+scripts/                 建置、密鑰、部署及飛鼠合併 Job 入口
 docs/                    功能規格、設計與部署文件
-Dockerfile               Cloud Run 容器定義
+Dockerfile               LINE Cloud Run Service 容器定義
+Dockerfile.flyingmouse-job
+                         飛鼠 Cloud Run Job 容器定義
 ```
 
 ## 技術堆疊
@@ -210,10 +228,13 @@ npm.cmd run build
 - Scheduler 提醒與重複提醒防護
 - Google Sheets 寫入範圍
 - 手機版商品及規格畫面
+- 飛鼠商品、圖片及庫存同步安全檢查
+- 到貨回寫的 dry-run、live、重試與人工確認
+- 每小時合併 Job 的執行順序與部署契約
 
 ## 部署
 
-正式環境使用 Cloud Run Source Deployment。部署腳本會：
+LINE 主服務使用 Cloud Run Source Deployment。部署腳本會：
 
 1. 確認 Git 工作區乾淨並取得完整 commit SHA。
 2. 啟用必要的 Google Cloud APIs。
@@ -230,6 +251,8 @@ npm.cmd run build
 ```
 
 詳細步驟請參考 `docs/deployment.md`。
+
+飛鼠工作使用獨立容器與 Cloud Run Job；目前正式排程為每小時整點，入口是 `scripts/flyingmouse-combined-job.mjs`。正式 `auto/live` 部署、停排程或改頻率會影響正式商品與庫存資料，執行前必須另行確認。操作與歷史驗收請參考 `docs/flyingmouse-cloud-job.md`。
 
 ## 安全設計
 
@@ -268,5 +291,8 @@ npm.cmd run build
 - `docs/product-card-liff-spec.md`：商品卡片式 LIFF 設計
 - `docs/product-image-mapping-spec.md`：商品圖片資料規格
 - `docs/deployment.md`：Google Cloud 與 LINE 部署手冊
+- `docs/flyingmouse-cloud-job.md`：飛鼠合併 Job 操作、現況與歷史驗收
+- `docs/flyingmouse-hourly-combined-job-spec.md`：每小時商品同步與庫存回寫規格
+- `docs/project-handoff-2026-07-17.md`：正式環境與後續維運交接
 
 此專案為公司內部使用系統。請勿將正式密鑰、LINE user ID、群組 ID 或客戶資料提交至版本庫。

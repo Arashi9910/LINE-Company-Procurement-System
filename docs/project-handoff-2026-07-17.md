@@ -1,10 +1,10 @@
 # LINE 公司補貨系統：專案進度交接
 
-最後更新：2026-07-22（Asia/Taipei）
+最後更新：2026-07-23（Asia/Taipei；文件校正，正式環境最後驗收仍為 2026-07-22）
 
 ## 一句話狀態
 
-LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、飛鼠每日目錄／庫存／圖片同步、新品核准後一分鐘匯入，以及到貨後正式回寫飛鼠庫存均已上線並完成首筆驗收。
+LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、新品核准後一分鐘匯入均已上線；飛鼠商品／圖片同步與到貨庫存回寫已合併為每小時 Cloud Run Job，並完成正式切換與首筆回寫驗收。
 
 ## 正式環境
 
@@ -12,18 +12,18 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 - Region：`asia-east1`
 - LINE Cloud Run service：`line-replenishment`
 - URL：`https://line-replenishment-nskmggnorq-de.a.run.app`
-- 正式 revision：`line-replenishment-00022-hgt`
-- 正式程式 commit：`431e15b26d469abee6d93bb1ae2084977bca99b2`
-- `/health`、`/ready`：2026-07-22 `line-job-token` 輪替後均為正常，revision 100% 接收流量
+- 最新有文件記錄的 LINE revision：`line-replenishment-00024-2lv`
+- 該 revision 程式 commit：`3e6964b067f6eb8c7a976c3775062ef8606dff7e`
+- `/health`、`/ready`：最後一次明確記錄的驗收是 2026-07-22 `line-job-token` 輪替後的 `line-replenishment-00022-hgt`；本次文件校正未重新連線查驗正式環境
 - `FLYINGMOUSE_WRITEBACK_ENABLED=true`：LINE 確認到貨時會建立飛鼠回寫事件
 - Google Sheet：`16ko37-omRLDxdKXOX-VRwsCG3VyMerAO4EPBX_T10M8`
 
 ## Git 狀態
 
-- 目前分支：`codex/workspace-cleanup-20260721`
-- 本次正式驗收使用的乾淨 commit：`4626336`
-- GitHub 收尾：PR #1，target 為 `main`；以 GitHub 的 merge commit 作為最終整合紀錄。
-- 部署時工作樹乾淨；收尾分支另包含測試探索範圍固定、Claude 輸出忽略規則與驗收文件更新。
+- 2026-07-23 文件校正時的本機分支：`codex/auto-flyingmouse-catalog-sync`
+- 每小時合併 Job 正式切換紀錄 commit：`97139bd`
+- 首筆庫存回寫正式驗收使用的乾淨 commit：`4626336`
+- PR #1 已由 merge commit `947a4d3` 進入 `main`；每小時合併 Job 位於後續分支，是否再合併回 `main` 應以 GitHub 最新狀態為準。
 
 ## 已完成功能
 
@@ -33,23 +33,25 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 4. 原申請人或管理員用 `取消補貨 <補貨單號>` 取消仍為待確認的整張單。
 5. LINE 群組查詢、授權與提醒功能。
 6. 部署版本、Git commit、health／ready revision 追蹤。
-7. 每天 03:00 登入飛鼠、下載官方 Excel、同步新品差異、既有 SKU 庫存快照與商品圖片。
+7. 每小時整點執行飛鼠合併 Job：登入、下載官方 Excel、自動同步商品主檔／庫存快照／商品圖片，再處理到貨回寫佇列。
 8. 人工在 `飛鼠目錄待確認` 設為 `核准匯入` 後，由每分鐘排程只匯入核准新品至 `SKU主檔`；不重新登入飛鼠、不重抓 Excel、不全量重匯。
 9. 新品快速匯入首次正式自動執行於 2026-07-17 12:42，Cloud Run 回傳 `200`。
 10. 到貨回寫 queue、冪等事件、錯誤退避、人工確認，以及 live PUT 前刷新飛鼠即時庫存的程式與測試已完成。
-11. 到貨回寫已完成真實 SKU dry-run、首筆 live PUT、三方對帳與每 5 分鐘 Scheduler 驗收。
+11. 到貨回寫已完成真實 SKU dry-run、首筆 live PUT、三方對帳；原本每 5 分鐘的獨立 Scheduler 驗收完成後，已由每小時合併 Job 取代。
 12. `line-replenishment-reminders` 已於 2026-07-21、2026-07-22 10:00 自然執行並回傳 `200`；2026-07-22 另完成 `line-job-token` 輪替與每分鐘核准匯入自然排程驗證。
+13. `flyingmouse-catalog-sync` 已改用合併入口，正式模式為商品 `auto`、庫存 `live`；舊庫存 Scheduler 已刪除，舊 Job 本體只保留作緊急回復。
 
-最後一次完整驗證：169 項測試、lint、build 全部通過。
+2026-07-23 本機完整驗證：199 項測試、lint（66 個檔案）、build 全部通過。
 
 ## 正式排程
 
 | Scheduler | 狀態 | 頻率 | 用途 |
 | --- | --- | --- | --- |
-| `flyingmouse-catalog-sync-daily` | ENABLED | 每天 03:00，Asia/Taipei | Excel、目錄差異、庫存快照、圖片同步 |
-| `flyingmouse-inventory-writeback-every-5-minutes` | ENABLED | 每 5 分鐘，Asia/Taipei | 將到貨事件回寫飛鼠庫存 |
+| `flyingmouse-catalog-sync-daily` | ENABLED | 每小時整點，Asia/Taipei | 商品主檔、庫存快照、圖片同步成功後，再處理到貨回寫 |
 | `line-replenishment-approved-imports` | ENABLED | 每分鐘 | 只匯入人工核准新品 |
 | `line-replenishment-reminders` | ENABLED | 週一至週五 10:00 | 待確認與逾期到貨提醒 |
+
+`flyingmouse-inventory-writeback-every-5-minutes` 已於 2026-07-22 刪除；舊 `flyingmouse-inventory-writeback` Cloud Run Job 保留但沒有排程。
 
 提醒 Scheduler 已改用 `X-Job-Token`，並於 2026-07-21、2026-07-22 10:00 自然執行成功。2026-07-22 token 輪替後，兩個 HTTP Scheduler 均已確認與最新 Secret 一致；`line-replenishment-approved-imports` 於新 revision 的下一次自然排程回傳 `200`。
 
@@ -57,17 +59,21 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 
 目前狀態：
 
-- Cloud Run Job：`flyingmouse-inventory-writeback`
-- Mode：`live`
-- 部署 image：`flyingmouse-sync:20260721103733`
-- Image digest：`sha256:a2ca92e27286f68c847769ff3b84a087c1dafe89f89fae9ef0ed7bd4f97deb72`
+- 現行 Cloud Run Job：`flyingmouse-catalog-sync`，入口為 `scripts/flyingmouse-combined-job.mjs`
+- Mode：商品 `auto`、庫存 `live`
+- 部署 image：`flyingmouse-sync:20260722112109`
+- 正式合併驗收 execution：`flyingmouse-catalog-sync-5xlrb`，商品與圖片同步成功，queue `found=0`、錯誤 0
+- Scheduler：沿用 `flyingmouse-catalog-sync-daily` 名稱，實際為每小時整點，`Asia/Taipei`
 - 每次最多 20 筆、單 task、Cloud Run 平台 `maxRetries=0`。
+- 舊 `flyingmouse-inventory-writeback` Job 暫時保留但沒有 Scheduler，不會自行執行。
+
+首筆 live 回寫驗收紀錄：
+
 - dry-run execution：`flyingmouse-inventory-writeback-k56wp`，`found=1`、`dryRun=1`、錯誤 0，沒有 PUT 或 Sheet 寫入。
 - 首筆 live execution：`flyingmouse-inventory-writeback-r8556`，`found=1`、`completed=1`、錯誤 0。
 - 驗收 SKU：`150E92-H2H應援棒收納包（無應援棒）`，飛鼠貨品 ID 175，到貨量 1，庫存 `20 → 21`。
 - 三方對帳：飛鼠為 21、queue 為 `已完成` 且 before/target 20/21、`SKU主檔!E54` 為 21。
-- Scheduler：`flyingmouse-inventory-writeback-every-5-minutes`，`ENABLED`，每 5 分鐘，`Asia/Taipei`。
-- Scheduler 手動驗證 execution：`flyingmouse-inventory-writeback-xzr9r`，空 queue `found=0`、錯誤 0，成功結束。
+- 歷史 Scheduler 驗證 execution：`flyingmouse-inventory-writeback-xzr9r`，空 queue `found=0`、錯誤 0，成功結束；該 Scheduler 後續已刪除。
 
 ## 暫緩與後續項目
 
@@ -87,4 +93,4 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 
 ## 建議下次接續指令
 
-「檢查飛鼠庫存回寫：查看最近 Scheduler／Cloud Run execution、`飛鼠庫存回寫` 的等待重試與人工確認事件，以及飛鼠與 `SKU主檔` 是否一致；先唯讀，不重跑已完成事件。」
+「檢查飛鼠每小時合併 Job：查看 `flyingmouse-catalog-sync-daily` 最近一次 Scheduler／Cloud Run execution、商品與 writeback 兩階段摘要、`飛鼠庫存回寫` 的等待重試與人工確認事件，以及飛鼠與 `SKU主檔` 是否一致；先唯讀，不重跑已完成事件。」
