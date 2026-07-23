@@ -1,10 +1,10 @@
 # LINE 公司補貨系統：專案進度交接
 
-最後更新：2026-07-23（Asia/Taipei；文件校正，正式環境最後驗收仍為 2026-07-22）
+最後更新：2026-07-23（Asia/Taipei；LINE 查詢卡片分頁正式部署）
 
 ## 一句話狀態
 
-LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、新品核准後一分鐘匯入均已上線；飛鼠商品／圖片同步與到貨庫存回寫已合併為每小時 Cloud Run Job，並完成正式切換與首筆回寫驗收。
+LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、查詢卡片分頁、新品核准後一分鐘匯入均已上線；飛鼠商品／圖片同步與到貨庫存回寫已合併為每小時 Cloud Run Job，並完成正式切換與首筆回寫驗收。
 
 ## 正式環境
 
@@ -12,9 +12,9 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 - Region：`asia-east1`
 - LINE Cloud Run service：`line-replenishment`
 - URL：`https://line-replenishment-nskmggnorq-de.a.run.app`
-- 最新有文件記錄的 LINE revision：`line-replenishment-00024-2lv`
-- 該 revision 程式 commit：`3e6964b067f6eb8c7a976c3775062ef8606dff7e`
-- `/health`、`/ready`：最後一次明確記錄的驗收是 2026-07-22 `line-job-token` 輪替後的 `line-replenishment-00022-hgt`；本次文件校正未重新連線查驗正式環境
+- 最新有文件記錄的 LINE revision：`line-replenishment-00025-gfg`
+- 該 revision 程式 commit：`582857462f984b46f72e6112001794cfec43c876`
+- `/health`、`/ready`：2026-07-23 已驗證皆為 `ok: true`，commit 與 revision 相符，且新 revision 承接 100% 流量
 - `FLYINGMOUSE_WRITEBACK_ENABLED=true`：LINE 確認到貨時會建立飛鼠回寫事件
 - Google Sheet：`16ko37-omRLDxdKXOX-VRwsCG3VyMerAO4EPBX_T10M8`
 
@@ -31,7 +31,7 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 2. 老闆確認下單、調整原數量、從全部可補貨商品任意追加 SKU。
 3. 部分到貨、多次到貨與完成到貨。
 4. 原申請人或管理員用 `取消補貨 <補貨單號>` 取消仍為待確認的整張單。
-5. LINE 群組查詢、授權與提醒功能。
+5. LINE 群組查詢、授權與提醒功能；查詢超過 10 筆時可由卡片下方切換上一頁／下一頁。
 6. 部署版本、Git commit、health／ready revision 追蹤。
 7. 每小時整點執行飛鼠合併 Job：登入、下載官方 Excel、自動同步商品主檔／庫存快照／商品圖片，再處理到貨回寫佇列。
 8. 人工在 `飛鼠目錄待確認` 設為 `核准匯入` 後，由每分鐘排程只匯入核准新品至 `SKU主檔`；不重新登入飛鼠、不重抓 Excel、不全量重匯。
@@ -41,7 +41,7 @@ LINE 補貨、老闆確認下單與追加商品、取消補貨、到貨登記、
 12. `line-replenishment-reminders` 已於 2026-07-21、2026-07-22 10:00 自然執行並回傳 `200`；2026-07-22 另完成 `line-job-token` 輪替與每分鐘核准匯入自然排程驗證。
 13. `flyingmouse-catalog-sync` 已改用合併入口，正式模式為商品 `auto`、庫存 `live`；舊庫存 Scheduler 已刪除，舊 Job 本體只保留作緊急回復。
 
-2026-07-23 本機完整驗證：201 項測試、lint（66 個檔案）、build 全部通過。
+2026-07-23 本機完整驗證：204 項測試、lint（66 個檔案）、build 全部通過。
 
 ## 正式排程
 
