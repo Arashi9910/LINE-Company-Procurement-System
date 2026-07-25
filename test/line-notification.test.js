@@ -18,7 +18,7 @@ test('LINE fallback only sends from a supported group chat', async () => {
   const calls = [];
   const liff = {
     isInClient: () => true,
-    isApiAvailable: (name) => name === 'sendMessages',
+    isApiAvailable: () => { throw new Error('sendMessages is not a supported isApiAvailable name'); },
     getContext: () => ({ type: 'group', scope: ['openid', 'chat_message.write'] }),
     async sendMessages(messages) { calls.push(messages); }
   };

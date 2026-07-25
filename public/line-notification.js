@@ -39,7 +39,6 @@ export function buildLineFallbackMessage(liffId, requestId, stage) {
 export function canSendToCurrentLineChat(liff) {
   try {
     if (!liff?.isInClient?.() || typeof liff.sendMessages !== 'function') return false;
-    if (typeof liff.isApiAvailable === 'function' && !liff.isApiAvailable('sendMessages')) return false;
     const context = liff.getContext?.();
     if (!['group', 'room'].includes(context?.type)) return false;
     if (Array.isArray(context.scope) && !context.scope.includes('chat_message.write')) return false;
