@@ -4,6 +4,48 @@ import { verifyGroupContext } from '../line/context.js';
 import { listSearchableSkus, submitRequest } from '../services/requests.js';
 import { confirmOrder, confirmReceipt, getRequestDetails } from '../services/workflow.js';
 
+function lineErrorStatus(error) {
+  return Number(error?.status ?? error?.statusCode) || null;
+}
+
+function lineErrorBodyMessage(error) {
+  if (typeof error?.body !== 'string') return '';
+  try {
+    return String(JSON.parse(error.body)?.message ?? '');
+  } catch {
+    return '';
+  }
+}
+
+function notificationFailure(error) {
+  const status = lineErrorStatus(error);
+  const bodyMessage = lineErrorBodyMessage(error);
+  if (status === 429 && /monthly limit/i.test(bodyMessage)) {
+    return { sent: false, reason: 'quota_exceeded' };
+  }
+  if (status === 429) return { sent: false, reason: 'rate_limited' };
+  return { sent: false, reason: 'delivery_failed' };
+}
+
+async function deliverNotification({ kind, requestId, target, send }) {
+  if (!target) return { sent: false, reason: 'group_unavailable' };
+  try {
+    await send();
+    return { sent: true };
+  } catch (error) {
+    const result = notificationFailure(error);
+    console.warn(JSON.stringify({
+      event: 'line_notification_failed',
+      kind,
+      requestId,
+      status: lineErrorStatus(error),
+      reason: result.reason,
+      message: error.message
+    }));
+    return result;
+  }
+}
+
 export function createApiRouter({ config, repository, identityVerifier, messenger }) {
   const router = Router();
 
@@ -38,18 +80,14 @@ export function createApiRouter({ config, repository, identityVerifier, messenge
         groupId
       }, repository);
 
-      if (groupId) {
-        try {
-          await messenger.pushRequestCreated(groupId, result, request.actor);
-        } catch (error) {
-          console.warn('LINE request notification failed', {
-            requestId: result.requestId,
-            message: error.message
-          });
-        }
-      }
+      const notification = await deliverNotification({
+        kind: 'request_created',
+        requestId: result.requestId,
+        target: groupId,
+        send: () => messenger.pushRequestCreated(groupId, result, request.actor)
+      });
 
-      response.status(result.idempotentReplay ? 200 : 201).json(result);
+      response.status(result.idempotentReplay ? 200 : 201).json({ ...result, notification });
     } catch (error) {
       next(error);
     }
@@ -74,14 +112,13 @@ export function createApiRouter({ config, repository, identityVerifier, messenge
         items: request.body?.items,
         idempotencyKey: request.body?.idempotencyKey
       }, repository);
-      if (result.groupId) {
-        try {
-          await messenger.pushOrderConfirmed(result.groupId, result, request.actor);
-        } catch (error) {
-          console.warn('LINE order notification failed', { requestId: result.requestId, message: error.message });
-        }
-      }
-      response.status(result.idempotentReplay ? 200 : 201).json(result);
+      const notification = await deliverNotification({
+        kind: 'order_confirmed',
+        requestId: result.requestId,
+        target: result.groupId,
+        send: () => messenger.pushOrderConfirmed(result.groupId, result, request.actor)
+      });
+      response.status(result.idempotentReplay ? 200 : 201).json({ ...result, notification });
     } catch (error) {
       next(error);
     }
@@ -95,14 +132,13 @@ export function createApiRouter({ config, repository, identityVerifier, messenge
         items: request.body?.items,
         idempotencyKey: request.body?.idempotencyKey
       }, repository);
-      if (result.groupId) {
-        try {
-          await messenger.pushReceiptConfirmed(result.groupId, result, request.actor);
-        } catch (error) {
-          console.warn('LINE receipt notification failed', { requestId: result.requestId, message: error.message });
-        }
-      }
-      response.status(result.idempotentReplay ? 200 : 201).json(result);
+      const notification = await deliverNotification({
+        kind: 'receipt_confirmed',
+        requestId: result.requestId,
+        target: result.groupId,
+        send: () => messenger.pushReceiptConfirmed(result.groupId, result, request.actor)
+      });
+      response.status(result.idempotentReplay ? 200 : 201).json({ ...result, notification });
     } catch (error) {
       next(error);
     }

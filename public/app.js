@@ -13,6 +13,7 @@ import {
   withLineReauthMarker,
   withoutLineReauthMarker
 } from './line-session.js';
+import { sendLineFallbackNotification } from './line-notification.js';
 import {
   selectWorkflowItems,
   workflowConfig,
@@ -24,6 +25,7 @@ const MAX_QUANTITY = 999999;
 
 const state = {
   idToken: '',
+  liffId: '',
   items: [],
   groups: [],
   groupsBySku: new Map(),
@@ -85,6 +87,30 @@ function restartLineLogin() {
   liff.logout();
   liff.login({ redirectUri });
   return true;
+}
+
+function returnToLine() {
+  try {
+    if (window.liff?.isInClient?.()) {
+      if (typeof liff.closeWindow === 'function') {
+        liff.closeWindow();
+        return;
+      }
+    }
+  } catch {
+    // ignore and fallback
+  }
+
+  if (window.history.length > 1) {
+    window.history.back();
+  } else {
+    window.location.replace('/');
+  }
+}
+
+async function recoverFailedNotification(result, stage) {
+  if (result.notification?.sent !== false) return false;
+  return sendLineFallbackNotification(window.liff, state.liffId, result.requestId, stage);
 }
 
 function clearLineReauthMarker() {
@@ -429,8 +455,21 @@ async function submit() {
     elements.note.value = '';
     renderCart();
     renderResults();
-    showStatus(`已建立補貨單 ${result.requestId}`, 'success');
+    const fallbackSent = await recoverFailedNotification(result, 'request');
+    if (result.notification?.sent === false && !fallbackSent) {
+      showStatus(
+        `已建立補貨單 ${result.requestId}，但 LINE 群組通知未送達。請回群組輸入「查待確認」，即可繼續確認下單。`
+      );
+    } else {
+      showStatus(
+        fallbackSent
+          ? `已建立補貨單 ${result.requestId}，確認下單卡片已送回群組`
+          : `已建立補貨單 ${result.requestId}`,
+        'success'
+      );
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (result.notification?.sent !== false || fallbackSent) returnToLine();
   } catch (error) {
     showStatus(error.message, 'error');
   } finally {
@@ -607,9 +646,12 @@ async function submitWorkflow() {
     elements.workflowSubmit.hidden = true;
     elements.workflowAdd.hidden = true;
     elements.catalog.hidden = true;
+    const fallbackSent = await recoverFailedNotification(result, mode);
     showStatus(
-      mode === 'order' ? `已確認下單 ${result.requestId}` : `已登記到貨 ${result.requestId}`,
-      'success'
+      result.notification?.sent === false && !fallbackSent
+        ? `${mode === 'order' ? '已確認下單' : '已登記到貨'} ${result.requestId}，但 LINE 群組通知未送達。請回群組輸入「${mode === 'order' ? '查已下單' : '查未結案'}」查看。`
+        : `${mode === 'order' ? '已確認下單' : '已登記到貨'} ${result.requestId}${fallbackSent ? '，後續卡片已送回群組' : ''}`,
+      result.notification?.sent === false && !fallbackSent ? '' : 'success'
     );
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (error) {
@@ -625,6 +667,7 @@ async function initialize() {
     const configResponse = await fetch('/api/config');
     const config = await configResponse.json();
     if (!config.liffId) throw new Error('尚未設定 LIFF ID');
+    state.liffId = config.liffId;
     if (!window.liff) throw new Error('LINE LIFF SDK 載入失敗');
 
     await liff.init({ liffId: config.liffId, withLoginOnExternalBrowser: true });

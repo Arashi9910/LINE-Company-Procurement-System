@@ -105,8 +105,39 @@ test('request API verifies the signed group context and pushes a summary', async
 
   assert.equal(response.status, 201);
   assert.equal(body.requestId, 'RQ-TEST');
+  assert.deepEqual(body.notification, { sent: true });
   assert.equal(dependencies.calls.create[0].groupId, 'C123');
   assert.equal(dependencies.calls.push[0][0], 'C123');
+});
+
+test('request API reports LINE quota failures without losing the created request', async (t) => {
+  const dependencies = fixture();
+  t.mock.method(console, 'warn', () => {});
+  dependencies.messenger.pushRequestCreated = async () => {
+    const error = new Error('429 - Too Many Requests');
+    error.status = 429;
+    error.body = JSON.stringify({ message: 'You have reached your monthly limit.' });
+    throw error;
+  };
+  const baseUrl = await start(t, dependencies);
+  const response = await fetch(`${baseUrl}/api/requests`, {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer valid-token',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      items: [{ sku: 'SKU-A', quantity: 2 }],
+      idempotencyKey: 'quota-failure-key',
+      contextToken: createGroupContext({ groupId: 'C123' }, 'link-secret')
+    })
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(body.requestId, 'RQ-TEST');
+  assert.deepEqual(body.notification, { sent: false, reason: 'quota_exceeded' });
+  assert.equal(dependencies.calls.create.length, 1);
 });
 
 test('workflow API returns role and enforces order and receipt service paths', async (t) => {
