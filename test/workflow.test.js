@@ -56,14 +56,21 @@ test('confirmOrder enforces role, quantity, date and normalizes items', async ()
   }, allowed), /不可超過 999999/);
 });
 
-test('confirmReceipt permits receipt roles and rejects non-positive quantities', async () => {
+test('confirmReceipt skips zero quantities and requires at least one received item', async () => {
   const allowed = repository('到貨確認');
   await confirmReceipt({
-    actor: { userId: 'U1' }, requestId: 'RQ-1', items: [{ sku: 'A', receivedQuantity: 3 }], idempotencyKey: 'abcdefghijklmnop'
+    actor: { userId: 'U1' }, requestId: 'RQ-1', items: [
+      { sku: 'A', receivedQuantity: 3 },
+      { sku: 'B', receivedQuantity: 0 }
+    ], idempotencyKey: 'abcdefghijklmnop'
   }, allowed);
-  assert.equal(allowed.calls[0].items[0].receivedQuantity, 3);
+  assert.deepEqual(allowed.calls[0].items, [{ sku: 'A', receivedQuantity: 3 }]);
 
   await assert.rejects(confirmReceipt({
     actor: { userId: 'U1' }, requestId: 'RQ-1', items: [{ sku: 'A', receivedQuantity: 0 }], idempotencyKey: 'abcdefghijklmnop'
-  }, allowed), /正整數/);
+  }, allowed), /至少需要一個本次到貨量大於 0/);
+
+  await assert.rejects(confirmReceipt({
+    actor: { userId: 'U1' }, requestId: 'RQ-1', items: [{ sku: 'A', receivedQuantity: -1 }], idempotencyKey: 'abcdefghijklmnop'
+  }, allowed), /0 或正整數/);
 });

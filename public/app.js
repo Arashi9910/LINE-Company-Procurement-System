@@ -527,7 +527,7 @@ function workflowItem(item, mode) {
   const quantity = document.createElement('input');
   quantity.type = 'number';
   quantity.className = 'workflow-quantity';
-  quantity.min = mode === 'order' && !purchaseAdded ? '0' : '1';
+  quantity.min = mode === 'receipt' || (mode === 'order' && !purchaseAdded) ? '0' : '1';
   quantity.max = mode === 'order' ? String(MAX_QUANTITY) : String(item.outstandingQuantity);
   quantity.step = '1';
   quantity.value = String(mode === 'order' ? draft.orderedQuantity : item.outstandingQuantity);

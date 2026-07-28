@@ -83,11 +83,15 @@ export async function confirmReceipt(input, repository) {
     const receivedQuantity = Number(item?.receivedQuantity);
     if (!sku || seen.has(sku)) throw new ValidationError('到貨品項 SKU 缺少或重複');
     seen.add(sku);
-    if (!Number.isInteger(receivedQuantity) || receivedQuantity < 1) {
-      throw new ValidationError(`SKU ${sku} 的本次到貨量必須是正整數`);
+    if (!Number.isInteger(receivedQuantity) || receivedQuantity < 0) {
+      throw new ValidationError(`SKU ${sku} 的本次到貨量必須是 0 或正整數`);
     }
     return { sku, receivedQuantity };
-  });
+  }).filter((item) => item.receivedQuantity > 0);
+
+  if (items.length === 0) {
+    throw new ValidationError('至少需要一個本次到貨量大於 0 的品項');
+  }
 
   return repository.confirmReceipt({
     actor: input.actor,

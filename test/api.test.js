@@ -183,7 +183,10 @@ test('workflow API returns role and enforces order and receipt service paths', a
     method: 'POST',
     headers: { authorization: 'Bearer valid-token', 'content-type': 'application/json' },
     body: JSON.stringify({
-      items: [{ sku: 'SKU-A', receivedQuantity: 1 }],
+      items: [
+        { sku: 'SKU-A', receivedQuantity: 1 },
+        { sku: 'SKU-B', receivedQuantity: 0 }
+      ],
       idempotencyKey: 'receipt-key-1234'
     })
   });
@@ -196,6 +199,7 @@ test('workflow API returns role and enforces order and receipt service paths', a
   });
   assert.equal(dependencies.calls.writebackStarts, 1);
   assert.deepEqual(dependencies.calls.sequence, ['receipt-saved', 'writeback-started']);
+  assert.deepEqual(dependencies.calls.receipt[0].items, [{ sku: 'SKU-A', receivedQuantity: 1 }]);
 });
 
 test('receipt API does not trigger writeback again for an idempotent replay', async (t) => {
