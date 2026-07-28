@@ -5,7 +5,10 @@ import { createApp } from '../src/app.js';
 import { createGroupContext } from '../src/line/context.js';
 
 function fixture() {
-  const calls = { create: [], order: [], push: [], approvedImports: 0 };
+  const calls = {
+    create: [], order: [], receipt: [], push: [], approvedImports: 0,
+    writebackStarts: 0, sequence: []
+  };
   const repository = {
     async checkHealth() { return true; },
     async listAvailableSkus() {
@@ -38,7 +41,11 @@ function fixture() {
       return { requestId: input.requestId, groupId: 'C123', items: [], idempotentReplay: false };
     },
     async confirmReceipt(input) {
-      return { requestId: input.requestId, groupId: 'C123', items: [], idempotentReplay: false };
+      calls.receipt.push(input);
+      calls.sequence.push('receipt-saved');
+      return calls.receiptResult ?? {
+        requestId: input.requestId, groupId: 'C123', items: [], idempotentReplay: false
+      };
     }
   };
   const identityVerifier = {
@@ -61,7 +68,15 @@ function fixture() {
     lineChannelSecret: 'line-secret',
     jobToken: 'test-job-token'
   };
-  return { calls, repository, identityVerifier, messenger, config };
+  const writebackRunner = {
+    async start() {
+      calls.writebackStarts += 1;
+      calls.sequence.push('writeback-started');
+      if (calls.writebackStartError) throw calls.writebackStartError;
+      return { state: 'accepted', operation: 'operation-123', execution: 'writeback-run-123' };
+    }
+  };
+  return { calls, repository, identityVerifier, messenger, config, writebackRunner };
 }
 
 async function start(t, dependencies) {
@@ -173,6 +188,80 @@ test('workflow API returns role and enforces order and receipt service paths', a
     })
   });
   assert.equal(receipt.status, 201);
+  const receiptBody = await receipt.json();
+  assert.deepEqual(receiptBody.writebackTrigger, {
+    started: true,
+    operation: 'operation-123',
+    execution: 'writeback-run-123'
+  });
+  assert.equal(dependencies.calls.writebackStarts, 1);
+  assert.deepEqual(dependencies.calls.sequence, ['receipt-saved', 'writeback-started']);
+});
+
+test('receipt API does not trigger writeback again for an idempotent replay', async (t) => {
+  const dependencies = fixture();
+  dependencies.calls.receiptResult = {
+    requestId: 'RQ-1', groupId: 'C123', items: [], idempotentReplay: true
+  };
+  const baseUrl = await start(t, dependencies);
+
+  const response = await fetch(`${baseUrl}/api/requests/RQ-1/receipt`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer valid-token', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      items: [{ sku: 'SKU-A', receivedQuantity: 1 }],
+      idempotencyKey: 'receipt-replay-key'
+    })
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.writebackTrigger, { started: false, reason: 'idempotent_replay' });
+  assert.equal(dependencies.calls.writebackStarts, 0);
+});
+
+test('receipt API preserves the receipt when writeback is already running', async (t) => {
+  const dependencies = fixture();
+  const error = new Error('writeback is already running');
+  error.code = 'CONFLICT';
+  dependencies.calls.writebackStartError = error;
+  t.mock.method(console, 'warn', () => {});
+  const baseUrl = await start(t, dependencies);
+
+  const response = await fetch(`${baseUrl}/api/requests/RQ-1/receipt`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer valid-token', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      items: [{ sku: 'SKU-A', receivedQuantity: 1 }],
+      idempotencyKey: 'receipt-active-job'
+    })
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(body.writebackTrigger, { started: false, reason: 'already_running' });
+  assert.equal(dependencies.calls.receipt.length, 1);
+});
+
+test('receipt API preserves the receipt when the immediate trigger fails', async (t) => {
+  const dependencies = fixture();
+  dependencies.calls.writebackStartError = new Error('temporary Cloud Run API failure');
+  t.mock.method(console, 'warn', () => {});
+  const baseUrl = await start(t, dependencies);
+
+  const response = await fetch(`${baseUrl}/api/requests/RQ-1/receipt`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer valid-token', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      items: [{ sku: 'SKU-A', receivedQuantity: 1 }],
+      idempotencyKey: 'receipt-trigger-failure'
+    })
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(body.writebackTrigger, { started: false, reason: 'trigger_failed' });
+  assert.equal(dependencies.calls.receipt.length, 1);
 });
 
 test('reminder job rejects missing credentials and accepts the scheduler token', async (t) => {

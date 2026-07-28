@@ -61,8 +61,12 @@ test('LINE service deployment receives the FlyingMouse job resource configuratio
   const deploy = await read('scripts/deploy-gcp.ps1');
 
   assert.match(deploy, /\[string\]\$FlyingmouseCatalogJobName = 'flyingmouse-catalog-sync'/);
+  assert.match(deploy, /\[string\]\$FlyingmouseWritebackJobName = 'flyingmouse-inventory-writeback'/);
   assert.match(deploy, /GOOGLE_CLOUD_REGION=\$Region/);
   assert.match(deploy, /FLYINGMOUSE_CATALOG_JOB_NAME=\$FlyingmouseCatalogJobName/);
+  assert.match(deploy, /FLYINGMOUSE_WRITEBACK_JOB_NAME=\$FlyingmouseWritebackJobName/);
+  assert.match(deploy, /'roles\/run\.invoker'/);
+  assert.match(deploy, /'roles\/run\.viewer'/);
 });
 
 test('FlyingMouse writeback deployment defaults to dry-run and disables platform retries', async () => {

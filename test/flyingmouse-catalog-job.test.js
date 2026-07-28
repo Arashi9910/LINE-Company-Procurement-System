@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FlyingmouseCatalogJobRunner,
+  FlyingmouseWritebackJobRunner,
   normalizeCatalogExecution
 } from '../src/services/flyingmouse-catalog-job.js';
 
 const JOB = 'projects/project-1/locations/asia-east1/jobs/flyingmouse-catalog-sync';
+const WRITEBACK_JOB = 'projects/project-1/locations/asia-east1/jobs/flyingmouse-inventory-writeback';
 
 function runClient({ executions = [], operation = {} } = {}) {
   const calls = { list: [], run: [] };
@@ -132,4 +134,23 @@ test('FlyingmouseCatalogJobRunner blocks a second start while the new execution 
   timestamp += 1_000;
   await assert.rejects(runner.start(), /已有飛鼠商品同步正在執行/);
   assert.equal(fixture.calls.run.length, 1);
+});
+
+test('FlyingmouseWritebackJobRunner starts the dedicated inventory writeback job', async () => {
+  const fixture = runClient({
+    operation: {
+      name: 'projects/project-1/locations/asia-east1/operations/writeback-operation',
+      metadata: { target: `${WRITEBACK_JOB}/executions/writeback-run` }
+    }
+  });
+  const runner = new FlyingmouseWritebackJobRunner({
+    runClient: fixture.client,
+    projectId: 'project-1'
+  });
+
+  const result = await runner.start();
+
+  assert.equal(result.execution, 'writeback-run');
+  assert.deepEqual(fixture.calls.list, [{ parent: WRITEBACK_JOB, pageSize: 1 }]);
+  assert.deepEqual(fixture.calls.run, [{ name: WRITEBACK_JOB, requestBody: {} }]);
 });

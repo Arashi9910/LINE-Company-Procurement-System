@@ -12,6 +12,7 @@ param(
   [string]$Region = 'asia-east1',
   [string]$ServiceName = 'line-replenishment',
   [string]$FlyingmouseCatalogJobName = 'flyingmouse-catalog-sync',
+  [string]$FlyingmouseWritebackJobName = 'flyingmouse-inventory-writeback',
   [string]$BillingAccountId = '',
   [string]$BudgetAmount = '300TWD',
   [switch]$EnableFlyingmouseWriteback
@@ -173,6 +174,33 @@ foreach ($secret in $secretNames) {
   )).Output | Out-Null
 }
 
+if ($EnableFlyingmouseWriteback) {
+  $writebackJobProbe = Invoke-Gcloud -Arguments @(
+    'run', 'jobs', 'describe', $FlyingmouseWritebackJobName,
+    '--project', $ProjectId,
+    '--region', $Region
+  ) -AllowFailure
+  if ($writebackJobProbe.ExitCode -ne 0) {
+    throw "FlyingMouse writeback job does not exist: $FlyingmouseWritebackJobName. Deploy it before enabling immediate writeback."
+  }
+  (Invoke-Gcloud -Arguments @(
+    'run', 'jobs', 'add-iam-policy-binding', $FlyingmouseWritebackJobName,
+    '--project', $ProjectId,
+    '--region', $Region,
+    '--member', "serviceAccount:$serviceAccountEmail",
+    '--role', 'roles/run.invoker',
+    '--quiet'
+  )).Output | Out-Null
+  (Invoke-Gcloud -Arguments @(
+    'run', 'jobs', 'add-iam-policy-binding', $FlyingmouseWritebackJobName,
+    '--project', $ProjectId,
+    '--region', $Region,
+    '--member', "serviceAccount:$serviceAccountEmail",
+    '--role', 'roles/run.viewer',
+    '--quiet'
+  )).Output | Out-Null
+}
+
 (Invoke-Gcloud -Arguments @(
   'run', 'deploy', $ServiceName,
   '--source', '.',
@@ -182,7 +210,7 @@ foreach ($secret in $secretNames) {
   '--service-account', $serviceAccountEmail,
   '--max-instances', '1',
   '--concurrency', '20',
-  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,FLYINGMOUSE_CATALOG_JOB_NAME=$FlyingmouseCatalogJobName,APP_VERSION=$appVersion,GIT_COMMIT=$gitCommit,DEPLOYED_AT=$deployedAt,FLYINGMOUSE_WRITEBACK_ENABLED=$flyingmouseWritebackEnabled",
+  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,FLYINGMOUSE_CATALOG_JOB_NAME=$FlyingmouseCatalogJobName,FLYINGMOUSE_WRITEBACK_JOB_NAME=$FlyingmouseWritebackJobName,APP_VERSION=$appVersion,GIT_COMMIT=$gitCommit,DEPLOYED_AT=$deployedAt,FLYINGMOUSE_WRITEBACK_ENABLED=$flyingmouseWritebackEnabled",
   '--update-labels', "git-commit=$gitCommit",
   '--startup-probe', 'httpGet.path=/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=10,failureThreshold=12',
   '--liveness-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=30,failureThreshold=3',

@@ -36,7 +36,7 @@
      -LiffId '<LIFF_ID>'
    ```
 
-   部署腳本預設 `FLYINGMOUSE_WRITEBACK_ENABLED=false`。只有在庫存回寫 queue 與 dry-run Job 已完成驗收後，才可明確加入下列開關，讓確認到貨同步建立回寫事件：
+   部署腳本預設 `FLYINGMOUSE_WRITEBACK_ENABLED=false`。只有在庫存回寫 queue 與 dry-run Job 已完成驗收後，才可明確加入下列開關，讓確認到貨同步建立回寫事件，並在寫入成功後立即啟動獨立回寫 Job：
 
    ```powershell
    .\scripts\deploy-gcp.ps1 `
@@ -46,7 +46,7 @@
      -EnableFlyingmouseWriteback
    ```
 
-   此開關只控制 LINE 服務是否入列；飛鼠是否允許 PUT 仍由合併 Job 的 `FLYINGMOUSE_WRITEBACK_MODE` 控制。舊的獨立 writeback Job 已無排程，只保留作緊急回復。
+   此開關控制 LINE 服務是否入列及立即觸發 `flyingmouse-inventory-writeback`；獨立 Job 必須已部署為 `live`，且部署腳本會驗證 Job 存在並授予 LINE 服務帳號 `roles/run.invoker` 與防重查詢所需的 `roles/run.viewer`。獨立 Job 不設 Scheduler；飛鼠每小時合併 Job仍保留庫存補漏。
 
 6. 記錄腳本輸出的 Application version、Git commit、Ready revision 與 Cloud Run URL。部署腳本會確認 `/ready` 回傳同一個 commit，否則部署視為失敗。
 7. 將腳本輸出的 Cloud Run 服務帳號 Email 以「編輯者」分享至補貨 Google Sheet。服務帳號不需要取得整個 Drive 的存取權。
@@ -73,7 +73,7 @@ FlyingMouse 使用獨立 Cloud Run Job。部署腳本預設為商品 `read-only`
 - 提醒 Scheduler：週一至週五 10:00，時區 `Asia/Taipei`。
 - 新品核准 Scheduler：每分鐘呼叫 `/jobs/flyingmouse-approved-imports`；只讀取 `飛鼠目錄待確認` 與 `SKU主檔`，不登入飛鼠、不下載 Excel，也不執行圖片或全量庫存同步。
 - 飛鼠合併 Scheduler：沿用 `flyingmouse-catalog-sync-daily` 資源名稱，實際為每小時整點、`Asia/Taipei`；商品模式 `auto`、庫存模式 `live`、每次回寫上限 20、單 task、timeout 6 分鐘、平台重試 0。
-- 舊 `flyingmouse-inventory-writeback-every-5-minutes` Scheduler 已刪除；舊 `flyingmouse-inventory-writeback` Job 本體保留但不會自行執行。
+- 舊 `flyingmouse-inventory-writeback-every-5-minutes` Scheduler 已刪除；`flyingmouse-inventory-writeback` Job 由到貨 API 即時觸發，不會自行執行。
 - 兩個 HTTP Scheduler 均以自訂 `X-Job-Token` header 傳送 `line-job-token`。Secret 不應包含前後空白或換行；服務端仍會在載入 `JOB_TOKEN` 時移除意外的前後空白，以相容早期建立的 Secret 版本。
 - 預算警示：預設每月 `300TWD`，於 50%、90%、100% 通知；預算不會自動停止支出。
 - Secret Manager：Cloud Run 服務帳號僅取得四個指定秘密的 `roles/secretmanager.secretAccessor`。

@@ -132,4 +132,9 @@ test('LINE deployment requires an explicit switch to enable FlyingMouse writebac
     /\$flyingmouseWritebackEnabled = if \(\$EnableFlyingmouseWriteback\) \{ 'true' \} else \{ 'false' \}/
   );
   assert.match(source, /FLYINGMOUSE_WRITEBACK_ENABLED=\$flyingmouseWritebackEnabled/);
+  assert.match(source, /FLYINGMOUSE_WRITEBACK_JOB_NAME=\$FlyingmouseWritebackJobName/);
+  assert.match(source, /'run', 'jobs', 'describe', \$FlyingmouseWritebackJobName/);
+  assert.match(source, /'run', 'jobs', 'add-iam-policy-binding', \$FlyingmouseWritebackJobName/);
+  assert.match(source, /'--role', 'roles\/run\.invoker'/);
+  assert.match(source, /'--role', 'roles\/run\.viewer'/);
 });

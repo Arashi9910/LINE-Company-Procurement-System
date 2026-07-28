@@ -2,7 +2,10 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createLineIdentityVerifier } from './line/identity.js';
 import { createLineMessenger } from './line/messenger.js';
-import { FlyingmouseCatalogJobRunner } from './services/flyingmouse-catalog-job.js';
+import {
+  FlyingmouseCatalogJobRunner,
+  FlyingmouseWritebackJobRunner
+} from './services/flyingmouse-catalog-job.js';
 import { createGoogleSheetsClient, SheetsRepository } from './sheets/repository.js';
 
 const config = loadConfig();
@@ -23,7 +26,21 @@ const catalogSyncRunner = config.googleCloudProject
       jobName: config.flyingmouseCatalogJobName
     })
   : undefined;
-const app = createApp({ config, repository, identityVerifier, messenger, catalogSyncRunner });
+const writebackRunner = config.googleCloudProject && config.flyingmouseWritebackEnabled
+  ? new FlyingmouseWritebackJobRunner({
+      projectId: config.googleCloudProject,
+      region: config.googleCloudRegion,
+      jobName: config.flyingmouseWritebackJobName
+    })
+  : undefined;
+const app = createApp({
+  config,
+  repository,
+  identityVerifier,
+  messenger,
+  catalogSyncRunner,
+  writebackRunner
+});
 
 const server = app.listen(config.port, () => {
   console.log(`line-replenishment listening on :${config.port}`);

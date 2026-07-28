@@ -99,3 +99,12 @@ export class FlyingmouseCatalogJobRunner {
     };
   }
 }
+
+export class FlyingmouseWritebackJobRunner extends FlyingmouseCatalogJobRunner {
+  constructor(options = {}) {
+    super({
+      ...options,
+      jobName: options.jobName ?? 'flyingmouse-inventory-writeback'
+    });
+  }
+}

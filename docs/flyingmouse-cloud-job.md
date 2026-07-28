@@ -1,6 +1,6 @@
 # 飛鼠每小時合併同步 Cloud Run Job
 
-> 現況摘要（2026-07-22）：正式 `flyingmouse-catalog-sync` 已使用 `scripts/flyingmouse-combined-job.mjs`，每小時整點依序執行商品／圖片同步與到貨庫存回寫。本文後半保留 2026-07-15 至 2026-07-21 的舊架構與驗收紀錄；遇到排程或 Job 說明衝突時，以「2026-07-22 每小時合併 Job 正式狀態」為準。
+> 現況摘要：正式 `flyingmouse-catalog-sync` 每小時整點執行商品／圖片同步與到貨庫存補漏；到貨登記成功後則立即啟動獨立的 `flyingmouse-inventory-writeback` Job。本文後半保留 2026-07-15 至 2026-07-21 的歷史架構與驗收紀錄；遇到衝突時，以本節現行部署邊界為準。
 
 ## 現行部署邊界
 
@@ -13,6 +13,8 @@
 5. 同步既有 SKU 庫存快照與 `商品圖片對照`，保留公式欄、人工圖片及來源缺漏列。
 6. 商品與圖片階段成功後，讀取 `飛鼠庫存回寫`，正式 `live` 模式每次最多處理 20 筆事件。
 7. 將 catalog 與 writeback 兩階段摘要輸出到 Cloud Logging 後結束。
+
+到貨即時流程不等待下一個整點：LINE 服務原子寫入到貨追蹤與 queue 後，立即呼叫 Cloud Run Jobs API 啟動 `flyingmouse-inventory-writeback`。API 只等待啟動請求被接受；獨立 Job 完成飛鼠登入、GET、庫存加總與 PUT。若已有回寫 execution 正在執行，系統不開啟並行 worker；queue 由現有工作或下一次整點合併工作補漏。
 
 商品同步不修改飛鼠；只有已完成驗收的到貨回寫階段會更新飛鼠庫存。來源缺漏列不會自動刪除，與非飛鼠供應商發生 SKU 衝突時會整批停止。容器內下載檔與 JSON 報告只存在單次執行期間。
 

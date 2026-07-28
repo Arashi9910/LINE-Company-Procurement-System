@@ -103,10 +103,12 @@ Cloud Scheduler 於 `Asia/Taipei` 時區的週一至週五上午 10:00 呼叫提
 
 ### 飛鼠自動同步與庫存回寫
 
+- 到貨登記與 `飛鼠庫存回寫` 事件成功寫入後，LINE 服務會立即啟動獨立的 `flyingmouse-inventory-writeback` Job；API 只等待雲端接受啟動，不等待實際登入與 PUT 完成。
+- 獨立 Job 讀取飛鼠目前庫存，加上本次到貨量後回寫；冪等重送不會重複啟動，已有回寫執行中時不建立並行 execution。
 - `flyingmouse-catalog-sync` Cloud Run Job 每小時整點執行，資源名稱沿用早期的 `-daily` 後綴。
 - 合併工作先同步商品主檔、庫存快照與商品圖片；商品階段成功後，才處理到貨回寫佇列。
 - 正式商品模式為 `auto`、庫存模式為 `live`，每次最多處理 20 筆回寫事件，Cloud Run 平台重試為 0。
-- 舊的獨立庫存回寫 Job 保留作緊急回復，但已無 Scheduler，不會自行執行。
+- 獨立庫存回寫 Job 沒有 Scheduler，由到貨 API 即時觸發；每小時合併 Job 同時保留作失敗補漏。
 
 ## 一次補貨的資料流程
 
@@ -252,7 +254,7 @@ LINE 主服務使用 Cloud Run Source Deployment。部署腳本會：
 
 詳細步驟請參考 `docs/deployment.md`。
 
-飛鼠工作使用獨立容器與 Cloud Run Job；目前正式排程為每小時整點，入口是 `scripts/flyingmouse-combined-job.mjs`。正式 `auto/live` 部署、停排程或改頻率會影響正式商品與庫存資料，執行前必須另行確認。操作與歷史驗收請參考 `docs/flyingmouse-cloud-job.md`。
+飛鼠工作使用獨立容器與 Cloud Run Job；到貨由 `flyingmouse-inventory-writeback` 即時觸發，每小時整點的 `scripts/flyingmouse-combined-job.mjs` 保留商品同步與庫存補漏。正式 `auto/live` 部署、停排程或改頻率會影響正式商品與庫存資料，執行前必須另行確認。操作與歷史驗收請參考 `docs/flyingmouse-cloud-job.md`。
 
 ## 安全設計
 

@@ -50,6 +50,7 @@ export function loadConfig(env = process.env, options = {}) {
     googleCloudProject: env.GOOGLE_CLOUD_PROJECT ?? '',
     googleCloudRegion: env.GOOGLE_CLOUD_REGION ?? 'asia-east1',
     flyingmouseCatalogJobName: env.FLYINGMOUSE_CATALOG_JOB_NAME ?? 'flyingmouse-catalog-sync',
+    flyingmouseWritebackJobName: env.FLYINGMOUSE_WRITEBACK_JOB_NAME ?? 'flyingmouse-inventory-writeback',
     flyingmouseWritebackEnabled: booleanFlag(
       env.FLYINGMOUSE_WRITEBACK_ENABLED,
       'FLYINGMOUSE_WRITEBACK_ENABLED'

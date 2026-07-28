@@ -53,6 +53,17 @@ test('createApp rejects missing core dependencies instead of silently omitting r
   }
 });
 
+test('createApp requires an immediate writeback runner when FlyingMouse writeback is enabled', () => {
+  const enabled = dependencies();
+  enabled.config.flyingmouseWritebackEnabled = true;
+
+  assert.throws(() => createApp(enabled), /writebackRunner/);
+  assert.doesNotThrow(() => createApp({
+    ...enabled,
+    writebackRunner: { async start() {} }
+  }));
+});
+
 test('ready endpoint verifies Sheets and returns deployment metadata', async (t) => {
   let checks = 0;
   const app = createApp(dependencies(async () => { checks += 1; }));

@@ -46,7 +46,38 @@ async function deliverNotification({ kind, requestId, target, send }) {
   }
 }
 
-export function createApiRouter({ config, repository, identityVerifier, messenger }) {
+async function triggerImmediateWriteback({ runner, result }) {
+  if (result.idempotentReplay) {
+    return { started: false, reason: 'idempotent_replay' };
+  }
+  if (!runner || typeof runner.start !== 'function') {
+    console.warn(JSON.stringify({
+      event: 'flyingmouse_writeback_trigger_skipped',
+      requestId: result.requestId,
+      reason: 'runner_unavailable'
+    }));
+    return { started: false, reason: 'runner_unavailable' };
+  }
+  try {
+    const trigger = await runner.start();
+    return {
+      started: true,
+      operation: trigger.operation,
+      execution: trigger.execution
+    };
+  } catch (error) {
+    const reason = error?.code === 'CONFLICT' ? 'already_running' : 'trigger_failed';
+    console.warn(JSON.stringify({
+      event: 'flyingmouse_writeback_trigger_failed',
+      requestId: result.requestId,
+      reason,
+      errorCode: String(error?.code ?? 'UNEXPECTED_ERROR')
+    }));
+    return { started: false, reason };
+  }
+}
+
+export function createApiRouter({ config, repository, identityVerifier, messenger, writebackRunner }) {
   const router = Router();
 
   router.use(async (request, _response, next) => {
@@ -132,13 +163,21 @@ export function createApiRouter({ config, repository, identityVerifier, messenge
         items: request.body?.items,
         idempotencyKey: request.body?.idempotencyKey
       }, repository);
+      const writebackTrigger = await triggerImmediateWriteback({
+        runner: writebackRunner,
+        result
+      });
       const notification = await deliverNotification({
         kind: 'receipt_confirmed',
         requestId: result.requestId,
         target: result.groupId,
         send: () => messenger.pushReceiptConfirmed(result.groupId, result, request.actor)
       });
-      response.status(result.idempotentReplay ? 200 : 201).json({ ...result, notification });
+      response.status(result.idempotentReplay ? 200 : 201).json({
+        ...result,
+        notification,
+        writebackTrigger
+      });
     } catch (error) {
       next(error);
     }

@@ -16,12 +16,18 @@ function deploymentMetadata(config, ok) {
 }
 
 export function createApp(dependencies = {}) {
-  const { config, repository, identityVerifier, messenger, catalogSyncRunner } = dependencies;
+  const {
+    config, repository, identityVerifier, messenger, catalogSyncRunner, writebackRunner
+  } = dependencies;
   for (const [name, value] of Object.entries({ config, repository, identityVerifier, messenger })) {
     if (!value) throw new Error(`缺少核心相依物件：${name}`);
   }
   if (typeof repository.checkHealth !== 'function') {
     throw new Error('核心相依物件 repository 缺少 checkHealth()');
+  }
+  if (config.flyingmouseWritebackEnabled
+      && (!writebackRunner || typeof writebackRunner.start !== 'function')) {
+    throw new Error('啟用飛鼠庫存回寫時缺少 writebackRunner.start()');
   }
 
   const app = express();
@@ -49,7 +55,9 @@ export function createApp(dependencies = {}) {
     createWebhookHandler({ config, repository, messenger, catalogSyncRunner }));
   app.use(express.json({ limit: '64kb' }));
   app.use('/jobs', createJobsRouter({ config, repository, messenger }));
-  app.use('/api', createApiRouter({ config, repository, identityVerifier, messenger }));
+  app.use('/api', createApiRouter({
+    config, repository, identityVerifier, messenger, writebackRunner
+  }));
 
   app.use(express.static('public', { extensions: ['html'] }));
 
