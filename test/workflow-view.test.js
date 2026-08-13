@@ -71,3 +71,21 @@ test('order and receipt item views remain editable and retain their existing sum
     meta: '原申請未包含｜SKU-A'
   });
 });
+
+test('workflow item views explain pending, applied, and invalid spec corrections', () => {
+  assert.equal(workflowItemView({
+    ...items[1],
+    sku: 'SKU-B-NEW',
+    skuCorrectionPending: true
+  }, 'receipt').meta, '已到 0/3 組｜尚缺 3｜規格已修正，將於首次登記到貨時套用並鎖定');
+
+  assert.equal(workflowItemView({
+    ...items[2],
+    skuCorrectionApplied: true
+  }, 'detail').meta, '狀態：部分到貨｜申請 6 盒｜下單 6 盒｜已到 2 盒｜規格修正已套用');
+
+  assert.equal(workflowItemView({
+    ...items[1],
+    skuCorrectionError: '只能修改為同一商品的其他規格'
+  }, 'receipt').meta, '已到 0/3 組｜尚缺 3｜規格修正錯誤：只能修改為同一商品的其他規格');
+});

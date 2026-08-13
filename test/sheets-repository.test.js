@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SheetsRepository } from '../src/sheets/repository.js';
 import { WRITEBACK_HEADERS } from '../src/flyingmouse/sheets-writeback.js';
+import { ORDER_SPEC_CORRECTION_HEADERS } from '../src/sheets/order-spec-correction.js';
 
 function fakeSheets({
   ids = [['RQ-1'], ['RQ-2'], ['RQ-3'], ['RQ-4']],
@@ -42,7 +43,7 @@ function fakeSheets({
   };
 }
 
-test('SheetsRepository health check reads only the settings header', async () => {
+test('SheetsRepository health check validates settings and spec correction headers', async () => {
   const ranges = [];
   const repository = new SheetsRepository({
     sheets: {
@@ -50,7 +51,9 @@ test('SheetsRepository health check reads only the settings header', async () =>
         values: {
           async get(request) {
             ranges.push(request);
-            return { data: { values: [['Key', 'Value']] } };
+            return request.range.includes('T1:V1')
+              ? { data: { values: [ORDER_SPEC_CORRECTION_HEADERS] } }
+              : { data: { values: [['Key', 'Value']] } };
           }
         }
       }
@@ -59,11 +62,18 @@ test('SheetsRepository health check reads only the settings header', async () =>
   });
 
   assert.equal(await repository.checkHealth(), true);
-  assert.deepEqual(ranges, [{
-    spreadsheetId: 'sheet-123',
-    range: "'系統設定'!A1:B1",
-    valueRenderOption: 'UNFORMATTED_VALUE'
-  }]);
+  assert.deepEqual(ranges, [
+    {
+      spreadsheetId: 'sheet-123',
+      range: "'系統設定'!A1:B1",
+      valueRenderOption: 'UNFORMATTED_VALUE'
+    },
+    {
+      spreadsheetId: 'sheet-123',
+      range: "'補貨追蹤'!T1:V1",
+      valueRenderOption: 'UNFORMATTED_VALUE'
+    }
+  ]);
 });
 
 test('SheetsRepository readiness validates the writeback sheet when the feature is enabled', async () => {
@@ -74,6 +84,9 @@ test('SheetsRepository readiness validates the writeback sheet when the feature 
         values: {
           async get(request) {
             ranges.push(request.range);
+            if (request.range.includes('T1:V1')) {
+              return { data: { values: [ORDER_SPEC_CORRECTION_HEADERS] } };
+            }
             return request.range.includes('飛鼠庫存回寫')
               ? { data: { values: [WRITEBACK_HEADERS] } }
               : { data: { values: [['Key', 'Value']] } };
@@ -86,7 +99,11 @@ test('SheetsRepository readiness validates the writeback sheet when the feature 
   });
 
   assert.equal(await repository.checkHealth(), true);
-  assert.deepEqual(ranges, ["'系統設定'!A1:B1", "'飛鼠庫存回寫'!A1:O1"]);
+  assert.deepEqual(ranges, [
+    "'系統設定'!A1:B1",
+    "'補貨追蹤'!T1:V1",
+    "'飛鼠庫存回寫'!A1:O1"
+  ]);
 });
 
 test('SheetsRepository parses product image mappings and tolerates a missing sheet', async () => {
@@ -205,7 +222,7 @@ test('SheetsRepository reads one request without loading the full tracking grid'
           if (range === "'補貨追蹤'!A2:A5000") {
             return { data: { values: [['RQ-OTHER'], ['RQ-1'], ['RQ-1']] } };
           }
-          if (range === "'補貨追蹤'!A3:S4") return { data: { values: rows } };
+          if (range === "'補貨追蹤'!A3:V4") return { data: { values: rows } };
           throw new Error(`unexpected range: ${range}`);
         }
       }
@@ -218,7 +235,7 @@ test('SheetsRepository reads one request without loading the full tracking grid'
   assert.deepEqual(result.items.map((item) => item.rowNumber), [3, 4]);
   assert.equal('applicantUserId' in result, false);
   assert.equal('applicantUserId' in result.items[0], false);
-  assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A3:S4"]);
+  assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A3:V4"]);
 });
 
 test('SheetsRepository exposes requester identity only through cancellation context', async () => {
@@ -231,7 +248,7 @@ test('SheetsRepository exposes requester identity only through cancellation cont
       values: {
         async get({ range }) {
           if (range === "'補貨追蹤'!A2:A5000") return { data: { values: [['RQ-1']] } };
-          if (range === "'補貨追蹤'!A2:S2") return { data: { values: [row] } };
+          if (range === "'補貨追蹤'!A2:V2") return { data: { values: [row] } };
           throw new Error(`unexpected range: ${range}`);
         }
       }
@@ -261,7 +278,7 @@ test('SheetsRepository lists tracking rows only through the last request row', a
           if (range === "'補貨追蹤'!A2:A5000") {
             return { data: { values: [['RQ-1'], ['RQ-2'], [], []] } };
           }
-          if (range === "'補貨追蹤'!A2:N3") return { data: { values: trackingRows } };
+          if (range === "'補貨追蹤'!A2:V3") return { data: { values: trackingRows } };
           throw new Error(`unexpected range: ${range}`);
         }
       }
@@ -281,16 +298,19 @@ test('SheetsRepository lists tracking rows only through the last request row', a
       receivedQuantity: 0, outstandingQuantity: 2, sku: 'SKU-B'
     }
   ]);
-  assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A2:N3"]);
+  assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A2:V3"]);
 });
 
-function workflowSheets(trackingRow, onWrite, { operationRows = [], writebackRows = [] } = {}) {
+function workflowSheets(trackingRow, onWrite, {
+  operationRows = [], writebackRows = [], catalogRows = []
+} = {}) {
   return {
     spreadsheets: {
       values: {
         async get({ range }) {
           if (range.includes('操作紀錄')) return { data: { values: operationRows } };
           if (range.includes('飛鼠庫存回寫')) return { data: { values: writebackRows } };
+          if (range.includes('SKU主檔')) return { data: { values: catalogRows } };
           if (range.includes('補貨追蹤')) return { data: { values: [trackingRow] } };
           return { data: { values: [] } };
         },
@@ -312,7 +332,7 @@ function cancellationSheets({ rows, operationRows = [], onWrite }) {
           if (range === "'補貨追蹤'!A2:A5000") {
             return { data: { values: rows.map((row) => [row[0]]) } };
           }
-          if (range === `'補貨追蹤'!A2:S${rows.length + 1}`) {
+          if (range === `'補貨追蹤'!A2:V${rows.length + 1}`) {
             return { data: { values: rows } };
           }
           throw new Error(`unexpected range: ${range}`);
@@ -336,7 +356,7 @@ function orderAdditionSheets({ trackingRows, availableSkuRows, onWrite }) {
           if (range === "'補貨追蹤'!A2:A5000") {
             return { data: { values: trackingRows.map((row) => [row[0]]) } };
           }
-          const match = /!A(\d+):S(\d+)$/.exec(range);
+          const match = /!A(\d+):V(\d+)$/.exec(range);
           if (match) {
             const start = Number(match[1]);
             const end = Number(match[2]);
@@ -942,6 +962,82 @@ test('SheetsRepository treats a repeated authorization event as idempotent', asy
     enabled: true,
     idempotencyKey: 'line-event-123456'
   }), { role: '採購確認', enabled: true, idempotentReplay: true });
+  assert.equal(writes, 0);
+});
+
+test('SheetsRepository applies a pending same-product spec correction with the first receipt', async () => {
+  const row = [
+    'RQ-1', '2026/07/14 10:00', '小明', '收納盒｜紅色', '個', 5, '已下單', 5,
+    '2026/07/20', 0, 5, '', '', 'SKU-RED', 'U1', 'C1', 'BUYER', '', 'create-key',
+    'SKU-BLUE', '', ''
+  ];
+  const catalogRows = [
+    ['SKU-RED', '收納盒', '紅色', '', 10, '', '', '收納盒｜紅色', '一般SKU', '是', '', '個', '飛鼠', '2026-07-14'],
+    ['SKU-BLUE', '收納盒', '藍色', '', 20, '', '', '收納盒｜藍色', '一般SKU', '是', '', '個', '飛鼠', '2026-07-14']
+  ];
+  let write;
+  const repository = new SheetsRepository({
+    sheets: workflowSheets(row, (request) => { write = request; }, {
+      writebackRows: [WRITEBACK_HEADERS],
+      catalogRows
+    }),
+    spreadsheetId: 'sheet-123',
+    flyingmouseWritebackEnabled: true,
+    now: () => new Date('2026-07-14T03:00:00.000Z')
+  });
+
+  const result = await repository.confirmReceipt({
+    actor: { userId: 'RECEIVER' },
+    requestId: 'RQ-1',
+    items: [{ sku: 'SKU-BLUE', receivedQuantity: 2 }],
+    idempotencyKey: 'receipt-correct-spec-1'
+  });
+
+  assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
+    "'補貨追蹤'!D2",
+    "'補貨追蹤'!E2",
+    "'補貨追蹤'!N2",
+    "'補貨追蹤'!V2",
+    "'補貨追蹤'!G2",
+    "'補貨追蹤'!J2",
+    "'補貨追蹤'!Q2:R2",
+    "'操作紀錄'!A2:F2",
+    "'飛鼠庫存回寫'!A2:O2"
+  ]);
+  assert.deepEqual(write.requestBody.data.slice(0, 4).map((entry) => entry.values[0][0]), [
+    '收納盒｜藍色', '個', 'SKU-BLUE', 'SKU-RED'
+  ]);
+  assert.equal(write.requestBody.data[7].values[0][5], '本次 1 項，套用規格修正 1 項');
+  assert.equal(write.requestBody.data[8].values[0][3], 'SKU-BLUE');
+  assert.equal(write.requestBody.data[8].values[0][4], 2);
+  assert.equal(result.items[0].sku, 'SKU-BLUE');
+  assert.equal(result.items[0].skuCorrectionApplied, true);
+  assert.equal(result.items[0].skuCorrectionOriginalSku, 'SKU-RED');
+});
+
+test('SheetsRepository blocks receipt when a requested correction belongs to another product', async () => {
+  const row = [
+    'RQ-1', '2026/07/14 10:00', '小明', '收納盒｜紅色', '個', 5, '已下單', 5,
+    '2026/07/20', 0, 5, '', '', 'SKU-RED', 'U1', 'C1', 'BUYER', '', 'create-key',
+    'SKU-CUP', '', ''
+  ];
+  let writes = 0;
+  const repository = new SheetsRepository({
+    sheets: workflowSheets(row, () => { writes += 1; }, {
+      catalogRows: [
+        ['SKU-RED', '收納盒', '紅色', '', 10, '', '', '收納盒｜紅色', '一般SKU', '是'],
+        ['SKU-CUP', '水杯', '透明', '', 10, '', '', '水杯｜透明', '一般SKU', '是']
+      ]
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  await assert.rejects(repository.confirmReceipt({
+    actor: { userId: 'RECEIVER' },
+    requestId: 'RQ-1',
+    items: [{ sku: 'SKU-RED', receivedQuantity: 1 }],
+    idempotencyKey: 'receipt-invalid-spec-1'
+  }), /同一商品/);
   assert.equal(writes, 0);
 });
 

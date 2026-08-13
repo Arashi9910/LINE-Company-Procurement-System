@@ -26,7 +26,15 @@
    .\scripts\configure-secrets.ps1 -ProjectId '<PROJECT_ID>'
    ```
 
-5. 執行部署：
+5. 首次部署規格修正功能前，先以具備 Sheet 編輯權的本機 Google 憑證建立 `補貨追蹤` T:V 欄位；此命令可安全重跑，但若 T:V 已有其他資料會停止：
+
+   ```powershell
+   npm.cmd run sheet:spec-correction -- --spreadsheet-id '16ko37-omRLDxdKXOX-VRwsCG3VyMerAO4EPBX_T10M8'
+   ```
+
+   完成後確認 T、U 表頭分別為 `修正後規格（SKU）`、`修正狀態`，V 欄為隱藏的 `原始SKU（系統）`。新 revision 的 readiness 會驗證這三個表頭，因此不得先部署程式再遷移 Sheet。
+
+6. 執行部署：
 
    ```powershell
    .\scripts\deploy-gcp.ps1 `
@@ -48,11 +56,11 @@
 
    此開關控制 LINE 服務是否入列及立即觸發 `flyingmouse-inventory-writeback`；獨立 Job 必須已部署為 `live`，且部署腳本會驗證 Job 存在並授予 LINE 服務帳號 `roles/run.invoker` 與防重查詢所需的 `roles/run.viewer`。獨立 Job 不設 Scheduler；飛鼠每小時合併 Job仍保留庫存補漏。
 
-6. 記錄腳本輸出的 Application version、Git commit、Ready revision 與 Cloud Run URL。部署腳本會確認 `/ready` 回傳同一個 commit，否則部署視為失敗。
-7. 將腳本輸出的 Cloud Run 服務帳號 Email 以「編輯者」分享至補貨 Google Sheet。服務帳號不需要取得整個 Drive 的存取權。
-8. 將 Cloud Run URL 設為 LIFF Endpoint URL；LINE Webhook URL 設為 `<CLOUD_RUN_URL>/webhook`，再執行 Verify。
-9. 邀請 Bot 進入工作群組，輸入「補貨」，確認 `系統設定` 的 `NOTIFICATION_GROUP_ID` 已自動寫入。
-10. 在 `授權人員` 分頁把實際採購與到貨人員的角色改為 `採購確認`、`到貨確認` 或 `管理員`。
+7. 記錄腳本輸出的 Application version、Git commit、Ready revision 與 Cloud Run URL。部署腳本會確認 `/ready` 回傳同一個 commit，否則部署視為失敗。
+8. 將腳本輸出的 Cloud Run 服務帳號 Email 以「編輯者」分享至補貨 Google Sheet。服務帳號不需要取得整個 Drive 的存取權。
+9. 將 Cloud Run URL 設為 LIFF Endpoint URL；LINE Webhook URL 設為 `<CLOUD_RUN_URL>/webhook`，再執行 Verify。
+10. 邀請 Bot 進入工作群組，輸入「補貨」，確認 `系統設定` 的 `NOTIFICATION_GROUP_ID` 已自動寫入。
+11. 在 `授權人員` 分頁把實際採購與到貨人員的角色改為 `採購確認`、`到貨確認` 或 `管理員`。
 
 FlyingMouse 使用獨立 Cloud Run Job。部署腳本預設為商品 `read-only`、庫存 `dry-run`；正式 `auto/live` 模式會改動 Google Sheet 與飛鼠庫存，必須在手動 execution 驗收完成並取得正式資料操作同意後，明確執行：
 
@@ -77,7 +85,7 @@ FlyingMouse 使用獨立 Cloud Run Job。部署腳本預設為商品 `read-only`
 - 兩個 HTTP Scheduler 均以自訂 `X-Job-Token` header 傳送 `line-job-token`。Secret 不應包含前後空白或換行；服務端仍會在載入 `JOB_TOKEN` 時移除意外的前後空白，以相容早期建立的 Secret 版本。
 - 預算警示：預設每月 `300TWD`，於 50%、90%、100% 通知；預算不會自動停止支出。
 - Secret Manager：Cloud Run 服務帳號僅取得四個指定秘密的 `roles/secretmanager.secretAccessor`。
-- Startup／readiness probe：`/ready`，確認 Sheet 可讀後才接收流量；liveness probe：`/health`，只判斷程序是否仍存活。持續 readiness 每 60 秒唯讀檢查 `系統設定` 表頭。
+- Startup／readiness probe：`/ready`，確認 Sheet 可讀且 `補貨追蹤` T:V 規格修正表頭正確後才接收流量；liveness probe：`/health`，只判斷程序是否仍存活。持續 readiness 每 60 秒執行唯讀檢查。
 - Revision metadata：`APP_VERSION`、`GIT_COMMIT`、`DEPLOYED_AT` 環境變數、`git-commit` Cloud Run label，以及 Cloud Run 自動提供的 `K_REVISION`。
 
 ## 驗收
@@ -93,6 +101,7 @@ npm.cmd run build
 - LINE Developers Console 的 Webhook Verify 成功。
 - 手機 LINE 開啟 LIFF，搜尋 SKU、建立多品項申請。
 - 採購角色確認下單；到貨角色執行部分到貨與完成。
+- 在尚未到貨的已下單品項選擇同商品其他 SKU，確認 U 欄顯示 `✅ 可套用`；首次到貨後 N 變成新 SKU、V 保存舊 SKU，且飛鼠 queue 使用新 SKU。再測試不同商品與已部分到貨品項均被拒絕。
 - 原申請人輸入 `取消補貨 <補貨單號>` 可取消待確認案件；非原申請人、非管理員或已下單案件會被拒絕。
 - 採購確認角色輸入 `取消採購 <補貨單號>` 可取消尚未到貨的已下單案件；申請人、部分到貨或已完成案件會被拒絕，且不建立飛鼠回寫事件。
 - 手動執行 Scheduler job，確認群組只收到一次提醒。

@@ -10,6 +10,15 @@ import {
   parseWritebackRows,
   writebackEventRow
 } from '../flyingmouse/sheets-writeback.js';
+import {
+  CORRECTION_SKU_INDEX,
+  ORDER_SPEC_CORRECTION_HEADERS,
+  ORIGINAL_SKU_INDEX,
+  TRACKING_LAST_COLUMN,
+  exactOrderSpecCorrectionHeaders,
+  flagDuplicateEffectiveSkus,
+  resolveOrderSpecCorrection
+} from './order-spec-correction.js';
 
 const TRACKING_SHEET = '補貨追蹤';
 const SKU_SHEET = 'SKU主檔';
@@ -65,6 +74,44 @@ function dateSerial(value) {
   return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86_400_000 + 25_569;
 }
 
+function catalogSku(row) {
+  return {
+    sku: String(row[0]),
+    productName: String(row[1] ?? ''),
+    spec1: String(row[2] ?? ''),
+    spec2: String(row[3] ?? ''),
+    stockSnapshot: Number(row[4] ?? 0),
+    displayName: String(row[7] || row[1] || row[0]),
+    searchKeywords: String(row[10] ?? ''),
+    unit: String(row[11] || '件'),
+    updatedAt: String(row[13] ?? ''),
+    available: row[9] === '是'
+  };
+}
+
+function trackingItem(row, rowNumber = 0) {
+  return {
+    rowNumber,
+    requestId: String(row[0] ?? ''),
+    requestedAt: row[1] ?? '',
+    applicant: String(row[2] ?? ''),
+    displayName: String(row[3] ?? ''),
+    unit: String(row[4] || '件'),
+    requestedQuantity: Number(row[5] ?? 0),
+    status: String(row[6] ?? ''),
+    orderedQuantity: Number(row[7] ?? 0),
+    expectedDate: String(row[8] ?? '').replaceAll('/', '-'),
+    receivedQuantity: Number(row[9] ?? 0),
+    outstandingQuantity: Number(row[10] ?? 0),
+    duplicateWarning: String(row[11] ?? ''),
+    note: String(row[12] ?? ''),
+    sku: String(row[13] ?? ''),
+    sourceGroupId: String(row[15] ?? ''),
+    correctionSku: String(row[CORRECTION_SKU_INDEX] ?? ''),
+    originalSku: String(row[ORIGINAL_SKU_INDEX] ?? '')
+  };
+}
+
 export function createGoogleSheetsClient() {
   const auth = new google.auth.GoogleAuth({
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
@@ -89,11 +136,21 @@ export class SheetsRepository {
   }
 
   async checkHealth() {
-    await this.sheets.spreadsheets.values.get({
-      spreadsheetId: this.spreadsheetId,
-      range: `'${SETTINGS_SHEET}'!A1:B1`,
-      valueRenderOption: 'UNFORMATTED_VALUE'
-    });
+    const [, correctionHeaders] = await Promise.all([
+      this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `'${SETTINGS_SHEET}'!A1:B1`,
+        valueRenderOption: 'UNFORMATTED_VALUE'
+      }),
+      this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.spreadsheetId,
+        range: `'${TRACKING_SHEET}'!T1:V1`,
+        valueRenderOption: 'UNFORMATTED_VALUE'
+      })
+    ]);
+    exactOrderSpecCorrectionHeaders(
+      correctionHeaders.data.values?.[0] ?? ORDER_SPEC_CORRECTION_HEADERS.map(() => '')
+    );
     if (this.flyingmouseWritebackEnabled) {
       const response = await this.sheets.spreadsheets.values.get({
         spreadsheetId: this.spreadsheetId,
@@ -106,24 +163,32 @@ export class SheetsRepository {
   }
 
   async listAvailableSkus() {
+    return (await this.#listSkuCatalog())
+      .filter((sku) => sku.available)
+      .map(({ available: _available, ...sku }) => sku);
+  }
+
+  async #listSkuCatalog() {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
       range: `'${SKU_SHEET}'!A2:N`
     });
 
     return (response.data.values ?? [])
-      .filter((row) => row[0] && row[9] === '是')
-      .map((row) => ({
-        sku: String(row[0]),
-        productName: String(row[1] ?? ''),
-        spec1: String(row[2] ?? ''),
-        spec2: String(row[3] ?? ''),
-        stockSnapshot: Number(row[4] ?? 0),
-        displayName: String(row[7] || row[1] || row[0]),
-        searchKeywords: String(row[10] ?? ''),
-        unit: String(row[11] || '件'),
-        updatedAt: String(row[13] ?? '')
-      }));
+      .filter((row) => row[0])
+      .map(catalogSku);
+  }
+
+  async #resolveTrackingItems(rows) {
+    const parsed = rows.map(({ row, rowNumber }) => trackingItem(row, rowNumber));
+    const needsCatalog = parsed.some((item) => item.correctionSku && !item.originalSku);
+    const catalogBySku = needsCatalog
+      ? new Map((await this.#listSkuCatalog()).map((sku) => [sku.sku, sku]))
+      : new Map();
+    return flagDuplicateEffectiveSkus(parsed.map((item) => resolveOrderSpecCorrection({
+      item,
+      catalogBySku
+    })));
   }
 
   async listProductImages() {
@@ -157,20 +222,22 @@ export class SheetsRepository {
   async listOpenRequests() {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `'${TRACKING_SHEET}'!A2:S${MAX_TRACKING_ROW}`
+      range: `'${TRACKING_SHEET}'!A2:${TRACKING_LAST_COLUMN}${MAX_TRACKING_ROW}`
     });
 
-    return (response.data.values ?? [])
-      .filter((row) => row[0] && !CLOSED_STATUSES.has(row[6]))
-      .map((row) => ({
-        requestId: String(row[0]),
-        displayName: String(row[3] ?? ''),
-        status: String(row[6] ?? ''),
-        orderedQuantity: Number(row[7] ?? 0),
-        receivedQuantity: Number(row[9] ?? 0),
-        outstandingQuantity: Number(row[10] ?? 0),
-        sku: String(row[13] ?? '')
-      }));
+    const rows = (response.data.values ?? [])
+      .map((row, index) => ({ row, rowNumber: index + 2 }))
+      .filter(({ row }) => row[0] && !CLOSED_STATUSES.has(row[6]));
+    return (await this.#resolveTrackingItems(rows)).map((item) => ({
+      requestId: item.requestId,
+      displayName: item.displayName,
+      status: item.status,
+      orderedQuantity: item.orderedQuantity,
+      receivedQuantity: item.receivedQuantity,
+      outstandingQuantity: item.outstandingQuantity,
+      sku: item.sku,
+      ...(item.skuCorrectionError ? { skuCorrectionError: item.skuCorrectionError } : {})
+    }));
   }
 
   async listRequestRows() {
@@ -185,24 +252,26 @@ export class SheetsRepository {
 
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `'${TRACKING_SHEET}'!A2:N${lastIndex + 2}`,
+      range: `'${TRACKING_SHEET}'!A2:${TRACKING_LAST_COLUMN}${lastIndex + 2}`,
       valueRenderOption: 'UNFORMATTED_VALUE'
     });
-    return (response.data.values ?? [])
-      .filter((row) => row[0])
-      .map((row) => ({
-        requestId: String(row[0]),
-        requestedAt: row[1] ?? '',
-        applicant: String(row[2] ?? ''),
-        displayName: String(row[3] ?? ''),
-        unit: String(row[4] || '件'),
-        requestedQuantity: Number(row[5] ?? 0),
-        status: String(row[6] ?? ''),
-        orderedQuantity: Number(row[7] ?? 0),
-        receivedQuantity: Number(row[9] ?? 0),
-        outstandingQuantity: Number(row[10] ?? 0),
-        sku: String(row[13] ?? '')
-      }));
+    const rows = (response.data.values ?? [])
+      .map((row, index) => ({ row, rowNumber: index + 2 }))
+      .filter(({ row }) => row[0]);
+    return (await this.#resolveTrackingItems(rows)).map((item) => ({
+      requestId: item.requestId,
+      requestedAt: item.requestedAt,
+      applicant: item.applicant,
+      displayName: item.displayName,
+      unit: item.unit,
+      requestedQuantity: item.requestedQuantity,
+      status: item.status,
+      orderedQuantity: item.orderedQuantity,
+      receivedQuantity: item.receivedQuantity,
+      outstandingQuantity: item.outstandingQuantity,
+      sku: item.sku,
+      ...(item.skuCorrectionError ? { skuCorrectionError: item.skuCorrectionError } : {})
+    }));
   }
 
   createRequest(input) {
@@ -339,30 +408,12 @@ export class SheetsRepository {
     const lastRow = rowNumbers.at(-1);
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `'${TRACKING_SHEET}'!A${firstRow}:S${lastRow}`
+      range: `'${TRACKING_SHEET}'!A${firstRow}:${TRACKING_LAST_COLUMN}${lastRow}`
     });
     const requestRows = (response.data.values ?? [])
       .map((row, index) => ({ row, rowNumber: index + firstRow }))
       .filter(({ row }) => row[0] === targetRequestId);
-    const items = requestRows
-      .map(({ row, rowNumber }) => ({
-        rowNumber,
-        requestId: String(row[0]),
-        requestedAt: String(row[1] ?? ''),
-        applicant: String(row[2] ?? ''),
-        displayName: String(row[3] ?? ''),
-        unit: String(row[4] || '件'),
-        requestedQuantity: Number(row[5] ?? 0),
-        status: String(row[6] ?? ''),
-        orderedQuantity: Number(row[7] ?? 0),
-        expectedDate: String(row[8] ?? '').replaceAll('/', '-'),
-        receivedQuantity: Number(row[9] ?? 0),
-        outstandingQuantity: Number(row[10] ?? 0),
-        duplicateWarning: String(row[11] ?? ''),
-        note: String(row[12] ?? ''),
-        sku: String(row[13] ?? ''),
-        sourceGroupId: String(row[15] ?? '')
-      }));
+    const items = await this.#resolveTrackingItems(requestRows);
     if (items.length === 0) throw new NotFoundError(`找不到補貨單 ${targetRequestId}`);
     return {
       requestId: targetRequestId,
@@ -696,9 +747,13 @@ export class SheetsRepository {
     const serial = sheetSerial(receivedAt);
     const updated = [];
     const data = [];
+    let correctionCount = 0;
     for (const receipt of input.items) {
       const item = requestMap.get(receipt.sku);
       if (!item) throw new ValidationError(`SKU ${receipt.sku} 不在此補貨單`);
+      if (item.skuCorrectionError) {
+        throw new ConflictError(`SKU ${item.canonicalSku} 的規格修正無法套用：${item.skuCorrectionError}`);
+      }
       if (!['已下單', '部分到貨'].includes(item.status)) {
         throw new ConflictError(`SKU ${receipt.sku} 目前不可登記到貨`);
       }
@@ -707,6 +762,15 @@ export class SheetsRepository {
         throw new ValidationError(`SKU ${receipt.sku} 的累計到貨量不可超過下單量`);
       }
       const status = newTotal === item.orderedQuantity ? '已完成' : '部分到貨';
+      if (item.skuCorrectionPending) {
+        correctionCount += 1;
+        data.push(
+          { range: `'${TRACKING_SHEET}'!D${item.rowNumber}`, values: [[item.displayName]] },
+          { range: `'${TRACKING_SHEET}'!E${item.rowNumber}`, values: [[item.unit]] },
+          { range: `'${TRACKING_SHEET}'!N${item.rowNumber}`, values: [[item.sku]] },
+          { range: `'${TRACKING_SHEET}'!V${item.rowNumber}`, values: [[item.canonicalSku]] }
+        );
+      }
       data.push(
         { range: `'${TRACKING_SHEET}'!G${item.rowNumber}`, values: [[status]] },
         { range: `'${TRACKING_SHEET}'!J${item.rowNumber}`, values: [[newTotal]] },
@@ -716,7 +780,14 @@ export class SheetsRepository {
         ...item,
         status,
         receivedQuantity: newTotal,
-        outstandingQuantity: item.orderedQuantity - newTotal
+        outstandingQuantity: item.orderedQuantity - newTotal,
+        ...(item.skuCorrectionPending ? {
+          canonicalSku: item.sku,
+          originalSku: item.canonicalSku,
+          skuCorrectionPending: false,
+          skuCorrectionApplied: true,
+          skuCorrectionOriginalSku: item.canonicalSku
+        } : {})
       });
     }
     data.push({
@@ -727,7 +798,7 @@ export class SheetsRepository {
         input.requestId,
         input.actor.userId,
         serial,
-        `本次 ${updated.length} 項`
+        `本次 ${updated.length} 項${correctionCount > 0 ? `，套用規格修正 ${correctionCount} 項` : ''}`
       ]]
     });
     if (this.flyingmouseWritebackEnabled) {
@@ -817,7 +888,7 @@ export class SheetsRepository {
   async listReminderCandidates({ at = this.now(), pendingAfterHours = 24 } = {}) {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `'${TRACKING_SHEET}'!A2:S${MAX_TRACKING_ROW}`,
+      range: `'${TRACKING_SHEET}'!A2:${TRACKING_LAST_COLUMN}${MAX_TRACKING_ROW}`,
       valueRenderOption: 'UNFORMATTED_VALUE'
     });
     const nowSerial = sheetSerial(at);
@@ -825,13 +896,16 @@ export class SheetsRepository {
     const pendingBefore = nowSerial - pendingAfterHours / 24;
     const candidates = new Map();
 
-    for (const row of response.data.values ?? []) {
-      const requestIdValue = String(row[0] ?? '');
-      const status = String(row[6] ?? '');
+    const rows = (response.data.values ?? [])
+      .map((row, index) => ({ row, rowNumber: index + 2 }))
+      .filter(({ row }) => row[0]);
+    for (const item of await this.#resolveTrackingItems(rows)) {
+      const requestIdValue = item.requestId;
+      const status = item.status;
       if (!requestIdValue || CLOSED_STATUSES.has(status)) continue;
-      const requestedAt = Number(row[1]);
-      const expectedDate = Number(row[8]);
-      const outstanding = Number(row[10] ?? 0);
+      const requestedAt = Number(item.requestedAt);
+      const expectedDate = Number(item.expectedDate);
+      const outstanding = item.outstandingQuantity;
       const kind = status === '待確認' && Number.isFinite(requestedAt) && requestedAt <= pendingBefore
         ? 'pending'
         : Number.isFinite(expectedDate) && expectedDate < todaySerial && outstanding > 0
@@ -843,15 +917,15 @@ export class SheetsRepository {
       const candidate = candidates.get(key) ?? {
         kind,
         requestId: requestIdValue,
-        groupId: String(row[15] ?? ''),
+        groupId: item.sourceGroupId,
         items: []
       };
       candidate.items.push({
-        sku: String(row[13] ?? ''),
-        displayName: String(row[3] ?? ''),
+        sku: item.sku,
+        displayName: item.displayName,
         status,
         outstandingQuantity: outstanding,
-        unit: String(row[4] || '件')
+        unit: item.unit
       });
       candidates.set(key, candidate);
     }

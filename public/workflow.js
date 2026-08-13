@@ -45,6 +45,18 @@ export function selectWorkflowItems(items, mode) {
   return [];
 }
 
+function specCorrectionMeta(item) {
+  if (item.skuCorrectionError) return `規格修正錯誤：${item.skuCorrectionError}`;
+  if (item.skuCorrectionPending) return '規格已修正，將於首次登記到貨時套用並鎖定';
+  if (item.skuCorrectionApplied) return '規格修正已套用';
+  return '';
+}
+
+function appendMeta(base, item) {
+  const correction = specCorrectionMeta(item);
+  return correction ? `${base}｜${correction}` : base;
+}
+
 export function workflowItemView(item, mode, { purchaseAdded = false } = {}) {
   const config = workflowConfig(mode);
   if (!config) throw new TypeError(`未知的補貨流程模式：${mode}`);
@@ -52,24 +64,27 @@ export function workflowItemView(item, mode, { purchaseAdded = false } = {}) {
     const unit = String(item.unit || '件');
     return {
       readOnly: true,
-      meta: [
+      meta: appendMeta([
         `狀態：${String(item.status || '未知')}`,
         `申請 ${quantity(item.requestedQuantity)} ${unit}`,
         `下單 ${quantity(item.orderedQuantity)} ${unit}`,
         `已到 ${quantity(item.receivedQuantity)} ${unit}`
-      ].join('｜')
+      ].join('｜'), item)
     };
   }
   if (mode === 'order') {
     return {
       readOnly: false,
-      meta: purchaseAdded
+      meta: appendMeta(purchaseAdded
         ? `原申請未包含｜${item.sku}`
-        : `申請 ${quantity(item.requestedQuantity)} ${item.unit}｜${item.sku}`
+        : `申請 ${quantity(item.requestedQuantity)} ${item.unit}｜${item.sku}`, item)
     };
   }
   return {
     readOnly: false,
-    meta: `已到 ${quantity(item.receivedQuantity)}/${quantity(item.orderedQuantity)} ${item.unit}｜尚缺 ${quantity(item.outstandingQuantity)}`
+    meta: appendMeta(
+      `已到 ${quantity(item.receivedQuantity)}/${quantity(item.orderedQuantity)} ${item.unit}｜尚缺 ${quantity(item.outstandingQuantity)}`,
+      item
+    )
   };
 }
