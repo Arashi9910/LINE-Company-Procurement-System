@@ -52,7 +52,7 @@ export function orderSpecCorrectionStatusFormula() {
     + 'IF(XLOOKUP(T2:T,\'SKU主檔\'!A:A,\'SKU主檔\'!J:J,"否")<>"是","⛔ 目標不可補貨",'
     + 'IF(XLOOKUP(N2:N,\'SKU主檔\'!A:A,\'SKU主檔\'!B:B,"")'
     + '<>XLOOKUP(T2:T,\'SKU主檔\'!A:A,\'SKU主檔\'!B:B,""),'
-    + '"⛔ 不同商品，只能換規格","✅ 可套用")))))))))))';
+    + '"⛔ 不同商品，只能換規格","✅ 可套用"))))))))))';
 }
 
 export function resolveOrderSpecCorrection({ item, catalogBySku = new Map() }) {

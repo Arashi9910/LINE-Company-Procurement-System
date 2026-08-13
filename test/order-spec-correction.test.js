@@ -41,6 +41,14 @@ test('order spec correction headers and status formula keep the Sheet contract e
   ]), true);
   assert.throws(() => exactOrderSpecCorrectionHeaders(['錯誤', '修正狀態', '原始SKU（系統）']), /表頭不符/);
   const formula = orderSpecCorrectionStatusFormula();
+  const formulaWithoutStrings = formula.replace(/"(?:""|[^"])*"/g, '');
+  let parenthesisDepth = 0;
+  for (const character of formulaWithoutStrings) {
+    if (character === '(') parenthesisDepth += 1;
+    if (character === ')') parenthesisDepth -= 1;
+    assert.equal(parenthesisDepth >= 0, true, '公式不可提早關閉括號');
+  }
+  assert.equal(parenthesisDepth, 0, '公式括號必須成對');
   assert.match(formula, /已有到貨/);
   assert.match(formula, /不同商品/);
   assert.match(formula, /已套用後不可再修改/);
