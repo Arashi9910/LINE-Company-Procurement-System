@@ -766,7 +766,6 @@ export class SheetsRepository {
         correctionCount += 1;
         data.push(
           { range: `'${TRACKING_SHEET}'!D${item.rowNumber}`, values: [[item.displayName]] },
-          { range: `'${TRACKING_SHEET}'!E${item.rowNumber}`, values: [[item.unit]] },
           { range: `'${TRACKING_SHEET}'!N${item.rowNumber}`, values: [[item.sku]] },
           { range: `'${TRACKING_SHEET}'!V${item.rowNumber}`, values: [[item.canonicalSku]] }
         );

@@ -8,7 +8,7 @@
 
 - 保留 N 欄作正式 SKU，以 T 欄作待套用修正；避免直接人工覆寫正式識別值。
 - 以 SKU 作下拉值，因正式主檔有 14 組重複顯示名稱，顯示名稱不能作唯一鍵。
-- V 欄保存原始 SKU；第一次到貨後 D、E、N 成為修正後顯示名稱、單位與 SKU，防止後續到貨回到舊規格。
+- V 欄保存原始 SKU；第一次到貨後 D、N 成為修正後顯示名稱與 SKU，E 欄則由既有公式依 N 自動更新，防止後續到貨回到舊規格。
 - U 欄公式只提供即時操作提示；所有安全判斷在 Node.js 重做。
 - Sheet 結構透過可重跑遷移函式建立，不在一般 HTTP 請求中自動改表。
 
@@ -23,7 +23,7 @@
   - Dependencies：無
 
 - [x] Task 2：將有效修正接入讀取與到貨交易
-  - Acceptance：LINE／到貨頁使用 effective SKU；首次到貨同批更新 D/E/N/V；queue 使用新 SKU；非法修正不寫入。
+  - Acceptance：LINE／到貨頁使用 effective SKU；首次到貨同批更新 D/N/V 且不覆寫 E 欄陣列公式；queue 使用新 SKU；非法修正不寫入。
   - Verify：`node --test test/sheets-repository.test.js test/api.test.js`
   - Files：`src/sheets/repository.js`、`test/sheets-repository.test.js`
   - Dependencies：Task 1

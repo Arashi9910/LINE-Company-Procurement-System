@@ -995,7 +995,6 @@ test('SheetsRepository applies a pending same-product spec correction with the f
 
   assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
     "'補貨追蹤'!D2",
-    "'補貨追蹤'!E2",
     "'補貨追蹤'!N2",
     "'補貨追蹤'!V2",
     "'補貨追蹤'!G2",
@@ -1004,12 +1003,12 @@ test('SheetsRepository applies a pending same-product spec correction with the f
     "'操作紀錄'!A2:F2",
     "'飛鼠庫存回寫'!A2:O2"
   ]);
-  assert.deepEqual(write.requestBody.data.slice(0, 4).map((entry) => entry.values[0][0]), [
-    '收納盒｜藍色', '個', 'SKU-BLUE', 'SKU-RED'
+  assert.deepEqual(write.requestBody.data.slice(0, 3).map((entry) => entry.values[0][0]), [
+    '收納盒｜藍色', 'SKU-BLUE', 'SKU-RED'
   ]);
-  assert.equal(write.requestBody.data[7].values[0][5], '本次 1 項，套用規格修正 1 項');
-  assert.equal(write.requestBody.data[8].values[0][3], 'SKU-BLUE');
-  assert.equal(write.requestBody.data[8].values[0][4], 2);
+  assert.equal(write.requestBody.data[6].values[0][5], '本次 1 項，套用規格修正 1 項');
+  assert.equal(write.requestBody.data[7].values[0][3], 'SKU-BLUE');
+  assert.equal(write.requestBody.data[7].values[0][4], 2);
   assert.equal(result.items[0].sku, 'SKU-BLUE');
   assert.equal(result.items[0].skuCorrectionApplied, true);
   assert.equal(result.items[0].skuCorrectionOriginalSku, 'SKU-RED');
