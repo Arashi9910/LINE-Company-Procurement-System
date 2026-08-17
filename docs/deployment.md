@@ -85,7 +85,7 @@ FlyingMouse 使用獨立 Cloud Run Job。部署腳本預設為商品 `read-only`
 - 兩個 HTTP Scheduler 均以自訂 `X-Job-Token` header 傳送 `line-job-token`。Secret 不應包含前後空白或換行；服務端仍會在載入 `JOB_TOKEN` 時移除意外的前後空白，以相容早期建立的 Secret 版本。
 - 預算警示：預設每月 `300TWD`，於 50%、90%、100% 通知；預算不會自動停止支出。
 - Secret Manager：Cloud Run 服務帳號僅取得四個指定秘密的 `roles/secretmanager.secretAccessor`。
-- Startup／readiness probe：`/ready`，確認 Sheet 可讀且 `補貨追蹤` T:V 規格修正表頭正確後才接收流量；liveness probe：`/health`，只判斷程序是否仍存活。持續 readiness 每 60 秒執行唯讀檢查。
+- Startup probe：`/ready`，啟動時確認 Sheet 可讀且 `補貨追蹤` T:V 規格修正表頭正確；部署完成後也會以 `/ready` 驗證版本與 Sheet。持續 readiness 與 liveness probe 都使用 `/health`，只判斷程序是否存活，避免 Google Sheets 短暫延遲讓唯一執行個體退出流量。
 - Revision metadata：`APP_VERSION`、`GIT_COMMIT`、`DEPLOYED_AT` 環境變數、`git-commit` Cloud Run label，以及 Cloud Run 自動提供的 `K_REVISION`。
 
 ## 驗收

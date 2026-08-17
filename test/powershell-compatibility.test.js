@@ -114,11 +114,12 @@ test('deployment binds a clean Git commit to Cloud Run metadata', async () => {
   assert.match(source, /'--update-labels', "git-commit=\$gitCommit"/);
 });
 
-test('deployment configures Cloud Run probes and verifies the ready revision', async () => {
+test('deployment keeps continuous readiness independent from Google Sheets and verifies the ready revision', async () => {
   const source = await readFile('scripts/deploy-gcp.ps1', 'utf8');
   assert.match(source, /'--startup-probe', 'httpGet\.path=\/ready,/);
   assert.match(source, /'--liveness-probe', 'httpGet\.path=\/health,/);
-  assert.match(source, /'--readiness-probe', 'httpGet\.path=\/ready,/);
+  assert.match(source, /'--readiness-probe', 'httpGet\.path=\/health,/);
+  assert.doesNotMatch(source, /'--readiness-probe', 'httpGet\.path=\/ready,/);
   assert.match(source, /status\.latestReadyRevisionName/);
   assert.match(source, /Invoke-RestMethod[^\n]+\/ready/);
   assert.match(source, /ready\.commit -eq \$gitCommit/);

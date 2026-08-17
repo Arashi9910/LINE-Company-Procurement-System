@@ -214,7 +214,9 @@ if ($EnableFlyingmouseWriteback) {
   '--update-labels', "git-commit=$gitCommit",
   '--startup-probe', 'httpGet.path=/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=10,failureThreshold=12',
   '--liveness-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=30,failureThreshold=3',
-  '--readiness-probe', 'httpGet.path=/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=60,failureThreshold=3',
+  # Keep transient Google Sheets latency from removing the service's only instance from traffic.
+  # Startup and the post-deploy check still use /ready to validate Sheet access and schema.
+  '--readiness-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=60,failureThreshold=3',
   '--set-secrets', 'LINE_CHANNEL_SECRET=line-channel-secret:latest,LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token:latest,LINK_SIGNING_SECRET=line-link-signing-secret:latest,JOB_TOKEN=line-job-token:latest',
   '--quiet'
 )).Output | Out-Null
