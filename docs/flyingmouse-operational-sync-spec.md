@@ -11,7 +11,7 @@ LINE 補貨頁重新整理或重新開啟後，直接讀取上述兩個分頁，
 
 ## 圖片來源與欄位
 
-- 來源：登入後的 `/admin/part/list/*`，固定使用 `pageSize=1000`。
+- 來源：登入後的 `/admin/part/list/*`；每頁固定使用 `pageSize=1000`，依序讀取直到最後一頁不足 1000 筆，再合併驗證全部 SKU。
 - 解析依據：
   - `/admin/part/edit/{id}`：飛鼠貨品 ID 與 SKU。
   - `/admin/product/edit/{id}`：銷售商品 ID 與銷售商品編號。

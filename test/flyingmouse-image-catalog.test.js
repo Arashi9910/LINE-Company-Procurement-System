@@ -83,7 +83,7 @@ test('requires the DOM and official Excel to have the exact same SKU set', () =>
   );
 });
 
-test('captures a real FlyingMouse-style list whose page title is an h3', async (t) => {
+test('captures every FlyingMouse list page whose page title is an h3', async (t) => {
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1');
     const authenticated = request.headers.cookie?.includes('auth=1');
@@ -116,13 +116,24 @@ test('captures a real FlyingMouse-style list whose page title is an h3', async (
             '貨品編號', '名稱 / 規格 / GTIN', '庫存量', '儲位',
             '對應 SKU', '銷售商品', '更新時間', ''
           ].map((header) => `<th>${header}</th>`).join('')}</tr></thead>
-          <tbody><tr>
-            <td><a href="/admin/part/edit/927">SKU-A</a></td>
-            <td><img src="https://img.fslol.com/10371/a/example.jpg"><div style="padding-left:84px"><div><b>測試商品</b></div>藍色<br></div></td>
-            <td>3</td><td></td><td><a href="/admin/item/edit/927">SKU-A</a></td>
-            <td><a href="/admin/product/edit/206">926404525493</a></td><td></td><td></td>
-          </tr></tbody>
-        </table>`);
+          <tbody></tbody>
+        </table>
+        <script>
+          const state = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+          const start = (state.pageCode - 1) * state.pageSize + 1;
+          const end = Math.min(state.pageCode * state.pageSize, 1001);
+          const rows = [];
+          for (let number = start; number <= end; number += 1) {
+            const sku = 'SKU-' + String(number).padStart(4, '0');
+            rows.push('<tr>' +
+              '<td><a href="/admin/part/edit/' + number + '">' + sku + '</a></td>' +
+              '<td><img src="https://img.fslol.com/10371/a/example.jpg"><div style="padding-left:84px"><div><b>測試商品</b></div>藍色<br></div></td>' +
+              '<td>3</td><td></td><td><a href="/admin/item/edit/' + number + '">' + sku + '</a></td>' +
+              '<td><a href="/admin/product/edit/' + number + '">P-' + number + '</a></td><td></td><td></td>' +
+              '</tr>');
+          }
+          document.querySelector('tbody').innerHTML = rows.join('');
+        </script>`);
       return;
     }
     response.writeHead(404);
@@ -139,11 +150,15 @@ test('captures a real FlyingMouse-style list whose page title is an h3', async (
       username: 'tester',
       password: 'secret'
     },
-    sourceItems: [{ partNumber: 'SKU-A' }],
+    sourceItems: Array.from({ length: 1001 }, (_, index) => ({
+      partNumber: `SKU-${String(index + 1).padStart(4, '0')}`
+    })),
     now: () => new Date('2026-07-15T12:34:56.000Z')
   });
 
-  assert.equal(result.metadata.rowCount, 1);
-  assert.equal(result.items[0].partId, '927');
+  assert.equal(result.metadata.rowCount, 1001);
+  assert.equal(result.metadata.pageCount, 2);
+  assert.equal(result.items[0].partId, '1');
+  assert.equal(result.items[1000].partId, '1001');
   assert.equal(result.items[0].spec, '藍色');
 });

@@ -13,6 +13,8 @@ export const PRODUCT_LIST_HEADERS = Object.freeze([
 
 const DEFAULT_IMAGE = '/img/default-cover.jpg';
 const VARIANT_IMAGE = /^https:\/\/img\.fslol\.com\/10371\/.+\.(?:avif|gif|jpe?g|png|webp)(?:\?.*)?$/i;
+const PRODUCT_LIST_PAGE_SIZE = 1000;
+const MAX_PRODUCT_LIST_PAGES = 100;
 
 function normalizeText(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -33,9 +35,9 @@ function taipeiTimestamp(date) {
   return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
 }
 
-function productListUrl(value) {
+function productListUrl(value, pageCode) {
   const url = new URL(value);
-  url.hash = '{%22pageCode%22:1,%22pageSize%22:1000,%22appendQueryObj%22:{},%22sortFields%22:[%22create_time%22],%22order%22:%22DESC%22}';
+  url.hash = `{%22pageCode%22:${pageCode},%22pageSize%22:${PRODUCT_LIST_PAGE_SIZE},%22appendQueryObj%22:{},%22sortFields%22:[%22create_time%22],%22order%22:%22DESC%22}`;
   return url.toString();
 }
 
@@ -124,11 +126,16 @@ export function validateImageCatalogCoverage(imageItems, sourceItems) {
   return Object.freeze({ sourceRows: sourceItems.length, imageRows: imageItems.length });
 }
 
-async function captureRows(page, config, timeoutMs) {
-  await page.goto(productListUrl(config.productListUrl), {
+async function capturePageRows(page, config, timeoutMs, pageCode) {
+  await page.goto(productListUrl(config.productListUrl, pageCode), {
     waitUntil: 'domcontentloaded',
     timeout: timeoutMs
   });
+  // A hash-only navigation can leave the previous page rendered. A reload makes
+  // the FlyingMouse app apply the requested page before we inspect the table.
+  if (pageCode > 1) {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: timeoutMs });
+  }
   const pathname = new URL(page.url()).pathname;
   if (pathname !== '/admin/part/list/*') {
     throw new Error(`飛鼠貨品列表導向非預期路徑：${pathname}`);
@@ -174,6 +181,29 @@ async function captureRows(page, config, timeoutMs) {
   }));
 }
 
+async function captureAllRows(page, config, timeoutMs) {
+  const captured = [];
+  const seenSkus = new Set();
+  for (let pageCode = 1; pageCode <= MAX_PRODUCT_LIST_PAGES; pageCode += 1) {
+    const pageRows = await capturePageRows(page, config, timeoutMs, pageCode);
+    if (pageRows.length === 0) {
+      return Object.freeze({ rows: captured, pageCount: pageCode - 1 });
+    }
+    for (const row of pageRows) {
+      const sku = normalizeText(row.sku);
+      if (sku && seenSkus.has(sku)) {
+        throw new Error(`飛鼠貨品列表分頁重複 SKU：${sku}`);
+      }
+      if (sku) seenSkus.add(sku);
+    }
+    captured.push(...pageRows);
+    if (pageRows.length < PRODUCT_LIST_PAGE_SIZE) {
+      return Object.freeze({ rows: captured, pageCount: pageCode });
+    }
+  }
+  throw new Error(`飛鼠貨品列表超過 ${MAX_PRODUCT_LIST_PAGES} 頁，停止同步`);
+}
+
 export async function captureFlyingMouseProductList({
   config,
   sourceItems,
@@ -182,21 +212,26 @@ export async function captureFlyingMouseProductList({
   now = () => new Date(),
   launch
 }) {
-  const items = await withAuthenticatedFlyingMousePage({
+  const captured = await withAuthenticatedFlyingMousePage({
     config,
     headless,
     timeoutMs,
     ...(launch ? { launch } : {})
-  }, async (page) => normalizeProductListRows(
-    await captureRows(page, config, timeoutMs),
-    { capturedAt: now() }
-  ));
+  }, async (page) => {
+    const pages = await captureAllRows(page, config, timeoutMs);
+    return Object.freeze({
+      items: normalizeProductListRows(pages.rows, { capturedAt: now() }),
+      pageCount: pages.pageCount
+    });
+  });
+  const { items } = captured;
   const coverage = validateImageCatalogCoverage(items, sourceItems);
   return Object.freeze({
     metadata: Object.freeze({
       source: '飛鼠貨品列表',
       rowCount: items.length,
-      pageSize: 1000,
+      pageSize: PRODUCT_LIST_PAGE_SIZE,
+      pageCount: captured.pageCount,
       ...coverage
     }),
     items
