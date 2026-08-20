@@ -10,7 +10,7 @@
 ## Phase 1：商品主檔自動同步
 
 - [x] Task 1：新增 `syncCatalogItems`
-  - Acceptance：自動新增新 SKU、更新既有飛鼠 SKU B:H、保留 I:J/K/L:M/N 既有規則。
+  - Acceptance：自動新增新 SKU、更新既有飛鼠 SKU B:H、保留 I:J/K/L:M/N 既有規則；空白列不足時至少擴增 100 列且不搬動既有資料。
   - Verify：`node --test test/flyingmouse-operational.test.js`
   - Files：`src/flyingmouse/sheets-operational.js`、`test/flyingmouse-operational.test.js`
 
@@ -55,5 +55,6 @@
 | 覆寫人工商品 | 只允許 M=`飛鼠` 的既有列被來源覆寫；其他來源同 SKU 整批停止 |
 | 重複登入或併發寫入 | LINE 冪等操作紀錄、runner 序列化、執行中 execution 阻擋 |
 | 來源暫時缺漏 | 不刪除、不停用、不清空既有 SKU |
+| `SKU主檔` 空白列不足 | 通過所有資料安全檢查後只追加足夠列數，每次至少 100 列 |
 | Webhook 等待逾時 | 非同步啟動並另提供查詢指令 |
 | 高頻排程與上一次執行重疊 | 每 5 分鐘執行，單次 timeout 4 分鐘，平台重試為 0 |

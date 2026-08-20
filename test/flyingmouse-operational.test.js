@@ -25,7 +25,7 @@ function catalogSource(overrides = {}) {
   };
 }
 
-function catalogSheets({ rows, rowCount = 20, onWrite }) {
+function catalogSheets({ rows, rowCount = 20, onWrite, onStructuralWrite }) {
   return {
     spreadsheets: {
       async get() {
@@ -40,6 +40,10 @@ function catalogSheets({ rows, rowCount = 20, onWrite }) {
             }]
           }
         };
+      },
+      async batchUpdate(request) {
+        onStructuralWrite?.(request);
+        return { data: {} };
       },
       values: {
         async get({ range }) {
@@ -88,7 +92,8 @@ test('catalog sync inserts new SKUs and refreshes every source-owned B:H field',
     updated: 1,
     unchanged: 0,
     sourceOnly: 1,
-    mainOnly: 0
+    mainOnly: 0,
+    expandedRows: 0
   });
   assert.deepEqual(write.requestBody.data, [
     {
@@ -135,7 +140,7 @@ test('catalog sync stops before writes when managed SKU coverage is too low', as
   assert.equal(writes, 0);
 });
 
-test('catalog sync preserves source-missing rows and fails safely when the sheet is full', async () => {
+test('catalog sync preserves source-missing rows and expands capacity for new SKUs', async () => {
   const rows = [
     ['SKU-A', '商品 A', '', '', 1, '', '', '商品 A', '一般SKU', '是', '', '件', '飛鼠', ''],
     ['SKU-B', '商品 B', '', '', 1, '', '', '商品 B', '一般SKU', '是', '', '件', '飛鼠', '']
@@ -152,16 +157,36 @@ test('catalog sync preserves source-missing rows and fails safely when the sheet
   assert.equal(preserved.mainOnly, 1);
   assert.equal(preserved.updated, 0);
 
-  let writes = 0;
-  await assert.rejects(syncCatalogItems({
-    sheets: catalogSheets({ rows: [rows[0]], rowCount: 2, onWrite: () => { writes += 1; } }),
+  let write;
+  const structuralWrites = [];
+  const expanded = await syncCatalogItems({
+    sheets: catalogSheets({
+      rows: [rows[0]],
+      rowCount: 2,
+      onWrite: (request) => { write = request; },
+      onStructuralWrite: (request) => { structuralWrites.push(request); }
+    }),
     spreadsheetId: 'sheet-123',
     sourceItems: [
       catalogSource({ partNumber: 'SKU-A', productName: '商品 A', spec1: '', spec2: '', stock: 1, gtin: '', location: '' }),
       catalogSource({ partNumber: 'SKU-C', productName: '商品 C' })
     ]
-  }), /SKU主檔已滿/);
-  assert.equal(writes, 0);
+  });
+  assert.equal(expanded.inserted, 1);
+  assert.equal(expanded.expandedRows, 100);
+  assert.deepEqual(structuralWrites[0].requestBody.requests, [{
+    appendDimension: { sheetId: 3, dimension: 'ROWS', length: 100 }
+  }]);
+  assert.deepEqual(write.requestBody.data.slice(-2), [
+    {
+      range: "'SKU主檔'!A3:J3",
+      values: [[
+        'SKU-C', '商品 C', '紅色', '大', 8, '0012345', 'A-01', '商品 C｜紅色｜大',
+        '一般SKU', '是'
+      ]]
+    },
+    { range: "'SKU主檔'!L3:M3", values: [['件', '飛鼠']] }
+  ]);
 });
 
 function image(overrides = {}) {

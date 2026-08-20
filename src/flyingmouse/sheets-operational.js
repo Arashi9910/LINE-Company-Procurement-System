@@ -152,12 +152,28 @@ export async function syncCatalogItems({
 
   const sourceOnly = [...sourceBySku.keys()].filter((sku) => !main.bySku.has(sku));
   const availableRows = Math.max(0, rowCount - main.occupiedRows.size);
-  if (sourceOnly.length > availableRows) throw new Error(`${MAIN_SHEET_NAME}已滿，停止自動同步`);
+  const requiredExtraRows = Math.max(0, sourceOnly.length - availableRows);
+  const expandedRows = requiredExtraRows > 0 ? Math.max(100, requiredExtraRows) : 0;
+  if (!dryRun && expandedRows > 0) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [{
+          appendDimension: {
+            sheetId: properties.sheetId,
+            dimension: 'ROWS',
+            length: expandedRows
+          }
+        }]
+      }
+    });
+  }
+  const maximumRow = rowCount + expandedRows;
 
   let nextCandidate = 2;
   const takeEmptyRow = () => {
     while (main.occupiedRows.has(nextCandidate)) nextCandidate += 1;
-    if (nextCandidate > rowCount) throw new Error(`${MAIN_SHEET_NAME}已滿，停止自動同步`);
+    if (nextCandidate > maximumRow) throw new Error(`${MAIN_SHEET_NAME}已滿，停止自動同步`);
     main.occupiedRows.add(nextCandidate);
     return nextCandidate;
   };
@@ -222,7 +238,8 @@ export async function syncCatalogItems({
     updated,
     unchanged,
     sourceOnly: sourceOnly.length,
-    mainOnly: managed.length - matched.length
+    mainOnly: managed.length - matched.length,
+    expandedRows
   });
 }
 
