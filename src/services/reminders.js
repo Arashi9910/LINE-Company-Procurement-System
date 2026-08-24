@@ -21,14 +21,21 @@ export async function runReminders({ repository, messenger, at = new Date(), pen
     const groupId = candidate.groupId || fallbackGroupId;
     if (!groupId) continue;
     const key = `reminder-${dateKey}-${candidate.kind}-${candidate.requestId}`;
-    const reserved = await repository.reserveReminder({
+    const reminder = {
       key,
       requestId: candidate.requestId,
       at,
       summary: candidate.kind === 'pending' ? '待確認超過門檻' : '逾期未到貨'
-    });
+    };
+    const reserved = await repository.reserveReminder(reminder);
     if (!reserved) continue;
-    await messenger.pushReminder(groupId, candidate);
+    try {
+      await messenger.pushReminder(groupId, candidate);
+    } catch (error) {
+      await repository.failReminder(reminder);
+      throw error;
+    }
+    await repository.completeReminder(reminder);
     sent.push({ requestId: candidate.requestId, kind: candidate.kind });
   }
 

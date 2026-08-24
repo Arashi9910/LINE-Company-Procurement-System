@@ -870,6 +870,37 @@ export class SheetsRepository {
     };
   }
 
+  async #findReminderOperation(key) {
+    const response = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${OPERATIONS_SHEET}'!A2:F5000`
+    });
+    const rows = response.data.values ?? [];
+    const index = rows.findIndex((value) => value[0] === key);
+    const row = index >= 0 ? rows[index] : null;
+    return {
+      existing: Boolean(row),
+      type: String(row?.[1] ?? ''),
+      requestId: String(row?.[2] ?? ''),
+      summary: String(row?.[5] ?? ''),
+      rowNumber: index >= 0 ? index + 2 : null,
+      nextRow: rows.length + 2
+    };
+  }
+
+  async #updateReminderState(input, state) {
+    const operation = await this.#findReminderOperation(input.key);
+    if (!operation.existing || operation.type !== '提醒' || operation.requestId !== input.requestId) {
+      throw new ConflictError(`提醒操作紀錄不一致：${input.key}`);
+    }
+    await this.sheets.spreadsheets.values.update({
+      spreadsheetId: this.spreadsheetId,
+      range: `'${OPERATIONS_SHEET}'!F${operation.rowNumber}`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[`${input.summary}｜${state}`]] }
+    });
+  }
+
   async #findAppendRow(itemCount) {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
@@ -933,8 +964,20 @@ export class SheetsRepository {
 
   reserveReminder(input) {
     return this.#enqueue(async () => {
-      const operation = await this.#findOperation(input.key);
-      if (operation.existing) return false;
+      const operation = await this.#findReminderOperation(input.key);
+      if (operation.existing) {
+        if (operation.type !== '提醒' || operation.requestId !== input.requestId) {
+          throw new ConflictError(`提醒操作金鑰已被其他操作使用：${input.key}`);
+        }
+        if (operation.summary !== `${input.summary}｜發送失敗`) return false;
+        await this.sheets.spreadsheets.values.update({
+          spreadsheetId: this.spreadsheetId,
+          range: `'${OPERATIONS_SHEET}'!F${operation.rowNumber}`,
+          valueInputOption: 'RAW',
+          requestBody: { values: [[`${input.summary}｜發送中`]] }
+        });
+        return true;
+      }
       await this.sheets.spreadsheets.values.update({
         spreadsheetId: this.spreadsheetId,
         range: `'${OPERATIONS_SHEET}'!A${operation.nextRow}:F${operation.nextRow}`,
@@ -945,11 +988,19 @@ export class SheetsRepository {
           input.requestId,
           'system',
           sheetSerial(input.at ?? this.now()),
-          input.summary
+          `${input.summary}｜發送中`
         ]] }
       });
       return true;
     });
+  }
+
+  failReminder(input) {
+    return this.#enqueue(() => this.#updateReminderState(input, '發送失敗'));
+  }
+
+  completeReminder(input) {
+    return this.#enqueue(() => this.#updateReminderState(input, '已發送'));
   }
 
   async #findPositions(idempotencyKey) {

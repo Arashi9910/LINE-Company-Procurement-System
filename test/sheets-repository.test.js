@@ -822,6 +822,51 @@ test('SheetsRepository finds pending and overdue reminders at Taipei time bounda
   ]);
 });
 
+test('SheetsRepository retries only reminders explicitly marked as failed', async () => {
+  const operationRows = [];
+  const writes = [];
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          assert.equal(range, "'操作紀錄'!A2:F5000");
+          return { data: { values: operationRows } };
+        },
+        async update(request) {
+          writes.push(request);
+          const rowNumber = Number(request.range.match(/(\d+)$/)?.[1]);
+          if (request.range.includes(`A${rowNumber}:F${rowNumber}`)) {
+            operationRows[rowNumber - 2] = [...request.requestBody.values[0]];
+          } else {
+            operationRows[rowNumber - 2][5] = request.requestBody.values[0][0];
+          }
+          return { data: {} };
+        }
+      }
+    }
+  };
+  const repository = new SheetsRepository({ sheets, spreadsheetId: 'sheet-123' });
+  const input = {
+    key: 'reminder-2026-08-24-overdue-RQ-1',
+    requestId: 'RQ-1',
+    at: new Date('2026-08-24T02:00:00.000Z'),
+    summary: '逾期未到貨'
+  };
+
+  assert.equal(await repository.reserveReminder(input), true);
+  assert.equal(operationRows[0][5], '逾期未到貨｜發送中');
+  assert.equal(await repository.reserveReminder(input), false);
+
+  await repository.failReminder(input);
+  assert.equal(operationRows[0][5], '逾期未到貨｜發送失敗');
+  assert.equal(await repository.reserveReminder(input), true);
+
+  await repository.completeReminder(input);
+  assert.equal(operationRows[0][5], '逾期未到貨｜已發送');
+  assert.equal(await repository.reserveReminder(input), false);
+  assert.equal(writes.length, 4);
+});
+
 test('SheetsRepository never overwrites a configured notification group', async () => {
   let writes = 0;
   const sheets = {

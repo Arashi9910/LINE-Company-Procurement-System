@@ -79,6 +79,7 @@ FlyingMouse 使用獨立 Cloud Run Job。部署腳本預設為商品 `read-only`
 - Region：`asia-east1`。
 - Cloud Run：最多 1 個執行個體、並行數 20；搭配程式內寫入佇列降低 Sheet 競爭寫入。
 - 提醒 Scheduler：週一至週五 10:00，時區 `Asia/Taipei`。
+- 提醒寫入 `操作紀錄` 時包含 `發送中`／`已發送`／`發送失敗` 狀態；若 LINE 明確拒絕請求，保留失敗狀態供問題排除後重試，不把失敗誤當成當日已提醒。
 - 新品核准 Scheduler：每分鐘呼叫 `/jobs/flyingmouse-approved-imports`；只讀取 `飛鼠目錄待確認` 與 `SKU主檔`，不登入飛鼠、不下載 Excel，也不執行圖片或全量庫存同步。
 - 飛鼠合併 Scheduler：沿用 `flyingmouse-catalog-sync-daily` 資源名稱，實際為每小時整點、`Asia/Taipei`；商品模式 `auto`、庫存模式 `live`、每次回寫上限 20、單 task、timeout 6 分鐘、平台重試 0。
 - 舊 `flyingmouse-inventory-writeback-every-5-minutes` Scheduler 已刪除；`flyingmouse-inventory-writeback` Job 由到貨 API 即時觸發，不會自行執行。
