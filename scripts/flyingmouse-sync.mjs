@@ -187,7 +187,8 @@ export async function runFlyingMouseSync(options, {
     ? await syncCatalogItems({
         sheets,
         spreadsheetId: options.spreadsheetId,
-        sourceItems: source.items
+        sourceItems: source.items,
+        imageItems: imageCatalog?.items ?? []
       })
     : null;
   const inventorySync = options.sheetMode === 'review'

@@ -74,6 +74,32 @@ function uniqueCatalogSourceBySku(sourceItems) {
   return result;
 }
 
+function unboundWhitespaceAliases(imageItems) {
+  const groups = new Map();
+  for (const item of imageItems ?? []) {
+    const sku = normalizeText(item?.sku);
+    const compactSku = sku.replace(/\s+/gu, '');
+    const spec = normalizeText(item?.spec);
+    const imageUrl = normalizeText(item?.variantImageUrl) || normalizeText(item?.listImageUrl);
+    const bindingStatus = normalizeText(item?.bindingStatus);
+    if (!sku || !compactSku || !spec || !imageUrl ||
+      !['已綁定銷售商品', '未綁定銷售商品'].includes(bindingStatus)) continue;
+    const key = `${compactSku}\u0000${spec}\u0000${imageUrl}`;
+    const group = groups.get(key) ?? { bound: new Set(), unbound: new Set() };
+    group[bindingStatus === '已綁定銷售商品' ? 'bound' : 'unbound'].add(sku);
+    groups.set(key, group);
+  }
+
+  const aliases = new Set();
+  for (const group of groups.values()) {
+    if (group.bound.size === 0) continue;
+    for (const sku of group.unbound) {
+      if ([...group.bound].some((boundSku) => boundSku !== sku)) aliases.add(sku);
+    }
+  }
+  return aliases;
+}
+
 function buildDisplayName(item) {
   return [item.productName, item.spec1, item.spec2].filter(Boolean).join('｜');
 }
@@ -117,6 +143,7 @@ export async function syncCatalogItems({
   sheets,
   spreadsheetId,
   sourceItems,
+  imageItems = [],
   minimumCoverage = 0.9,
   dryRun = false
 }) {
@@ -125,6 +152,7 @@ export async function syncCatalogItems({
     throw new Error('商品主檔最低配對率必須介於 0 與 1 之間');
   }
   const sourceBySku = uniqueCatalogSourceBySku(sourceItems);
+  const unavailableAliases = unboundWhitespaceAliases(imageItems);
   const properties = await getMainSheetProperties({ sheets, spreadsheetId });
   const rowCount = properties.gridProperties?.rowCount ?? 0;
   const response = await sheets.spreadsheets.values.get({
@@ -211,7 +239,7 @@ export async function syncCatalogItems({
     data.push(
       {
         range: `'${MAIN_SHEET_NAME}'!A${targetRow}:J${targetRow}`,
-        values: [[sku, ...catalogValues, '一般SKU', '是']]
+        values: [[sku, ...catalogValues, '一般SKU', unavailableAliases.has(sku) ? '否' : '是']]
       },
       {
         range: `'${MAIN_SHEET_NAME}'!L${targetRow}:M${targetRow}`,

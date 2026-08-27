@@ -217,6 +217,61 @@ function imageRow(item, matched = '已配對', sourceValue = item.source) {
   ];
 }
 
+test('catalog sync disables a new unbound whitespace alias when a bound twin exists', async () => {
+  const unboundSku = 'C7FCA2-IVE 芙官方應援棒收納盒（無應援棒）';
+  const boundSku = 'C7FCA2-IVE芙官方應援棒收納盒（無應援棒）';
+  const spec = 'IVE手燈收納盒(無應援棒)*1';
+  let write;
+
+  await syncCatalogItems({
+    sheets: catalogSheets({ rows: [], onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [
+      catalogSource({
+        partNumber: unboundSku,
+        productName: 'HANNYA原創 IVE 二代應援棒底座',
+        spec1: spec,
+        spec2: '',
+        stock: 0
+      }),
+      catalogSource({
+        partNumber: boundSku,
+        productName: 'IVE 二代應援棒底座',
+        spec1: spec,
+        spec2: '',
+        stock: 20
+      })
+    ],
+    imageItems: [
+      image({
+        partId: '1072',
+        sku: unboundSku,
+        productId: '',
+        productCode: '',
+        productName: 'HANNYA原創 IVE 二代應援棒底座',
+        spec,
+        mainImageUrl: '',
+        bindingStatus: '未綁定銷售商品'
+      }),
+      image({
+        partId: '1074',
+        sku: boundSku,
+        productId: '236',
+        productCode: '1056740319141',
+        productName: 'IVE 二代應援棒底座',
+        spec,
+        bindingStatus: '已綁定銷售商品'
+      })
+    ]
+  });
+
+  const insertedRows = write.requestBody.data
+    .filter((entry) => entry.range.includes(':J'))
+    .map((entry) => entry.values[0]);
+  assert.equal(insertedRows.find((row) => row[0] === unboundSku)[9], '否');
+  assert.equal(insertedRows.find((row) => row[0] === boundSku)[9], '是');
+});
+
 test('inventory sync writes only changed SKU主檔 E cells', async () => {
   let write;
   const sheets = {
