@@ -51,7 +51,7 @@ const result = await repository.importApprovedCatalogSnapshots({ at: new Date() 
 6. importer 由該列 E:K 重建新品快照，驗證：
    - 同步鍵精確等於 `新增:${SKU}`。
    - SKU 與商品名稱不可空白。
-   - 庫存為非負安全整數。
+   - 庫存為安全整數；負值正規化為 `0`，其他無效值停止同步。
    - 來源指紋與名稱、規格、GTIN、儲位一致。
    - `SKU主檔` 沒有重複 SKU 且有可用空列。
 7. 通過後以同一個 batch 寫入 `SKU主檔` 安全欄位，並把審核狀態更新為 `已匯入`。

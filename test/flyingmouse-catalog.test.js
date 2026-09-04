@@ -46,6 +46,17 @@ test('parseFlyingMouseWorkbook validates and normalizes the official export', as
   assert.equal(result.items[1].stock, 1000);
 });
 
+test('parseFlyingMouseWorkbook normalizes negative stock to zero', async (t) => {
+  const filePath = await temporaryWorkbook(t, FLYINGMOUSE_HEADERS, [
+    ['NEG-1', '負庫存商品 A', '', '', -1, '', ''],
+    ['NEG-2', '負庫存商品 B', '', '', '-2', '', '']
+  ]);
+
+  const result = await parseFlyingMouseWorkbook(filePath);
+
+  assert.deepEqual(result.items.map((item) => item.stock), [0, 0]);
+});
+
 test('parseFlyingMouseWorkbook rejects a changed header', async (t) => {
   const headers = [...FLYINGMOUSE_HEADERS];
   headers[4] = '可用庫存';
@@ -63,9 +74,9 @@ test('parseFlyingMouseWorkbook rejects duplicate keys and invalid stock', async 
   await assert.rejects(parseFlyingMouseWorkbook(duplicatePath), /重複/);
 
   const invalidStockPath = await temporaryWorkbook(t, FLYINGMOUSE_HEADERS, [
-    ['B', '商品', '', '', -1, '', '']
+    ['B', '商品', '', '', '待盤點', '', '']
   ]);
-  await assert.rejects(parseFlyingMouseWorkbook(invalidStockPath), /非負整數/);
+  await assert.rejects(parseFlyingMouseWorkbook(invalidStockPath), /不是整數/);
 });
 
 test('parseReferenceCatalogWorkbook locates the SKU columns by header', async (t) => {
