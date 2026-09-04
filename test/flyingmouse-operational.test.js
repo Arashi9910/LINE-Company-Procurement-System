@@ -250,6 +250,8 @@ test('catalog sync disables a new unbound whitespace alias when a bound twin exi
         productCode: '',
         productName: 'HANNYA原創 IVE 二代應援棒底座',
         spec,
+        sourceSpec: spec,
+        sourceImageUrl: 'https://img.fslol.com/10371/a/example.jpg',
         mainImageUrl: '',
         bindingStatus: '未綁定銷售商品'
       }),
@@ -259,7 +261,9 @@ test('catalog sync disables a new unbound whitespace alias when a bound twin exi
         productId: '236',
         productCode: '1056740319141',
         productName: 'IVE 二代應援棒底座',
-        spec,
+        spec: `${spec}(商品頁名稱)`,
+        sourceSpec: spec,
+        sourceImageUrl: 'https://img.fslol.com/10371/a/example.jpg',
         bindingStatus: '已綁定銷售商品'
       })
     ]

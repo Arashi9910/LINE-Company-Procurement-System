@@ -79,8 +79,9 @@ function unboundWhitespaceAliases(imageItems) {
   for (const item of imageItems ?? []) {
     const sku = normalizeText(item?.sku);
     const compactSku = sku.replace(/\s+/gu, '');
-    const spec = normalizeText(item?.spec);
-    const imageUrl = normalizeText(item?.variantImageUrl) || normalizeText(item?.listImageUrl);
+    const spec = normalizeText(item?.sourceSpec ?? item?.spec);
+    const imageUrl = normalizeText(item?.sourceImageUrl ?? item?.variantImageUrl) ||
+      normalizeText(item?.listImageUrl);
     const bindingStatus = normalizeText(item?.bindingStatus);
     if (!sku || !compactSku || !spec || !imageUrl ||
       !['已綁定銷售商品', '未綁定銷售商品'].includes(bindingStatus)) continue;

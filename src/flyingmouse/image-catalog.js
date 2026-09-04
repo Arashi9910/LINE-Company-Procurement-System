@@ -15,6 +15,7 @@ const DEFAULT_IMAGE = '/img/default-cover.jpg';
 const VARIANT_IMAGE = /^https:\/\/img\.fslol\.com\/10371\/.+\.(?:avif|gif|jpe?g|png|webp)(?:\?.*)?$/i;
 const PRODUCT_LIST_PAGE_SIZE = 1000;
 const MAX_PRODUCT_LIST_PAGES = 100;
+const PRODUCT_DETAIL_CONCURRENCY = 8;
 
 function normalizeText(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -58,6 +59,19 @@ function ensureUnique(items, field, label) {
   }
 }
 
+function imageFields({ mainImageUrl, listImageUrl, variantImageUrl }) {
+  const resolvedVariantImageUrl = variantImageUrl === undefined
+    ? (VARIANT_IMAGE.test(listImageUrl) ? listImageUrl : '')
+    : variantImageUrl;
+  const isDefault = listImageUrl === DEFAULT_IMAGE || /\/img\/default-cover\.jpg(?:\?.*)?$/i.test(listImageUrl);
+  return Object.freeze({
+    variantImageUrl: resolvedVariantImageUrl,
+    listImageUrl,
+    imageType: resolvedVariantImageUrl ? '規格圖' : (isDefault ? '預設圖' : '商品首圖'),
+    imageStatus: isDefault ? '待補圖片' : (mainImageUrl ? '正常' : '待補主圖')
+  });
+}
+
 export function normalizeProductListRows(rawRows, { capturedAt = new Date() } = {}) {
   if (!Array.isArray(rawRows) || rawRows.length === 0) {
     throw new Error('飛鼠貨品列表沒有可同步的資料');
@@ -80,8 +94,6 @@ export function normalizeProductListRows(rawRows, { capturedAt = new Date() } = 
     const mainImageUrl = productCode
       ? `https://img.fslol.com/pic/ss-select/${encodeURIComponent(productCode)}/cover.jpg`
       : '';
-    const variantImageUrl = VARIANT_IMAGE.test(listImageUrl) ? listImageUrl : '';
-    const isDefault = listImageUrl === DEFAULT_IMAGE || /\/img\/default-cover\.jpg(?:\?.*)?$/i.test(listImageUrl);
     return Object.freeze({
       partId,
       sku,
@@ -89,11 +101,10 @@ export function normalizeProductListRows(rawRows, { capturedAt = new Date() } = 
       productCode,
       productName,
       spec,
+      sourceSpec: spec,
+      sourceImageUrl: listImageUrl,
       mainImageUrl,
-      variantImageUrl,
-      listImageUrl,
-      imageType: variantImageUrl ? '規格圖' : (isDefault ? '預設圖' : '商品首圖'),
-      imageStatus: isDefault ? '待補圖片' : (mainImageUrl ? '正常' : '待補主圖'),
+      ...imageFields({ mainImageUrl, listImageUrl }),
       bindingStatus: productId ? '已綁定銷售商品' : '未綁定銷售商品',
       source: '飛鼠貨品列表',
       capturedAt: timestamp
@@ -102,6 +113,83 @@ export function normalizeProductListRows(rawRows, { capturedAt = new Date() } = 
   ensureUnique(items, 'partId', '貨品 ID');
   ensureUnique(items, 'sku', ' SKU');
   return Object.freeze(items);
+}
+
+export function normalizeProductDetail(payload, expectedProductId) {
+  const productId = normalizeText(expectedProductId);
+  const product = payload?.product;
+  if (Number(payload?.code) !== 0 || !product || typeof product !== 'object') {
+    throw new Error(`飛鼠銷售商品 ${productId} API 回傳失敗`);
+  }
+  if (normalizeText(product.id) !== productId) {
+    throw new Error(`飛鼠銷售商品 ${productId} API 回傳錯誤商品`);
+  }
+  const productCode = normalizeText(product.code);
+  const productName = normalizeText(product.name);
+  if (!productCode || !productName || !Array.isArray(product.spec) || product.spec.length === 0) {
+    throw new Error(`飛鼠銷售商品 ${productId} API 欄位不完整`);
+  }
+  const mainImageUrl = `https://img.fslol.com/pic/ss-select/${encodeURIComponent(productCode)}/cover.jpg`;
+  const returnedMainImageUrl = String(product.coverUrl ?? '').trim();
+  if (returnedMainImageUrl && returnedMainImageUrl !== mainImageUrl) {
+    throw new Error(`飛鼠銷售商品 ${productId} 的商品首圖網址不符合預期`);
+  }
+
+  const specs = product.spec.map((raw, index) => {
+    const sku = normalizeText(raw?.sku);
+    if (!sku) throw new Error(`飛鼠銷售商品 ${productId} 第 ${index + 1} 個規格缺少 SKU`);
+    const spec = [raw?.specY, raw?.specX].map(normalizeText).filter(Boolean).join(' / ');
+    const itemImageUrl = String(raw?.item_cover?.url ?? '').trim();
+    const variantImageUrl = itemImageUrl === mainImageUrl ? '' : itemImageUrl;
+    if (variantImageUrl && !VARIANT_IMAGE.test(variantImageUrl)) {
+      throw new Error(`飛鼠銷售商品 ${productId} SKU ${sku} 的規格圖網址不符合預期`);
+    }
+    return Object.freeze({ sku, spec, variantImageUrl });
+  });
+  ensureUnique(specs, 'sku', `銷售商品 ${productId} 規格 SKU`);
+  return Object.freeze({
+    productId,
+    productCode,
+    productName,
+    mainImageUrl,
+    specs: Object.freeze(specs)
+  });
+}
+
+export function mergeProductDetails(items, productDetails) {
+  const detailsById = new Map();
+  for (const detail of productDetails ?? []) {
+    if (detailsById.has(detail.productId)) {
+      throw new Error(`飛鼠銷售商品 ID 重複：${detail.productId}`);
+    }
+    detailsById.set(detail.productId, detail);
+  }
+
+  return Object.freeze(items.map((item) => {
+    if (!item.productId) return item;
+    const detail = detailsById.get(item.productId);
+    if (!detail) throw new Error(`飛鼠貨品 ${item.sku} 缺少銷售商品 ${item.productId} 資料`);
+    if (detail.productCode !== item.productCode) {
+      throw new Error(`飛鼠貨品 ${item.sku} 的銷售商品編號不一致`);
+    }
+    if (detail.mainImageUrl !== item.mainImageUrl) {
+      throw new Error(`飛鼠貨品 ${item.sku} 的商品首圖網址不一致`);
+    }
+    const detailSpec = detail.specs.find((candidate) => candidate.sku === item.sku);
+    if (!detailSpec) {
+      throw new Error(`飛鼠銷售商品 ${item.productId} 找不到 SKU ${item.sku}`);
+    }
+    return Object.freeze({
+      ...item,
+      productName: detail.productName,
+      spec: detailSpec.spec || item.spec,
+      ...imageFields({
+        mainImageUrl: item.mainImageUrl,
+        listImageUrl: item.listImageUrl,
+        variantImageUrl: detailSpec.variantImageUrl
+      })
+    });
+  }));
 }
 
 export function validateImageCatalogCoverage(imageItems, sourceItems) {
@@ -204,6 +292,42 @@ async function captureAllRows(page, config, timeoutMs) {
   throw new Error(`飛鼠貨品列表超過 ${MAX_PRODUCT_LIST_PAGES} 頁，停止同步`);
 }
 
+async function concurrentMap(values, concurrency, mapper) {
+  const result = new Array(values.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      result[index] = await mapper(values[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return result;
+}
+
+async function captureProductDetails(page, config, items, timeoutMs) {
+  const productIds = [...new Set(items.map((item) => item.productId).filter(Boolean))];
+  return concurrentMap(productIds, PRODUCT_DETAIL_CONCURRENCY, async (productId) => {
+    const url = new URL(`/api/admin/product/${encodeURIComponent(productId)}`, config.adminUrl);
+    const response = await page.request.get(url.toString(), {
+      timeout: timeoutMs,
+      failOnStatusCode: false,
+      headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+    });
+    if (!response.ok()) {
+      throw new Error(`飛鼠銷售商品 ${productId} API 回傳 HTTP ${response.status()}`);
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`飛鼠銷售商品 ${productId} API 回傳格式錯誤`);
+    }
+    return normalizeProductDetail(payload, productId);
+  });
+}
+
 export async function captureFlyingMouseProductList({
   config,
   sourceItems,
@@ -219,9 +343,12 @@ export async function captureFlyingMouseProductList({
     ...(launch ? { launch } : {})
   }, async (page) => {
     const pages = await captureAllRows(page, config, timeoutMs);
+    const listItems = normalizeProductListRows(pages.rows, { capturedAt: now() });
+    const productDetails = await captureProductDetails(page, config, listItems, timeoutMs);
     return Object.freeze({
-      items: normalizeProductListRows(pages.rows, { capturedAt: now() }),
-      pageCount: pages.pageCount
+      items: mergeProductDetails(listItems, productDetails),
+      pageCount: pages.pageCount,
+      productCount: productDetails.length
     });
   });
   const { items } = captured;
@@ -232,6 +359,7 @@ export async function captureFlyingMouseProductList({
       rowCount: items.length,
       pageSize: PRODUCT_LIST_PAGE_SIZE,
       pageCount: captured.pageCount,
+      productCount: captured.productCount,
       ...coverage
     }),
     items
