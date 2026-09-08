@@ -49,6 +49,12 @@
           <span id="request-id" class="request-id"></span>
         </div>
         <p id="workflow-meta" class="muted"></p>
+        <div id="workflow-date-fields" class="workflow-fields" hidden>
+          <label for="workflow-date">整張單預計到貨日
+            <input id="workflow-date" type="date" aria-describedby="workflow-date-help">
+          </label>
+          <p id="workflow-date-help" class="muted">只需填一次，會套用至本次所有下單商品（包含追加品項）。</p>
+        </div>
         <button id="workflow-add" class="secondary" type="button" hidden>＋ 追加商品／規格</button>
         <div id="workflow-items" class="workflow-items"></div>
         <button id="workflow-submit" class="primary" type="button"></button>

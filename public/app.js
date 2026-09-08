@@ -70,6 +70,8 @@ const elements = {
   workflowTitle: document.querySelector('#workflow-title'),
   requestId: document.querySelector('#request-id'),
   workflowMeta: document.querySelector('#workflow-meta'),
+  workflowDateFields: document.querySelector('#workflow-date-fields'),
+  workflowDate: document.querySelector('#workflow-date'),
   workflowAdd: document.querySelector('#workflow-add'),
   workflowItems: document.querySelector('#workflow-items'),
   workflowSubmit: document.querySelector('#workflow-submit')
@@ -216,7 +218,6 @@ function updateQuantity(item, nextQuantity) {
       state.orderDraft.set(item.sku, {
         item,
         orderedQuantity: quantity,
-        expectedDate: existing?.expectedDate ?? '',
         purchaseAdded: existing?.purchaseAdded ?? !state.orderOriginalSkus.has(item.sku)
       });
     }
@@ -540,21 +541,6 @@ function workflowItem(item, mode) {
   quantityLabel.append(quantity);
   fields.append(quantityLabel);
 
-  if (mode === 'order') {
-    const dateLabel = document.createElement('label');
-    dateLabel.textContent = '預計到貨日';
-    const date = document.createElement('input');
-    date.type = 'date';
-    date.className = 'workflow-date';
-    date.min = new Date().toISOString().slice(0, 10);
-    date.value = /^\d{4}-\d{2}-\d{2}$/.test(draft.expectedDate) ? draft.expectedDate : '';
-    date.addEventListener('input', () => {
-      const current = state.orderDraft.get(item.sku);
-      if (current) current.expectedDate = date.value;
-    });
-    dateLabel.append(date);
-    fields.append(dateLabel);
-  }
   row.append(fields);
 
   if (purchaseAdded) {
@@ -585,6 +571,9 @@ async function loadWorkflow(mode, requestId) {
   const items = selectWorkflowItems(request.items, mode);
   elements.workflowTitle.textContent = config.title;
   elements.requestId.textContent = request.requestId;
+  elements.workflowDateFields.hidden = mode !== 'order' || items.length === 0;
+  elements.workflowDate.value = '';
+  elements.workflowDate.min = new Date().toISOString().slice(0, 10);
 
   if (mode === 'order' && items.length > 0) {
     state.orderDraft.clear();
@@ -593,7 +582,6 @@ async function loadWorkflow(mode, requestId) {
       state.orderDraft.set(item.sku, {
         item,
         orderedQuantity: item.requestedQuantity,
-        expectedDate: item.expectedDate,
         purchaseAdded: false
       });
     }
@@ -629,9 +617,17 @@ async function submitWorkflow() {
     const sku = row.dataset.sku;
     const quantity = Number(row.querySelector('.workflow-quantity').value);
     return mode === 'order'
-      ? { sku, orderedQuantity: quantity, expectedDate: row.querySelector('.workflow-date').value }
+      ? { sku, orderedQuantity: quantity, expectedDate: quantity > 0 ? elements.workflowDate.value : '' }
       : { sku, receivedQuantity: quantity };
   });
+
+  if (mode === 'order' && items.some((item) => item.orderedQuantity > 0)) {
+    if (!elements.workflowDate.value || !elements.workflowDate.checkValidity()) {
+      showStatus('請填寫整張單的預計到貨日（今天或之後）', 'error');
+      elements.workflowDate.focus();
+      return;
+    }
+  }
 
   elements.workflowSubmit.disabled = true;
   const originalText = elements.workflowSubmit.textContent;
