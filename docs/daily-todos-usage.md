@@ -1,0 +1,104 @@
+# 每日待辦使用方式與上線
+
+## 使用方式
+
+初始六個固定任務：發貨、缺貨採購、取退貨、選品、上架、活動策劃，全部待指派。
+台灣時間週一到週五 12:00 發今日清單，19:30 發下班確認。週末不自動發送，國定假日若為平日仍照常發送。
+未完成的舊工作保留原日期並持續列出；每天的固定工作有獨立完成狀態。
+
+在原公司群組輸入：
+
+```text
+今日待辦
+固定待辦
+待辦指令
+```
+
+每頁六項，可以使用「上一頁／下一頁」查看全部工作。中午及晚上推播會發送所有頁面。
+負責人可隨時按「✅ 完成」，系統回覆完成確認。既有卡片不會原地更新，輸入「今日待辦」取得最新狀態。
+
+## 管理任務與負責人
+
+只有已啟用的管理員可以操作下列指令。先輸入「固定待辦」或「今日待辦」，複製卡片上的編號。
+下列 `F-...`、`T-...` 是範例，請改成真實編號；@小王必須從 LINE 的群組成員清單點選，不能只打字。
+
+```text
+新增待辦 整理新品照片
+新增待辦 @小王 整理新品照片
+新增固定待辦 檢查客服留言
+新增固定待辦 @小王 檢查客服留言
+
+指派固定待辦 F-... @小王
+指派待辦 T-... @小王
+指派待辦 T-... 待指派
+
+修改固定待辦 F-... 檢查出貨與物流
+修改待辦 T-... 整理下週新品照片
+停用固定待辦 F-...
+啟用固定待辦 F-...
+取消待辦 T-...
+```
+
+新增的人員需先用既有指令 `授權 @小王 申請人` 啟用；現有已授權的人員不必重複授權。
+只有負責人本人可以勾選。管理員若需要換人，先改派，再由新負責人確認。
+
+固定範本異動不改動已產生的工作；下個尚未產生清單的平日使用新設定。
+若要今天立刻換人，請另外「指派待辦 T-... @成員」。第一次管理操作會先按原範本產生當天工作，所以首次設定負責人時也適用此規則。
+「新增待辦」為當天單次交辦；「新增固定待辦」才會每天重複。
+
+## 資料分頁
+
+新增四個分頁：`每日待辦範本`、`每日待辦紀錄`、`待辦推播紀錄`、`待辦操作紀錄`。
+任務和負責人均有獨立欄位；負責人同時保存顯示名稱與 LINE 身分，防止同名造成誤認。
+請透過群組指令管理，避免直接修改編號、日期、狀態或重試資料。不得在服務運作時排序或插入資料列。
+每頁上限含表頭 20,000 列，達上限停止寫入，應安排離線封存；不得刪除尚未完成工作或仍需防重的紀錄。
+
+## 上線步驟（尚未執行，需確認正式環境操作）
+
+不需安裝新套件，沿用原本的 Google 身分與 LINE 帳號。需要 Sheets 寫入、Cloud Run 部署、Scheduler 管理、Secret Manager 讀取權限。
+初始化時保持 `DAILY_TODOS_ENABLED=false`；不要同時執行兩次初始化或在多個 revision 之間分流。
+
+1. 預覽（不連線、不寫入）：
+
+```powershell
+node scripts/setup-daily-todos.mjs
+node scripts/configure-daily-todos.mjs
+```
+
+2. 確認後初始化分頁與六個待指派範本（不改既有補貨分頁）：
+
+```powershell
+node scripts/setup-daily-todos.mjs --apply --spreadsheet '<SPREADSHEET_ID>'
+```
+
+3. 使用既有部署腳本，增加 `-EnableDailyTodos`，保留正式服務原有開關（例如已啟用的 `-EnableFlyingmouseWriteback`）。必須維持最多一個執行個體、單一 revision 流量；不要在此次功能上線同時改其他功能設定。
+
+```powershell
+.\scripts\deploy-gcp.ps1 -ProjectId '<PROJECT_ID>' -LineLoginChannelId '<LINE_LOGIN_CHANNEL_ID>' -LiffId '<LIFF_ID>' -EnableDailyTodos -EnableFlyingmouseWriteback
+```
+
+啟用 `DAILY_TODOS_ENABLED=true` 後，`/ready` 也會檢查待辦分頁。預設值為 false，未啟用時不發待辦通知、不新增每日工作。
+
+4. 確認允許啟用兩個推播排程後：
+
+```powershell
+node scripts/configure-daily-todos.mjs --apply --project '<PROJECT_ID>'
+```
+
+排程名稱為 `<service>-todos-noon`、`<service>-todos-evening`，腳本先檢查功能已啟用、單執行個體與 readiness，再使用既有 `line-job-token` 建立／更新。既有同名暫停排程會恢復。
+服務端限制中午通知在 12:00–19:29、晚上在 19:30–23:59 處理，跨日排程重送不補發舊清單。
+
+5. 在經同意的公司群組驗收：查詢、新增任務、指派、本人完成、非本人拒絕、隔日保留未完成。實際發送可能使用 LINE 訊息額度；這些不是本機測試可以證明的結果。
+
+停用時先暫停兩個 Scheduler 工作，再將 `DAILY_TODOS_ENABLED=false` 部署；保留所有待辦分頁與歷史紀錄。
+
+## 失敗重跑與限制
+
+- 每頁推播先保存訊息快照與固定 retry key，重試只補未成功頁面；內容不隨後續改名改派而改變。
+- LINE 回應接受不保證每位群組成員收到；訊息額度不足需由帳戶管理員處理。
+- Scheduler 的觸發與 LINE 傳送可能延遲，不能保證精準到秒。
+- 使用現有單執行個體寫入佇列；跨個體並行與直接修改分頁不在保證範圍。
+- 先前未完成與今日固定事項會同時存在，不會合併成同一項。
+- 若推播失敗，排程最多自動重試五次、兩小時；請檢查 Cloud Logging 與 `待辦推播紀錄`。不要刪除紀錄或更換 retry key 強制重送。
+
+官方依據：[LINE 重試規則](https://developers.line.biz/en/docs/messaging-api/retrying-api-request/)與 [Cloud Scheduler 時區](https://docs.cloud.google.com/scheduler/docs/configuring/cron-job-schedules)。
