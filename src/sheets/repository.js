@@ -437,6 +437,18 @@ export class SheetsRepository {
     };
   }
 
+  async listTodoAssignees() {
+    const response = await this.sheets.spreadsheets.values.get({
+      spreadsheetId: this.spreadsheetId, range: `'${AUTH_SHEET}'!A2:E1000`
+    });
+    const seen = new Set();
+    return (response.data.values ?? []).filter(row => {
+      if (!row[0] || seen.has(row[0])) return false;
+      seen.add(row[0]);
+      return row[3] === '是' && String(row[1] || '').trim();
+    }).map(row => ({ id: String(row[0]), name: String(row[1]).trim().slice(0, 80) }));
+  }
+
   async getAuthorization(userId) {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,

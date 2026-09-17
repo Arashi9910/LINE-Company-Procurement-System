@@ -110,7 +110,7 @@ test('dark owner cards group by user ID, keep pending work and hide IDs from vis
   visit(message);
   assert.ok(visible.includes('先前未完成 · 2026-09-16'));
   assert.ok(tasks.every(task => !visible.some(text => text.includes(task.id))));
-  assert.deepEqual(actions.map(action => action.data), ['todo:complete:T-a', 'todo:complete:T-b']);
+  assert.deepEqual(actions.filter(action => action.data.startsWith('todo:complete:')).map(action => action.data), ['todo:complete:T-a', 'todo:complete:T-b']);
   assert.ok(actions.every(action => !action.displayText));
 });
 

@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { AuthenticationError, AuthorizationError, ValidationError, NotFoundError } from '../errors.js';
 import { buildTodoCarousel, buildTodoCompletion, buildTodoPage, TODO_PAGE_SIZE } from '../line/daily-todos.js';
+import { handleTodoManagement, parseTodoManagement } from './todo-management.js';
 
 export const TODO_HELP = [
-  '【待辦指令】', '今日待辦｜固定待辦',
+  '【待辦指令】', '待辦選單（按鈕操作）｜今日待辦｜我的待辦｜固定待辦',
   '管理員可用：',
   '新增待辦 事項（單次，預設待指派）',
   '新增待辦 @成員 事項',
@@ -35,6 +36,8 @@ export function taipeiDay(at) {
 const stableId = (prefix, value) => `${prefix}-${createHash('sha256').update(value).digest('hex').slice(0, 20)}`;
 
 export function parseTodoEvent(event) {
+  const management = parseTodoManagement(event);
+  if (management) return management;
   if (event.type === 'postback' && event.postback?.data?.startsWith('todo:')) {
     const match = /^todo:complete:(T-[a-zA-Z0-9-]+)$/.exec(event.postback.data);
     return match ? { action: 'complete', id: match[1] } : { action: 'invalid' };
@@ -126,16 +129,33 @@ export async function executeTodoCommand({ command, actorUserId, groupId, eventI
     const authorization = await requireMember(repository, actorUserId);
     const { state } = store;
     const date = taipeiDay(at).date;
+    const management = command.action === 'ui';
+    if (management) {
+      if (!eventId) throw new ValidationError('LINE 事件缺少識別碼，請重新操作。');
+      const id = stableId('E', `${groupId}|${eventId}`);
+      if (state.operations.some(item => item.id === id)) return { silent: true };
+      generateDay(state, groupId, at);
+      const result = await handleTodoManagement({ command, state, repository, actorUserId, groupId, authorization, at, date });
+      if (!result.command) {
+        if (result.silent) return result;
+        state.operations.push({ id, actorId: actorUserId, groupId, action: 'todo-ui', targetId: '', at: at.toISOString(), result: '已處理待辦選單操作' });
+        await store.save();
+        return result;
+      }
+      command = result.command;
+      if (command.action === 'list') state.operations.push({ id, actorId: actorUserId, groupId, action: 'todo-ui', targetId: '', at: at.toISOString(), result: '查詢待辦' });
+    }
     const { action, templates } = command;
     if (action === 'list') {
       if (!templates) generateDay(state, groupId, at);
-      const items = templates ? state.templates.filter((item) => item.groupId === groupId) : visibleTasks(state, groupId, date);
+      const allItems = templates ? state.templates.filter((item) => item.groupId === groupId) : visibleTasks(state, groupId, date);
+      const items = command.mine ? allItems.filter(item => item.ownerId === actorUserId) : allItems;
       await store.save();
       return { message: buildTodoCarousel(items, {
-        date, page: command.page || 1, templates, title: templates ? '固定待辦' : '今日待辦'
+        date, page: command.page || 1, templates, mine: command.mine, title: templates ? '固定待辦' : command.mine ? '我的待辦' : '今日待辦'
       }) };
     }
-    if (action !== 'complete' && authorization.role !== '管理員') throw new AuthorizationError('只有管理員可以管理待辦事項與負責人。');
+    if (!['complete', 'reopen'].includes(action) && authorization.role !== '管理員') throw new AuthorizationError('只有管理員可以管理待辦事項與負責人。');
     if (!eventId) throw new ValidationError('LINE 事件缺少識別碼，請重新操作。');
     const operationId = stableId('E', `${groupId}|${eventId}`);
     const previous = state.operations.find((item) => item.id === operationId);
@@ -162,7 +182,12 @@ export async function executeTodoCommand({ command, actorUserId, groupId, eventI
       collection.push(target);
     } else {
       if (!target) throw new NotFoundError('找不到此群組的待辦編號。');
-      if (action === 'complete') {
+      if (action === 'reopen') {
+        if (target.ownerId !== actorUserId) throw new AuthorizationError('只能撤回自己已完成的工作。');
+        if (target.status === '未完成') return { silent: true };
+        if (target.status !== '已完成') throw new ValidationError('只能撤回已完成工作。');
+        target.status = '未完成'; target.completedBy = ''; target.completedAt = '';
+      } else if (action === 'complete') {
         if (!target.ownerId || target.ownerId !== actorUserId) throw new AuthorizationError('只有這項工作的負責人可以確認完成。');
         if (target.status === '取消') throw new ValidationError('此工作已取消。');
         if (target.status === '已完成') return { silent: true };
@@ -177,8 +202,8 @@ export async function executeTodoCommand({ command, actorUserId, groupId, eventI
       }
       target.updatedAt = at.toISOString();
     }
-    const label = { add: '已新增', assign: '已指派', rename: '已修改', cancel: '已取消', disable: '已停用', enable: '已啟用', complete: '✅ 已完成' }[action];
-    const result = `${label}：${target.title}\n${target.id}\n負責人：${target.ownerName || '待指派'}${templates ? '\n固定範本變更從下一個未產生清單的工作日生效。' : ''}`;
+    const label = { add: '已新增', assign: '已指派', rename: '已修改', cancel: '已取消', disable: '已停用', enable: '已啟用', complete: '✅ 已完成', reopen: '已撤回完成' }[action];
+    const result = `${label}：${target.title}${command.fromDialog ? '' : `\n${target.id}`}\n負責人：${target.ownerName || '待指派'}${templates ? '\n固定範本變更從下一個未產生清單的工作日生效。' : ''}`;
     state.operations.push({ id: operationId, actorId: actorUserId, groupId, action, targetId: target.id, at: at.toISOString(), result });
     await store.save();
     return { text: result, ...(action === 'complete' ? { message: buildTodoCompletion(target) } : {}) };

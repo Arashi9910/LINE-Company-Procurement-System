@@ -106,6 +106,38 @@ async function start(t, enabled = true) {
 }
 const event = (text, overrides = {}) => ({ type: 'message', webhookEventId: 'evt-1', replyToken: 'reply', source: { type: 'group', groupId: 'G', userId: 'admin' }, message: { type: 'text', text }, ...overrides });
 
+test('signed group dialog persists through repository restart and confirms only once', async t => {
+  const f = await start(t);
+  let counter = 0;
+  const click = data => f.webhook({ type: 'postback', webhookEventId: `ui-${++counter}`, replyToken: 'reply', source: { type: 'group', groupId: 'G', userId: 'admin' }, postback: { data } });
+  function findAction(node, label) {
+    if (!node || typeof node !== 'object') return null;
+    if (node.action?.label === label) return node.action.data;
+    for (const value of Object.values(node)) {
+      for (const child of Array.isArray(value) ? value : [value]) {
+        const found = findAction(child, label);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  await f.webhook(event('新增待辦 我 測試工作'));
+  await f.webhook(event('待辦選單', { webhookEventId: 'open-menu' }));
+  assert.equal((await click(findAction(f.replies.at(-1).message, '管理今日工作'))).status, 200);
+  assert.equal((await click(findAction(f.replies.at(-1).message, '指派負責人'))).status, 200);
+  assert.equal((await click(findAction(f.replies.at(-1).message, '小王'))).status, 200);
+  const data = findAction(f.replies.at(-1).message, '確認儲存');
+  const restarted = new SheetsRepository({ sheets: f.sheets, spreadsheetId: 'test' });
+  const input = { command: { action: 'ui', parts: data.slice(8).split(':') }, actorUserId: 'admin', groupId: 'G', eventId: 'confirm-after-restart' };
+  await executeTodoCommand(input, { repository: restarted });
+  assert.equal(f.tables['每日待辦紀錄'][1][4], 'worker');
+  assert.equal(f.tables['每日待辦紀錄'][1][5], '小王');
+  assert.deepEqual(await executeTodoCommand(input, { repository: restarted }), { silent: true });
+  const before = f.writes.length;
+  await f.webhook(event('一般聊天內容', { webhookEventId: 'ordinary-chat' }));
+  assert.equal(f.writes.length, before);
+});
+
 test('signed webhook self-assignment uses sender identity without a mention', async (t) => {
   const f = await start(t);
   assert.equal((await f.webhook(event('新增待辦 我 功能測試'))).status, 200);

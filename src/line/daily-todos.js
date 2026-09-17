@@ -1,3 +1,5 @@
+import { todoButton } from './todo-management.js';
+
 export const TODO_PAGE_SIZE = 6;
 const OWNER_PAGE_SIZE = 3;
 const dark = { background: '#171e26', header: '#1d2732', text: '#e2e8ed', muted: '#9ba9b9', green: '#93bba8', button: '#294c40' };
@@ -48,13 +50,14 @@ function buildOwnerBubble({ group, tasks }, { date, title, templates, page, tota
       ] };
     }) : [darkText('目前沒有待辦事項。', { color: dark.muted })] },
     footer: { type: 'box', layout: 'vertical', backgroundColor: dark.background, contents: [
-      darkText(`${totalPages > 1 ? '左右滑動查看其他工作 · ' : ''}${page} / ${totalPages}`, { size: 'xs', color: dark.muted })
+      darkText(`${totalPages > 1 ? '左右滑動查看其他工作 · ' : ''}${page} / ${totalPages}`, { size: 'xs', color: dark.muted }),
+      todoButton('待辦選單', 'menu')
     ] }
   };
 }
 
 // LINE allows up to 12 bubbles and 50 KB per carousel. Leave room below the limit.
-export function buildTodoCarousel(tasks, { date, title = '今日待辦', page = 1, templates = false }) {
+export function buildTodoCarousel(tasks, { date, title = '今日待辦', page = 1, templates = false, mine = false }) {
   const pages = ownerPages(tasks);
   const totalPages = pages.length;
   const start = Math.max(1, Math.min(page, totalPages));
@@ -68,7 +71,7 @@ export function buildTodoCarousel(tasks, { date, title = '今日待辦', page = 
     bubbles.push(bubble);
   }
   const last = start + bubbles.length - 1;
-  const command = templates ? '固定待辦' : '今日待辦';
+  const command = templates ? '固定待辦' : mine ? '我的待辦' : '今日待辦';
   return {
     type: 'flex', altText: `${title} ${date}（${start === last ? start : `${start}-${last}`}/${totalPages}）`,
     contents: bubbles.length === 1 ? bubbles[0] : { type: 'carousel', contents: bubbles },
@@ -128,7 +131,7 @@ export function buildTodoCompletion(task) {
       footer: { type: 'box', layout: 'vertical', backgroundColor: dark.background, contents: [{
         type: 'button', style: 'primary', color: dark.button,
         action: { type: 'message', label: '查看最新待辦', text: '今日待辦' }
-      }] }
+      }, todoButton('撤回這項完成', `begin:reopen:t:${task.id}`), todoButton('待辦選單', 'menu')] }
     }
   };
 }
