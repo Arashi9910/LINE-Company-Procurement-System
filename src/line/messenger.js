@@ -148,6 +148,21 @@ export function createLineMessenger({ channelAccessToken, liffId }, dependencies
   const liffWorkflowUrl = (mode, requestId) => workflowUrl(liffId, mode, requestId);
 
   return {
+    async replyTodoMessage(replyToken, message) {
+      await client.replyMessage({ replyToken, messages: [message] });
+    },
+
+    async pushTodoMessage(groupId, message, retryKey) {
+      try {
+        await client.pushMessage({ to: groupId, messages: [message] }, retryKey);
+      } catch (error) {
+        const accepted = error.headers?.get?.('x-line-accepted-request-id')
+          ?? error.headers?.['x-line-accepted-request-id'];
+        if (error.status === 409 && accepted) return;
+        throw error;
+      }
+    },
+
     async getGroupMemberProfile(groupId, userId) {
       return client.getGroupMemberProfile(groupId, userId);
     },

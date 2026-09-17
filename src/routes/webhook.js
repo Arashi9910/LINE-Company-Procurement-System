@@ -1,6 +1,7 @@
 import { validateSignature } from '@line/bot-sdk';
 import { AppError, AuthenticationError, ValidationError } from '../errors.js';
 import { createGroupContext } from '../line/context.js';
+import { executeTodoCommand, parseTodoEvent } from '../services/daily-todos.js';
 import {
   executeAuthorizationCommand,
   executeCancellationCommand,
@@ -33,7 +34,8 @@ export function createWebhookHandler({ config, repository, messenger, catalogSyn
           && event.message.text.trim() === '補貨';
         const isJoin = event.type === 'join' && groupId;
         const command = event.type === 'message' ? parseGroupCommand(event.message) : null;
-        if (!isReplenishmentCommand && !isJoin && !command) return;
+        const todoCommand = parseTodoEvent(event);
+        if (!isReplenishmentCommand && !isJoin && !command && !todoCommand) return;
 
         if (!groupId) {
           const instruction = isReplenishmentCommand
@@ -43,7 +45,9 @@ export function createWebhookHandler({ config, repository, messenger, catalogSyn
           return;
         }
 
-        const groupAllowed = await repository.saveNotificationGroupId(groupId);
+        const groupAllowed = todoCommand
+          ? groupId === await repository.getNotificationGroupId()
+          : await repository.saveNotificationGroupId(groupId);
         if (!groupAllowed) {
           if (event.replyToken) await messenger.replyText(event.replyToken, '此群組未授權使用補貨系統。');
           return;
@@ -56,8 +60,29 @@ export function createWebhookHandler({ config, repository, messenger, catalogSyn
           return;
         }
 
-        if (command.type === 'help') {
+        if (command?.type === 'help') {
           if (event.replyToken) await messenger.replyText(event.replyToken, GROUP_COMMAND_HELP);
+          return;
+        }
+
+        if (todoCommand) {
+          try {
+            if (!config.dailyTodosEnabled) {
+              if (event.replyToken) await messenger.replyText(event.replyToken, '每日待辦尚未啟用，請聯絡管理員。');
+              return;
+            }
+            const result = await executeTodoCommand({
+              command: todoCommand, actorUserId: event.source?.userId,
+              groupId, eventId: event.webhookEventId
+            }, { repository });
+            if (event.replyToken) {
+              if (result.message) await messenger.replyTodoMessage(event.replyToken, result.message);
+              else await messenger.replyText(event.replyToken, result.text);
+            }
+          } catch (error) {
+            if (!(error instanceof AppError) || error.status >= 500) throw error;
+            if (event.replyToken) await messenger.replyText(event.replyToken, error.message);
+          }
           return;
         }
 

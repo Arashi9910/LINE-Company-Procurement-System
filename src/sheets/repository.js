@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { google } from 'googleapis';
+import { loadTodoStore } from './daily-todos.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { importApprovedReviewSnapshots } from '../flyingmouse/sheets-review.js';
 import {
@@ -125,13 +126,15 @@ export class SheetsRepository {
     spreadsheetId,
     now = () => new Date(),
     uuid = randomUUID,
-    flyingmouseWritebackEnabled = false
+    flyingmouseWritebackEnabled = false,
+    dailyTodosEnabled = false
   }) {
     this.sheets = sheets;
     this.spreadsheetId = spreadsheetId;
     this.now = now;
     this.uuid = uuid;
     this.flyingmouseWritebackEnabled = flyingmouseWritebackEnabled === true;
+    this.dailyTodosEnabled = dailyTodosEnabled === true;
     this.writeChain = Promise.resolve();
   }
 
@@ -151,6 +154,7 @@ export class SheetsRepository {
     exactOrderSpecCorrectionHeaders(
       correctionHeaders.data.values?.[0] ?? ORDER_SPEC_CORRECTION_HEADERS.map(() => '')
     );
+    if (this.dailyTodosEnabled) await loadTodoStore(this);
     if (this.flyingmouseWritebackEnabled) {
       const response = await this.sheets.spreadsheets.values.get({
         spreadsheetId: this.spreadsheetId,
@@ -306,6 +310,10 @@ export class SheetsRepository {
     const result = this.writeChain.then(run, run);
     this.writeChain = result.catch(() => undefined);
     return result;
+  }
+
+  withDailyTodos(run) {
+    return this.#enqueue(async () => run(await loadTodoStore(this)));
   }
 
   async #createRequest(input) {
