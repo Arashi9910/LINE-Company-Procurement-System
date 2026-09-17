@@ -1,5 +1,30 @@
 export const TODO_PAGE_SIZE = 6;
 
+// LINE allows up to 12 bubbles and 50 KB per carousel. Leave room below the limit.
+export function buildTodoCarousel(tasks, { date, title = '今日待辦', page = 1, templates = false }) {
+  const totalPages = Math.max(1, Math.ceil(tasks.length / TODO_PAGE_SIZE));
+  const start = Math.max(1, Math.min(page, totalPages));
+  const bubbles = [];
+  for (let current = start; current <= totalPages && bubbles.length < 12; current += 1) {
+    const bubble = buildTodoPage(tasks.slice((current - 1) * TODO_PAGE_SIZE, current * TODO_PAGE_SIZE), {
+      date, title, page: current, totalPages, templates
+    }).contents;
+    bubble.body.contents[1].text += '｜左右滑動查看';
+    const candidate = { type: 'carousel', contents: [...bubbles, bubble] };
+    if (bubbles.length && Buffer.byteLength(JSON.stringify(candidate), 'utf8') > 48000) break;
+    bubbles.push(bubble);
+  }
+  const last = start + bubbles.length - 1;
+  const command = templates ? '固定待辦' : '今日待辦';
+  return {
+    type: 'flex', altText: `${title} ${date}（${start === last ? start : `${start}-${last}`}/${totalPages}）`,
+    contents: bubbles.length === 1 ? bubbles[0] : { type: 'carousel', contents: bubbles },
+    ...(last < totalPages ? { quickReply: { items: [{
+      type: 'action', action: { type: 'message', label: '載入更多待辦', text: `${command} ${last + 1}` }
+    }] } } : {})
+  };
+}
+
 export function buildTodoPage(tasks, { date, title = '今日待辦', page = 1, totalPages = 1, templates = false }) {
   const text = (value, extra = {}) => ({ type: 'text', text: value, wrap: true, size: 'sm', ...extra });
   const contents = tasks.map((task) => ({

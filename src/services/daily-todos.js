@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { AuthenticationError, AuthorizationError, ValidationError, NotFoundError } from '../errors.js';
-import { buildTodoCompletion, buildTodoPage, TODO_PAGE_SIZE } from '../line/daily-todos.js';
+import { buildTodoCarousel, buildTodoCompletion, buildTodoPage, TODO_PAGE_SIZE } from '../line/daily-todos.js';
 
 export const TODO_HELP = [
   '【待辦指令】', '今日待辦｜固定待辦',
@@ -130,11 +130,9 @@ export async function executeTodoCommand({ command, actorUserId, groupId, eventI
     if (action === 'list') {
       if (!templates) generateDay(state, groupId, at);
       const items = templates ? state.templates.filter((item) => item.groupId === groupId) : visibleTasks(state, groupId, date);
-      const totalPages = Math.max(1, Math.ceil(items.length / TODO_PAGE_SIZE));
-      const page = Math.min(command.page || 1, totalPages);
       await store.save();
-      return { message: buildTodoPage(items.slice((page - 1) * TODO_PAGE_SIZE, page * TODO_PAGE_SIZE), {
-        date, page, totalPages, templates, title: templates ? '固定待辦' : '今日待辦'
+      return { message: buildTodoCarousel(items, {
+        date, page: command.page || 1, templates, title: templates ? '固定待辦' : '今日待辦'
       }) };
     }
     if (action !== 'complete' && authorization.role !== '管理員') throw new AuthorizationError('只有管理員可以管理待辦事項與負責人。');

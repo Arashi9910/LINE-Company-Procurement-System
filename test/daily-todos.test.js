@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executeTodoCommand, parseTodoEvent, runDailyTodos, taipeiDay, visibleTasks } from '../src/services/daily-todos.js';
-import { buildTodoPage } from '../src/line/daily-todos.js';
+import { buildTodoCarousel, buildTodoPage } from '../src/line/daily-todos.js';
 import { createLineMessenger } from '../src/line/messenger.js';
 import { loadConfig } from '../src/config.js';
 
@@ -45,6 +45,45 @@ function fixture() {
   return fixtureState;
 }
 const parse = (text, mentions = []) => parseTodoEvent({ type: 'message', message: { type: 'text', text, mention: { mentionees: mentions } } });
+
+test('todo queries combine pages into one swipeable message and retain completion buttons', async () => {
+  const f = fixture();
+  for (let i = 0; i < 7; i += 1) await f.command({ action: 'add', title: `事項${i}`, ownerId: 'worker', ownerName: '小王' });
+  const { message } = await f.command(parse('今日待辦'));
+  assert.equal(message.contents.type, 'carousel');
+  assert.equal(message.contents.contents.length, 2);
+  assert.equal(message.quickReply, undefined);
+  assert.equal(message.contents.contents.flatMap((bubble) => bubble.body.contents.slice(2)).length, 9);
+  assert.equal((JSON.stringify(message).match(/todo:complete:/g) || []).length, 7);
+  for (let i = 0; i < 7; i += 1) await f.command({ action: 'add', templates: true, title: `固定${i}` });
+  const fixed = (await f.command(parse('固定待辦'))).message;
+  assert.equal(fixed.contents.type, 'carousel');
+  assert.equal(fixed.quickReply, undefined);
+  assert.equal(JSON.stringify(fixed).includes('todo:complete:'), false);
+});
+
+test('long carousels obey bubble and UTF-8 size limits without losing tasks between batches', () => {
+  for (const title of ['發貨', '長'.repeat(200)]) {
+    const tasks = Array.from({ length: 155 }, (_, i) => ({
+      id: `T-${i}`, title, ownerId: 'worker', ownerName: '人'.repeat(80), date: '2026-09-17', status: '未完成'
+    }));
+    const ids = [];
+    let page = 1;
+    do {
+      const message = buildTodoCarousel(tasks, { date: '2026-09-17', page });
+      const bubbles = message.contents.type === 'carousel' ? message.contents.contents : [message.contents];
+      assert.ok(bubbles.length <= 12);
+      assert.ok(Buffer.byteLength(JSON.stringify(message.contents), 'utf8') <= 48000);
+      for (const bubble of bubbles) for (const task of bubble.body.contents.slice(2)) ids.push(task.contents[2].text);
+      page = message.quickReply ? Number(message.quickReply.items[0].action.text.split(' ').at(-1)) : 0;
+    } while (page);
+    assert.deepEqual(ids, tasks.map((task) => task.id));
+  }
+  const empty = buildTodoCarousel([], { date: '2026-09-17' });
+  assert.equal(empty.contents.type, 'bubble');
+  assert.equal(empty.quickReply, undefined);
+  assert.equal(empty.contents.body.contents[2].text, '目前沒有待辦事項。');
+});
 
 test('completion button does not generate a chat message for every tap', () => {
   const page = buildTodoPage([{ id: 'T-feedback', title: '發貨', ownerId: 'worker', ownerName: '小王', date: '2026-09-17', status: '未完成' }], { date: '2026-09-17' });
