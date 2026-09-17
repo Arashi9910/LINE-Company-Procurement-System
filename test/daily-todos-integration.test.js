@@ -127,7 +127,10 @@ test('signed webhook adds tasks, lists cards, rejects outsiders and handles assi
   await f.webhook(event('新增待辦 越權', { source: { type: 'group', groupId: 'foreign', userId: 'admin' } }));
   assert.match(f.replies.at(-1).text, /未授權/);
   await f.webhook({ type: 'postback', webhookEventId: 'complete', replyToken: 'reply', source: { type: 'group', groupId: 'G', userId: 'worker' }, postback: { data: `todo:complete:${id}` } });
-  assert.match(f.replies.at(-1).text, /✅ 已完成/);
+  const confirmation = f.replies.at(-1).message;
+  assert.match(confirmation?.altText ?? '', /✅ 已完成/);
+  assert.match(JSON.stringify(confirmation), /今日待辦/);
+  assert.doesNotMatch(JSON.stringify(confirmation), /todo:complete:/);
   assert.equal(f.tables['每日待辦紀錄'][1][6], '已完成');
 });
 

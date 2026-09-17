@@ -46,6 +46,12 @@ function fixture() {
 }
 const parse = (text, mentions = []) => parseTodoEvent({ type: 'message', message: { type: 'text', text, mention: { mentionees: mentions } } });
 
+test('completion button provides immediate tap feedback without claiming a saved completion', () => {
+  const page = buildTodoPage([{ id: 'T-feedback', title: '發貨', ownerId: 'worker', ownerName: '小王', date: '2026-09-17', status: '未完成' }], { date: '2026-09-17' });
+  const taskBox = page.contents.body.contents[2];
+  assert.equal(taskBox.contents.at(-1).action.displayText, '送出完成確認：發貨');
+});
+
 test('self assignment binds the authenticated sender for one-off and recurring work', async () => {
   const f = fixture();
   await f.command(parse('新增待辦 我 功能測試'), { eventId: 'self-add' });

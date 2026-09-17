@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { AuthenticationError, AuthorizationError, ValidationError, NotFoundError } from '../errors.js';
-import { buildTodoPage, TODO_PAGE_SIZE } from '../line/daily-todos.js';
+import { buildTodoCompletion, buildTodoPage, TODO_PAGE_SIZE } from '../line/daily-todos.js';
 
 export const TODO_HELP = [
   '【待辦指令】', '今日待辦｜固定待辦',
@@ -184,7 +184,7 @@ export async function executeTodoCommand({ command, actorUserId, groupId, eventI
     const result = `${label}：${target.title}\n${target.id}\n負責人：${target.ownerName || '待指派'}${templates ? '\n固定範本變更從下一個未產生清單的工作日生效。' : ''}`;
     state.operations.push({ id: operationId, actorId: actorUserId, groupId, action, targetId: target.id, at: at.toISOString(), result });
     await store.save();
-    return { text: result };
+    return { text: result, ...(action === 'complete' ? { message: buildTodoCompletion(target) } : {}) };
   });
 }
 
