@@ -29,17 +29,47 @@ function fixture() {
     }
   };
   const fixtureState = { repository, authorizations, calls, get state() { return persisted; }, messenger: {
+    async getGroupMemberProfile(groupId, userId) {
+      assert.equal(groupId, 'G');
+      assert.equal(userId, 'admin');
+      return { displayName: '老闆' };
+    },
     async pushTodoMessage(group, payload, retryKey) {
       calls.push({ group, payload, retryKey });
       if (fixtureState.failPush) { fixtureState.failPush = false; throw new Error('timeout'); }
       if (fixtureState.failAfterPush) { fixtureState.failAfterPush = false; fixtureState.failSave = true; }
     }
   } };
-  fixtureState.command = (command, overrides = {}) => executeTodoCommand({ command, actorUserId: 'admin', groupId: 'G', eventId: `evt-${fixtureState.state.operations.length}`, at: noon, ...overrides }, { repository });
+  fixtureState.command = (command, overrides = {}) => executeTodoCommand({ command, actorUserId: 'admin', groupId: 'G', eventId: `evt-${fixtureState.state.operations.length}`, at: noon, ...overrides }, { repository, messenger: fixtureState.messenger });
   fixtureState.run = (overrides = {}) => runDailyTodos({ repository, messenger: fixtureState.messenger, at: noon, slot: 'noon', ...overrides });
   return fixtureState;
 }
 const parse = (text, mentions = []) => parseTodoEvent({ type: 'message', message: { type: 'text', text, mention: { mentionees: mentions } } });
+
+test('self assignment binds the authenticated sender for one-off and recurring work', async () => {
+  const f = fixture();
+  await f.command(parse('新增待辦 我 功能測試'), { eventId: 'self-add' });
+  const task = f.state.tasks.find((item) => item.title === '功能測試');
+  assert.equal(task.ownerId, 'admin');
+  assert.equal(task.ownerName, '老闆');
+  await f.command(parse('新增固定待辦 自己 每日檢查'));
+  assert.equal(f.state.templates.at(-1).ownerId, 'admin');
+  await f.command(parse('指派固定待辦 F-0 我'));
+  assert.equal(f.state.templates[0].ownerId, 'admin');
+  await f.command(parse(`指派待辦 ${f.state.tasks[0].id} 自己`));
+  assert.equal(f.state.tasks[0].ownerId, 'admin');
+  await f.command({ action: 'complete', id: task.id });
+  assert.equal(f.state.tasks.find((item) => item.id === task.id).status, '已完成');
+  f.messenger.getGroupMemberProfile = async () => { throw new Error('offline'); };
+  await f.command(parse('新增待辦 我 功能測試'), { eventId: 'self-add' });
+  const count = f.state.tasks.length;
+  await assert.rejects(f.command(parse('新增待辦 我 其他工作')), /稍後重試/);
+  assert.equal(f.state.tasks.length, count);
+  await assert.rejects(f.command(parse('新增待辦 我 越權'), { actorUserId: 'worker' }), /管理員/);
+  assert.equal(parse('新增待辦 我').action, 'invalid');
+  assert.equal(parse('指派待辦 T-1 我 額外文字').action, 'invalid');
+  assert.equal(parse('新增待辦 我們的活動').selfAssigned, undefined);
+});
 
 test('todo parsing supports pending tasks, genuine mentions, edits and rejects ambiguous input', () => {
   assert.equal(parse('新增待辦 整理新品照片').ownerId, '');

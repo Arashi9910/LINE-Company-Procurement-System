@@ -92,7 +92,7 @@ async function start(t, enabled = true) {
   f.repository.checkHealth = async () => true;
   const replies = [];
   const app = createApp({ config: { dailyTodosEnabled: enabled, lineChannelSecret: 'secret', jobToken: 'job-secret' }, repository: f.repository,
-    identityVerifier: {}, messenger: { async replyText(token, text) { replies.push({ token, text }); }, async replyTodoMessage(token, message) { replies.push({ token, message }); } }
+    identityVerifier: {}, messenger: { async getGroupMemberProfile() { return { displayName: '老闆' }; }, async replyText(token, text) { replies.push({ token, text }); }, async replyTodoMessage(token, message) { replies.push({ token, message }); } }
   });
   const server = app.listen(0);
   t.after(() => server.close());
@@ -105,6 +105,13 @@ async function start(t, enabled = true) {
   return { ...f, replies, webhook, url };
 }
 const event = (text, overrides = {}) => ({ type: 'message', webhookEventId: 'evt-1', replyToken: 'reply', source: { type: 'group', groupId: 'G', userId: 'admin' }, message: { type: 'text', text }, ...overrides });
+
+test('signed webhook self-assignment uses sender identity without a mention', async (t) => {
+  const f = await start(t);
+  assert.equal((await f.webhook(event('新增待辦 我 功能測試'))).status, 200);
+  assert.match(f.replies.at(-1).text, /負責人：老闆/);
+  assert.equal(f.tables['每日待辦紀錄'][1][4], 'admin');
+});
 
 test('signed webhook adds tasks, lists cards, rejects outsiders and handles assignee postbacks', async (t) => {
   const f = await start(t);

@@ -7,10 +7,12 @@ export const TODO_HELP = [
   '管理員可用：',
   '新增待辦 事項（單次，預設待指派）',
   '新增待辦 @成員 事項',
+  '新增待辦 我 事項（指派給自己）',
   '新增固定待辦 事項（每個平日重複）',
   '新增固定待辦 @成員 事項',
-  '指派待辦 工作編號 @成員／待指派',
-  '指派固定待辦 範本編號 @成員／待指派',
+  '新增固定待辦 我 事項',
+  '指派待辦 工作編號 @成員／我／待指派',
+  '指派固定待辦 範本編號 @成員／我／待指派',
   '修改待辦 工作編號 新事項',
   '修改固定待辦 範本編號 新事項',
   '取消待辦 工作編號',
@@ -59,6 +61,7 @@ export function parseTodoEvent(event) {
   }
   let ownerId = '';
   let ownerName = '';
+  let selfAssigned = false;
   if (['add', 'assign'].includes(action)) {
     const mentions = event.message.mention?.mentionees ?? [];
     if (mentions.length) {
@@ -73,6 +76,9 @@ export function parseTodoEvent(event) {
       rest = rest.slice(mention.length).trim();
       ownerId = person.userId;
       ownerName = mention.replace(/^@/, '').slice(0, 80);
+    } else if (/^(我|自己)(?:\s|$)/.test(rest)) {
+      selfAssigned = true;
+      rest = rest.replace(/^(我|自己)(?:\s+|$)/, '').trim();
     } else if (action === 'assign') {
       if (rest !== '待指派') return { action: 'invalid' };
       rest = '';
@@ -81,7 +87,7 @@ export function parseTodoEvent(event) {
   if (['add', 'rename'].includes(action)) {
     if (!rest.trim() || rest.length > 100 || /[\r\n]/.test(rest)) return { action: 'invalid' };
   } else if (rest) return { action: 'invalid' };
-  return { action, templates, id, title: rest.trim(), ownerId, ownerName };
+  return { action, templates, id, title: rest.trim(), ownerId, ownerName, ...(selfAssigned ? { selfAssigned } : {}) };
 }
 
 function generateDay(state, groupId, at) {
@@ -113,7 +119,7 @@ async function requireMember(repository, userId) {
   return authorization;
 }
 
-export async function executeTodoCommand({ command, actorUserId, groupId, eventId, at = new Date() }, { repository }) {
+export async function executeTodoCommand({ command, actorUserId, groupId, eventId, at = new Date() }, { repository, messenger }) {
   if (command.action === 'invalid') throw new ValidationError(`指令格式不正確。\n${TODO_HELP}`);
   if (command.action === 'help') return { text: TODO_HELP };
   return repository.withDailyTodos(async (store) => {
@@ -136,6 +142,14 @@ export async function executeTodoCommand({ command, actorUserId, groupId, eventI
     const operationId = stableId('E', `${groupId}|${eventId}`);
     const previous = state.operations.find((item) => item.id === operationId);
     if (previous) return { text: previous.result };
+    if (command.selfAssigned) {
+      let profile;
+      try { profile = await messenger.getGroupMemberProfile(groupId, actorUserId); }
+      catch { throw new ValidationError('暫時無法取得你的 LINE 名稱，請稍後重試。'); }
+      const ownerName = String(profile?.displayName ?? '').trim().slice(0, 80);
+      if (!ownerName) throw new ValidationError('LINE 尚未提供你的名稱，請稍後重試。');
+      command = { ...command, ownerId: actorUserId, ownerName };
+    }
     if (command.ownerId) await requireMember(repository, command.ownerId);
     // Freeze today's templates before any edits so a mid-day change only affects future days.
     generateDay(state, groupId, at);

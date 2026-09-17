@@ -74,7 +74,7 @@ export function createWebhookHandler({ config, repository, messenger, catalogSyn
             const result = await executeTodoCommand({
               command: todoCommand, actorUserId: event.source?.userId,
               groupId, eventId: event.webhookEventId
-            }, { repository });
+            }, { repository, messenger });
             if (event.replyToken) {
               if (result.message) await messenger.replyTodoMessage(event.replyToken, result.message);
               else await messenger.replyText(event.replyToken, result.text);
