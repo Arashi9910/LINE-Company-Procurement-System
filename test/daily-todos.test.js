@@ -51,9 +51,9 @@ test('todo queries combine pages into one swipeable message and retain completio
   for (let i = 0; i < 7; i += 1) await f.command({ action: 'add', title: `事項${i}`, ownerId: 'worker', ownerName: '小王' });
   const { message } = await f.command(parse('今日待辦'));
   assert.equal(message.contents.type, 'carousel');
-  assert.equal(message.contents.contents.length, 2);
+  assert.equal(message.contents.contents.length, 4);
   assert.equal(message.quickReply, undefined);
-  assert.equal(message.contents.contents.flatMap((bubble) => bubble.body.contents.slice(2)).length, 9);
+  assert.equal(message.contents.contents.flatMap((bubble) => bubble.body.contents).length, 9);
   assert.equal((JSON.stringify(message).match(/todo:complete:/g) || []).length, 7);
   for (let i = 0; i < 7; i += 1) await f.command({ action: 'add', templates: true, title: `固定${i}` });
   const fixed = (await f.command(parse('固定待辦'))).message;
@@ -74,7 +74,7 @@ test('long carousels obey bubble and UTF-8 size limits without losing tasks betw
       const bubbles = message.contents.type === 'carousel' ? message.contents.contents : [message.contents];
       assert.ok(bubbles.length <= 12);
       assert.ok(Buffer.byteLength(JSON.stringify(message.contents), 'utf8') <= 48000);
-      for (const bubble of bubbles) for (const task of bubble.body.contents.slice(2)) ids.push(task.contents[2].text);
+      for (const bubble of bubbles) for (const task of bubble.body.contents) ids.push(task.contents.at(-1).action.data.replace('todo:complete:', ''));
       page = message.quickReply ? Number(message.quickReply.items[0].action.text.split(' ').at(-1)) : 0;
     } while (page);
     assert.deepEqual(ids, tasks.map((task) => task.id));
@@ -82,7 +82,36 @@ test('long carousels obey bubble and UTF-8 size limits without losing tasks betw
   const empty = buildTodoCarousel([], { date: '2026-09-17' });
   assert.equal(empty.contents.type, 'bubble');
   assert.equal(empty.quickReply, undefined);
-  assert.equal(empty.contents.body.contents[2].text, '目前沒有待辦事項。');
+  assert.equal(empty.contents.body.contents[0].text, '目前沒有待辦事項。');
+});
+
+test('dark owner cards group by user ID, keep pending work and hide IDs from visible text', () => {
+  const tasks = [
+    { id: 'T-a', title: '發貨', ownerId: 'one', ownerName: '同名', status: '未完成', date: '2026-09-16' },
+    { id: 'T-b', title: '上架', ownerId: 'two', ownerName: '同名', status: '未完成', date: '2026-09-17' },
+    { id: 'T-c', title: '選品', ownerId: 'one', ownerName: '同名', status: '已完成', date: '2026-09-17' },
+    { id: 'T-d', title: '取退貨', ownerId: '', ownerName: '', status: '未完成', date: '2026-09-17' }
+  ];
+  const message = buildTodoCarousel(tasks, { date: '2026-09-17' });
+  const bubbles = message.contents.contents;
+  assert.equal(bubbles.length, 3);
+  assert.equal(bubbles[0].body.contents.length, 2);
+  assert.equal(bubbles[0].header.contents[2].text, '負責 2 項  /  已完成 1 項');
+  assert.equal(bubbles[2].header.contents[1].text, '待指派工作');
+  assert.equal(bubbles[0].body.backgroundColor, '#171e26');
+  const visible = [];
+  const actions = [];
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'text') visible.push(node.text);
+    if (node.action) actions.push(node.action);
+    Object.values(node).forEach(value => Array.isArray(value) ? value.forEach(visit) : visit(value));
+  }
+  visit(message);
+  assert.ok(visible.includes('先前未完成 · 2026-09-16'));
+  assert.ok(tasks.every(task => !visible.some(text => text.includes(task.id))));
+  assert.deepEqual(actions.map(action => action.data), ['todo:complete:T-a', 'todo:complete:T-b']);
+  assert.ok(actions.every(action => !action.displayText));
 });
 
 test('completion button does not generate a chat message for every tap', () => {
@@ -229,9 +258,9 @@ test('partial page failure resumes only unsent pages and list pagination exposes
   await f.run();
   assert.equal(f.calls.length, 3);
   assert.equal(new Set(f.calls.map((call) => call.retryKey)).size, 3);
-  const result = await f.command({ action: 'list', page: 3 });
-  assert.match(result.message.altText, /3\/3/);
-  assert.equal(result.message.contents.body.contents.length, 4);
+  const result = await f.command({ action: 'list', page: 99 });
+  assert.match(result.message.altText, /5\/5/);
+  assert.equal(result.message.contents.body.contents.length, 2);
 });
 
 test('LINE messenger sends retry header and only accepts a proven duplicate 409', async () => {
