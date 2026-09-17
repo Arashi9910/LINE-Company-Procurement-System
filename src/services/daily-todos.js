@@ -141,7 +141,7 @@ export async function executeTodoCommand({ command, actorUserId, groupId, eventI
     if (!eventId) throw new ValidationError('LINE 事件缺少識別碼，請重新操作。');
     const operationId = stableId('E', `${groupId}|${eventId}`);
     const previous = state.operations.find((item) => item.id === operationId);
-    if (previous) return { text: previous.result };
+    if (previous) return action === 'complete' ? { silent: true } : { text: previous.result };
     if (command.selfAssigned) {
       let profile;
       try { profile = await messenger.getGroupMemberProfile(groupId, actorUserId); }
@@ -167,9 +167,8 @@ export async function executeTodoCommand({ command, actorUserId, groupId, eventI
       if (action === 'complete') {
         if (!target.ownerId || target.ownerId !== actorUserId) throw new AuthorizationError('只有這項工作的負責人可以確認完成。');
         if (target.status === '取消') throw new ValidationError('此工作已取消。');
-        if (target.status !== '已完成') {
-          target.status = '已完成'; target.completedBy = actorUserId; target.completedAt = at.toISOString();
-        }
+        if (target.status === '已完成') return { silent: true };
+        target.status = '已完成'; target.completedBy = actorUserId; target.completedAt = at.toISOString();
       } else {
         if (!templates && target.status !== '未完成') throw new ValidationError('只能修改或取消未完成工作。');
         if (action === 'assign') { target.ownerId = command.ownerId; target.ownerName = command.ownerName; }

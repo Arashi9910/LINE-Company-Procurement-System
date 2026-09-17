@@ -10,7 +10,7 @@ export function buildTodoPage(tasks, { date, title = '今日待辦', page = 1, t
       text(`${task.id}${!templates && task.date < date ? `｜先前未完成 ${task.date}` : ''}`, { size: 'xs', color: '#666666' }),
       ...(!templates && task.status === '未完成' && task.ownerId ? [{
         type: 'button', height: 'sm', style: 'primary', color: '#06c755',
-        action: { type: 'postback', label: '✅ 完成', data: `todo:complete:${task.id}`, displayText: `送出完成確認：${task.title}` }
+        action: { type: 'postback', label: '✅ 完成', data: `todo:complete:${task.id}` }
       }] : [])
     ]
   }));

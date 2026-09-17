@@ -113,6 +113,23 @@ test('signed webhook self-assignment uses sender identity without a mention', as
   assert.equal(f.tables['每日待辦紀錄'][1][4], 'admin');
 });
 
+test('burst completion taps, delayed taps and webhook replay only reply and record once', async (t) => {
+  const f = await start(t);
+  await f.webhook(event('新增待辦 我 功能測試'));
+  const id = f.tables['每日待辦紀錄'][1][0];
+  f.replies.length = 0;
+  const click = (eventId) => f.webhook({ type: 'postback', webhookEventId: eventId, replyToken: 'reply', source: { type: 'group', groupId: 'G', userId: 'admin' }, postback: { data: `todo:complete:${id}` } });
+  const responses = await Promise.all(Array.from({ length: 10 }, (_, i) => click(`tap-${i}`)));
+  assert.ok(responses.every((response) => response.status === 200));
+  assert.equal(f.replies.length, 1);
+  const before = structuredClone(f.tables['每日待辦紀錄'][1]);
+  await click('delayed-tap');
+  await click('tap-0');
+  assert.equal(f.replies.length, 1);
+  assert.deepEqual(f.tables['每日待辦紀錄'][1], before);
+  assert.equal(f.tables['待辦操作紀錄'].filter((row) => row[3] === 'complete').length, 1);
+});
+
 test('signed webhook adds tasks, lists cards, rejects outsiders and handles assignee postbacks', async (t) => {
   const f = await start(t);
   assert.equal((await f.webhook(event('新增待辦 發貨'), false)).status, 401);

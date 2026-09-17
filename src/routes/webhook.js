@@ -12,6 +12,7 @@ import {
 } from '../services/group-commands.js';
 
 export function createWebhookHandler({ config, repository, messenger, catalogSyncRunner }) {
+  const pendingCompletions = new Set();
   return async function webhookHandler(request, response, next) {
     try {
       const rawBody = request.body;
@@ -66,6 +67,10 @@ export function createWebhookHandler({ config, repository, messenger, catalogSyn
         }
 
         if (todoCommand) {
+          const completionKey = todoCommand.action === 'complete'
+            ? JSON.stringify([groupId, event.source?.userId, todoCommand.id]) : null;
+          if (completionKey && pendingCompletions.has(completionKey)) return;
+          if (completionKey) pendingCompletions.add(completionKey);
           try {
             if (!config.dailyTodosEnabled) {
               if (event.replyToken) await messenger.replyText(event.replyToken, '每日待辦尚未啟用，請聯絡管理員。');
@@ -75,13 +80,15 @@ export function createWebhookHandler({ config, repository, messenger, catalogSyn
               command: todoCommand, actorUserId: event.source?.userId,
               groupId, eventId: event.webhookEventId
             }, { repository, messenger });
-            if (event.replyToken) {
+            if (event.replyToken && !result.silent) {
               if (result.message) await messenger.replyTodoMessage(event.replyToken, result.message);
               else await messenger.replyText(event.replyToken, result.text);
             }
           } catch (error) {
             if (!(error instanceof AppError) || error.status >= 500) throw error;
             if (event.replyToken) await messenger.replyText(event.replyToken, error.message);
+          } finally {
+            if (completionKey) pendingCompletions.delete(completionKey);
           }
           return;
         }
