@@ -178,13 +178,15 @@ test('weekday schedules send once per slot; tomorrow has separate tasks and reta
   assert.equal(f.state.tasks[0].completedAt, completedAt);
   await f.run({ slot: 'evening', at: new Date('2026-09-17T11:30:00Z') });
   assert.equal(f.calls.length, 2);
-  assert.match(JSON.stringify(f.calls[1].payload), /✅ 發貨/);
+  const finished = f.calls[1].payload.contents.contents[0].body.contents[0].contents[0].contents;
+  assert.equal(finished[0].text, '發貨');
+  assert.equal(finished[1].text, '✓ 已完成');
   await f.run({ at: new Date('2026-09-18T04:00:00Z') });
   assert.equal(f.state.tasks.length, 4);
   const visible = visibleTasks(f.state, 'G', '2026-09-18');
   assert.equal(visible.length, 3);
   assert.equal(visible.filter((item) => item.date === '2026-09-18' && item.status === '未完成').length, 2);
-  assert.match(JSON.stringify(f.calls.at(-1).payload), /先前未完成 2026-09-17/);
+  assert.match(JSON.stringify(f.calls.at(-1).payload), /先前未完成 · 2026-09-17/);
 });
 
 test('weekends, wrong time windows and stale scheduled dates never send', async () => {
@@ -250,7 +252,7 @@ test('persistent payload and retry key survive send failure and post-send save f
 
 test('partial page failure resumes only unsent pages and list pagination exposes every task', async () => {
   const f = fixture();
-  for (let i = 0; i < 12; i++) await f.command(parse(`新增待辦 工作${i}`));
+  for (let i = 0; i < 78; i++) await f.command(parse(`新增待辦 工作${i}`));
   let count = 0;
   const push = f.messenger.pushTodoMessage;
   f.messenger.pushTodoMessage = async (...args) => { if (++count === 2) throw new Error('timeout'); return push(...args); };
@@ -259,8 +261,28 @@ test('partial page failure resumes only unsent pages and list pagination exposes
   assert.equal(f.calls.length, 3);
   assert.equal(new Set(f.calls.map((call) => call.retryKey)).size, 3);
   const result = await f.command({ action: 'list', page: 99 });
-  assert.match(result.message.altText, /5\/5/);
+  assert.match(result.message.altText, /27\/27/);
   assert.equal(result.message.contents.body.contents.length, 2);
+});
+
+test('scheduled messages use dark grouped carousels and completed one-offs disappear tomorrow', async () => {
+  const f = fixture();
+  await f.command({ action: 'add', title: '單次完成', ownerId: 'worker', ownerName: '小王' });
+  const single = f.state.tasks.find(task => task.title === '單次完成');
+  await f.command({ action: 'complete', id: single.id }, { actorUserId: 'worker' });
+  const recurring = f.state.tasks.find(task => task.title === '發貨');
+  await f.command({ action: 'assign', id: recurring.id, ownerId: 'worker', ownerName: '小王' });
+  await f.command({ action: 'complete', id: recurring.id }, { actorUserId: 'worker' });
+  await f.run();
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].payload.contents.type, 'carousel');
+  assert.equal(f.calls[0].payload.contents.contents[0].body.backgroundColor, '#171e26');
+  assert.equal(f.calls[0].payload.quickReply, undefined);
+  await f.run({ at: new Date('2026-09-18T04:00:00Z') });
+  const tomorrow = visibleTasks(f.state, 'G', '2026-09-18');
+  assert.ok(!tomorrow.some(task => task.id === single.id || task.id === recurring.id));
+  assert.ok(tomorrow.some(task => task.title === '發貨' && task.status === '未完成' && task.date === '2026-09-18'));
+  assert.ok(tomorrow.some(task => task.title === '上架' && task.date === '2026-09-17'));
 });
 
 test('LINE messenger sends retry header and only accepts a proven duplicate 409', async () => {

@@ -81,6 +81,18 @@ export function buildTodoCarousel(tasks, { date, title = '今日待辦', page = 
   };
 }
 
+export function buildTodoBroadcasts(tasks, options) {
+  const messages = [];
+  const totalPages = ownerPages(tasks).length;
+  for (let page = 1; page <= totalPages;) {
+    const message = buildTodoCarousel(tasks, { ...options, page });
+    page += message.contents.type === 'carousel' ? message.contents.contents.length : 1;
+    delete message.quickReply;
+    messages.push(message);
+  }
+  return messages;
+}
+
 export function buildTodoPage(tasks, { date, title = '今日待辦', page = 1, totalPages = 1, templates = false }) {
   const text = (value, extra = {}) => ({ type: 'text', text: value, wrap: true, size: 'sm', ...extra });
   const contents = tasks.map((task) => ({

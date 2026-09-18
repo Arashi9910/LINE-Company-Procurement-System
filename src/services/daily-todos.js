@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { AuthenticationError, AuthorizationError, ValidationError, NotFoundError } from '../errors.js';
-import { buildTodoCarousel, buildTodoCompletion, buildTodoPage, TODO_PAGE_SIZE } from '../line/daily-todos.js';
+import { buildTodoBroadcasts, buildTodoCarousel, buildTodoCompletion } from '../line/daily-todos.js';
 import { handleTodoManagement, parseTodoManagement } from './todo-management.js';
 
 export const TODO_HELP = [
@@ -228,13 +228,11 @@ export async function runDailyTodos({ repository, messenger, slot, at = new Date
     let deliveries = state.deliveries.filter((item) => item.groupId === groupId && item.date === day.date && item.slot === slot);
     if (!deliveries.length) {
       const items = visibleTasks(state, groupId, day.date);
-      const totalPages = Math.max(1, Math.ceil(items.length / TODO_PAGE_SIZE));
-      deliveries = Array.from({ length: totalPages }, (_, index) => ({
+      const messages = buildTodoBroadcasts(items, { date: day.date, title: slot === 'noon' ? '今日待辦' : '下班確認' });
+      deliveries = messages.map((message, index) => ({
         id: stableId('P', `${groupId}|${day.date}|${slot}|${index}`), groupId, date: day.date, slot,
         status: '待發送', retryKey: randomUUID(),
-        payload: JSON.stringify(buildTodoPage(items.slice(index * TODO_PAGE_SIZE, (index + 1) * TODO_PAGE_SIZE), {
-          date: day.date, title: slot === 'noon' ? '今日待辦' : '下班確認', page: index + 1, totalPages
-        })), createdAt: at.toISOString(), updatedAt: at.toISOString()
+        payload: JSON.stringify(message), createdAt: at.toISOString(), updatedAt: at.toISOString()
       }));
       state.deliveries.push(...deliveries);
     }

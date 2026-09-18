@@ -10,7 +10,10 @@ if (!values.apply) {
   console.log(JSON.stringify({ mode: 'preview', timeZone: 'Asia/Taipei', schedules, note: '未連線或啟用排程。確認後使用 --apply --project <ID>。' }, null, 2));
 } else {
   if (!values.project) throw new Error('缺少 --project');
-  const auth = new google.auth.GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
+  const auth = process.env.TODO_SCHEDULER_ACCESS_TOKEN
+    ? new google.auth.OAuth2()
+    : new google.auth.GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
+  if (process.env.TODO_SCHEDULER_ACCESS_TOKEN) auth.setCredentials({ access_token: process.env.TODO_SCHEDULER_ACCESS_TOKEN });
   const run = google.run({ version: 'v2', auth });
   const scheduler = google.cloudscheduler({ version: 'v1', auth });
   const parent = `projects/${values.project}/locations/${values.region}`;
