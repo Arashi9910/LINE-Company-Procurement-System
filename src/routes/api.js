@@ -3,6 +3,8 @@ import { bearerToken } from '../line/identity.js';
 import { verifyGroupContext } from '../line/context.js';
 import { listSearchableSkus, submitRequest } from '../services/requests.js';
 import { confirmOrder, confirmReceipt, getRequestDetails } from '../services/workflow.js';
+import { draftOverview, readDraft, mutateDraft } from '../services/purchase-drafts.js';
+import { ValidationError } from '../errors.js';
 
 function lineErrorStatus(error) {
   return Number(error?.status ?? error?.statusCode) || null;
@@ -95,6 +97,35 @@ export function createApiRouter({ config, repository, identityVerifier, messenge
     } catch (error) {
       next(error);
     }
+  });
+
+  router.get('/purchase-access', async (request, response, next) => {
+    try {
+      if (!config.purchaseDraftsEnabled) return response.json({ enabled: false });
+      const auth = await repository.getAuthorization(request.actor.userId);
+      response.json({ enabled: auth.enabled && ['採購確認', '管理員'].includes(auth.role) });
+    } catch (error) { next(error); }
+  });
+  router.use('/purchase-drafts', (_request, _response, next) => {
+    next(config.purchaseDraftsEnabled ? undefined : new ValidationError('採購草稿尚未啟用'));
+  });
+  router.get('/purchase-drafts', async (request, response, next) => {
+    try { response.json(await draftOverview(request.actor, repository)); } catch (error) { next(error); }
+  });
+  router.get('/purchase-drafts/:id', async (request, response, next) => {
+    try { response.json(await readDraft({ actor: request.actor, id: request.params.id }, repository)); } catch (error) { next(error); }
+  });
+  router.post('/purchase-drafts/:id/:action', async (request, response, next) => {
+    try {
+      const result = await mutateDraft({ ...request.body, actor: request.actor, id: request.params.id, action: request.params.action }, repository);
+      if (request.params.action === 'submit' && !result.idempotentReplay) {
+        result.notification = await deliverNotification({
+          kind: 'order_confirmed', requestId: result.requestId, target: result.groupId,
+          send: () => messenger.pushOrderConfirmed(result.groupId, result, request.actor)
+        });
+      }
+      response.json(result);
+    } catch (error) { next(error); }
   });
 
   router.post('/requests', async (request, response, next) => {

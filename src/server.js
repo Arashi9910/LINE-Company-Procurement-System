@@ -13,7 +13,8 @@ const repository = new SheetsRepository({
   sheets: createGoogleSheetsClient(),
   spreadsheetId: config.spreadsheetId,
   flyingmouseWritebackEnabled: config.flyingmouseWritebackEnabled,
-  dailyTodosEnabled: config.dailyTodosEnabled
+  dailyTodosEnabled: config.dailyTodosEnabled,
+  purchaseDraftsEnabled: config.purchaseDraftsEnabled
 });
 const identityVerifier = createLineIdentityVerifier({ channelId: config.lineLoginChannelId });
 const messenger = createLineMessenger({

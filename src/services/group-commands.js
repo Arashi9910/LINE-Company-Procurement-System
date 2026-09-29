@@ -11,18 +11,19 @@ const STATUS_COMMANDS = new Map([
   ['查已下單', '已下單'],
   ['查部分到貨', '部分到貨'],
   ['查已完成', '已完成'],
-  ['查取消', '取消']
+  ['查取消', '取消'],
+  ['查已轉單', '已轉單']
 ]);
 
 const OPEN_STATUSES = new Set(['待確認', '已下單', '部分到貨']);
-const TERMINAL_STATUSES = new Set(['已完成', '取消']);
+const TERMINAL_STATUSES = new Set(['已完成', '取消', '已轉單']);
 const AUTHORIZATION_ROLES = ['申請人', '採購確認', '到貨確認', '管理員'];
 
 export const GROUP_COMMAND_HELP = [
   '【補貨指令】',
   '每日工作：今日待辦｜固定待辦｜待辦指令',
   '查未結案｜查待確認｜查已下單',
-  '查部分到貨｜查已完成｜查取消',
+  '查部分到貨｜查已完成｜查取消｜查已轉單',
   '查詢卡片下方可切換上一頁／下一頁',
   '取消補貨 <補貨單號>',
   '取消採購 <補貨單號>',
@@ -293,6 +294,7 @@ export async function executeAuthorizationCommand(input, { repository, messenger
 
 function aggregateStatus(rows) {
   const statuses = rows.map((row) => row.status);
+  if (statuses.every((status) => status === '已轉單')) return '已轉單';
   if (statuses.every((status) => status === '取消')) return '取消';
   if (statuses.every((status) => TERMINAL_STATUSES.has(status))
     && statuses.some((status) => status === '已完成')) return '已完成';

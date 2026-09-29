@@ -14,6 +14,7 @@ import {
   withoutLineReauthMarker
 } from './line-session.js';
 import { sendLineFallbackNotification } from './line-notification.js';
+import { createDraftControls, reconcileDraftItems } from './purchase-drafts.js';
 import {
   selectWorkflowItems,
   workflowConfig,
@@ -22,6 +23,7 @@ import {
 
 const MAX_CART_ITEMS = 50;
 const MAX_QUANTITY = 999999;
+let draftControls;
 
 const state = {
   idToken: '',
@@ -409,6 +411,12 @@ function cartRow(entry) {
   const variant = document.createElement('span');
   variant.textContent = `${variantLabel(item)}｜${item.sku}`;
   info.append(title, variant);
+  if (item.unavailable) {
+    const warning = document.createElement('span');
+    warning.className = 'danger';
+    warning.textContent = '商品已停用或不存在：請移除並重新選擇，才可正式送出';
+    info.append(warning);
+  }
 
   const controls = quantityStepper(item, item.displayName);
   const remove = document.createElement('button');
@@ -431,12 +439,15 @@ function renderCart() {
   elements.cartCount.textContent = String(totals.variants);
   elements.cartSummary.textContent = `已選 ${totals.variants} 個規格，共 ${totals.quantity} 件`;
   elements.cartDockSummary.textContent = `已選 ${totals.variants} 個規格・共 ${totals.quantity} 件`;
-  elements.cartSection.hidden = totals.variants === 0;
+  elements.cartSection.hidden = totals.variants === 0 && state.mode !== 'draft';
   elements.cartDock.hidden = totals.variants === 0;
   document.body.classList.toggle('has-cart-dock', totals.variants > 0);
+  elements.submit.textContent = state.mode === 'draft' ? '確認正式送出採購單' : '送出補貨申請';
+  draftControls?.changed();
 }
 
 async function submit() {
+  if (state.mode === 'draft') return draftControls.submit();
   if (state.cart.size === 0) return;
   elements.submit.disabled = true;
   elements.submit.textContent = '送出中…';
@@ -606,6 +617,13 @@ async function loadWorkflow(mode, requestId) {
   elements.workflowSubmit.dataset.requestId = request.requestId;
   elements.workflowSubmit.hidden = config.readOnly || items.length === 0;
   elements.workflowSection.hidden = false;
+  for (const transfer of request.transfers ?? []) {
+    const link = document.createElement('a');
+    const target = transfer.sourceId === request.requestId ? transfer.targetId : transfer.sourceId;
+    link.textContent = ` ${transfer.sourceId === request.requestId ? '已轉至採購單' : '來源需求'} ${target}`;
+    link.href = `/?mode=detail&requestId=${encodeURIComponent(target)}`;
+    elements.workflowMeta.append(link);
+  }
   if (items.length === 0) showStatus(config.emptyMessage, 'success');
 }
 
@@ -697,6 +715,39 @@ async function initialize() {
       elements.catalog.hidden = false;
       renderResults();
     }
+    const access = await api('/api/purchase-access');
+    if (access.enabled) {
+      draftControls = createDraftControls({
+        api, showStatus,
+        currentSourceId: () => state.mode === 'order' ? state.workflowRequest?.requestId : '',
+        readSelection: () => state.mode === 'order'
+          ? { items: [...state.orderDraft.values()].filter(entry => entry.orderedQuantity > 0).map(entry => ({ sku: entry.item.sku, quantity: entry.orderedQuantity })), note: state.workflowRequest?.note || '', expectedDate: elements.workflowDate.value }
+          : { items: [...state.cart.values()].map(({ item, quantity }) => ({ sku: item.sku, quantity })), note: elements.note.value },
+        openSelection: async (draft, catalog) => {
+          state.mode = 'draft';
+          document.querySelector('h1').textContent = '採購草稿';
+          state.cart = new Map(reconcileDraftItems(draft.items, catalog).map(entry => [entry.item.sku, entry]));
+          elements.note.value = draft.note;
+          elements.workflowSection.hidden = true;
+          // Catalog may have been moved inside the workflow section.
+          elements.cartSection.before(elements.catalog);
+          elements.catalog.hidden = false;
+          elements.catalogTitle.textContent = '追加商品／規格';
+          elements.catalogDescription.textContent = '更新商品後可繼續加入，請記得儲存草稿';
+          setCatalogItems(catalog); renderCart(); renderResults();
+        },
+        refreshSelection: catalog => {
+          const entries = [...state.cart.values()].map(({ item, quantity }) => ({ ...item, quantity }));
+          state.cart = new Map(reconcileDraftItems(entries, catalog).map(entry => [entry.item.sku, entry]));
+          setCatalogItems(catalog); renderCart(); renderResults();
+        },
+        resetSelection: () => {
+          state.mode = 'request'; state.cart.clear(); elements.note.value = '';
+          document.querySelector('h1').textContent = '補貨申請';
+          renderCart(); renderResults();
+        }
+      });
+    }
   } catch (error) {
     elements.shell.setAttribute('aria-busy', 'false');
     showStatus(error.message, 'error');
@@ -708,6 +759,7 @@ elements.search.addEventListener('input', () => {
   if (!elements.variantDialog.hidden) renderVariantDialog();
 });
 elements.submit.addEventListener('click', submit);
+elements.note.addEventListener('input', () => draftControls?.changed());
 elements.workflowAdd.addEventListener('click', () => {
   elements.catalog.hidden = !elements.catalog.hidden;
   elements.workflowAdd.textContent = elements.catalog.hidden ? '＋ 追加商品／規格' : '收起商品選擇';

@@ -32,7 +32,8 @@ export async function getRequestDetails({ actor, requestId }, repository) {
     repository.getRequest(String(requestId ?? '').trim()),
     repository.getAuthorization(actor.userId)
   ]);
-  return { ...request, actorRole: authorization.enabled ? authorization.role : '' };
+  const transfers = repository.getTransferLinks ? await repository.getTransferLinks(request.requestId) : [];
+  return { ...request, transfers, actorRole: authorization.enabled ? authorization.role : '' };
 }
 
 export async function confirmOrder(input, repository) {

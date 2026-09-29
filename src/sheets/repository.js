@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { google } from 'googleapis';
 import { loadTodoStore } from './daily-todos.js';
+import { loadDraftStore, assertSourceUnreserved } from './purchase-drafts.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { importApprovedReviewSnapshots } from '../flyingmouse/sheets-review.js';
 import {
@@ -28,7 +29,7 @@ const SETTINGS_SHEET = '系統設定';
 const AUTH_SHEET = '授權人員';
 const OPERATIONS_SHEET = '操作紀錄';
 const MAX_TRACKING_ROW = 5000;
-const CLOSED_STATUSES = new Set(['已完成', '取消']);
+const CLOSED_STATUSES = new Set(['已完成', '取消', '已轉單']);
 const AUTHORIZATION_ROLES = new Set(['申請人', '採購確認', '到貨確認', '管理員']);
 const REQUEST_INTERNAL = Symbol('requestInternal');
 
@@ -127,7 +128,8 @@ export class SheetsRepository {
     now = () => new Date(),
     uuid = randomUUID,
     flyingmouseWritebackEnabled = false,
-    dailyTodosEnabled = false
+    dailyTodosEnabled = false,
+    purchaseDraftsEnabled = false
   }) {
     this.sheets = sheets;
     this.spreadsheetId = spreadsheetId;
@@ -135,6 +137,7 @@ export class SheetsRepository {
     this.uuid = uuid;
     this.flyingmouseWritebackEnabled = flyingmouseWritebackEnabled === true;
     this.dailyTodosEnabled = dailyTodosEnabled === true;
+    this.purchaseDraftsEnabled = purchaseDraftsEnabled === true;
     this.writeChain = Promise.resolve();
   }
 
@@ -155,6 +158,7 @@ export class SheetsRepository {
       correctionHeaders.data.values?.[0] ?? ORDER_SPEC_CORRECTION_HEADERS.map(() => '')
     );
     if (this.dailyTodosEnabled) await loadTodoStore(this);
+    if (this.purchaseDraftsEnabled) await loadDraftStore(this);
     if (this.flyingmouseWritebackEnabled) {
       const response = await this.sheets.spreadsheets.values.get({
         spreadsheetId: this.spreadsheetId,
@@ -314,6 +318,65 @@ export class SheetsRepository {
 
   withDailyTodos(run) {
     return this.#enqueue(async () => run(await loadTodoStore(this)));
+  }
+
+  withPurchaseDrafts(run) {
+    if (!this.purchaseDraftsEnabled) throw new ValidationError('採購草稿尚未啟用');
+    return this.#enqueue(async () => run(await loadDraftStore(this)));
+  }
+
+  async #checkDraftReservation(requestId) {
+    if (this.purchaseDraftsEnabled) assertSourceUnreserved(await loadDraftStore(this), requestId);
+  }
+
+  async getTransferLinks(requestId) {
+    if (!this.purchaseDraftsEnabled) return [];
+    const store = await loadDraftStore(this);
+    return store.links.filter(link => link.status === '已轉單' && (link.sourceId === requestId || link.requestId === requestId))
+      .map(({ sourceId, requestId: targetId }) => ({ sourceId, targetId }));
+  }
+
+  // Called only by mutateDraft inside withPurchaseDrafts; flush all changes together.
+  async commitPurchaseDraft({ store, draft, items, actor, key }) {
+    const catalog = new Map((await this.listAvailableSkus()).map(item => [item.sku, item]));
+    if (items.some(item => !catalog.has(item.sku))) throw new ValidationError('部分商品已停用或不存在，請更新商品並移除或替換後再送出');
+    const sources = [];
+    const links = store.links.filter(link => link.draftId === draft.id && link.status === '保留中');
+    for (const link of links) {
+      const source = await this.getRequest(link.sourceId);
+      if (!source.items.length || source.items.some(item => item.status !== '待確認')) throw new ConflictError('來源需求已下單或取消，請捨棄草稿後重新轉單');
+      sources.push(source);
+    }
+    const operation = await this.#findOperation(key);
+    if (operation.existing) throw new ConflictError('操作金鑰已被其他操作使用');
+    if (operation.nextRow > 5000) throw new ConflictError('操作紀錄已滿，請先封存');
+    const startRow = await this.#findAppendRow(items.length);
+    const serial = sheetSerial(this.now());
+    const newId = requestId(this.now(), this.uuid());
+    const data = [];
+    const created = items.map((item, index) => {
+      const row = startRow + index;
+      const sku = catalog.get(item.sku);
+      data.push(
+        { range: `'${TRACKING_SHEET}'!A${row}:D${row}`, values: [[newId, serial, actor.displayName || '採購人員', sku.displayName]] },
+        { range: `'${TRACKING_SHEET}'!F${row}:J${row}`, values: [[0, '已下單', item.quantity, dateSerial(draft.expectedDate), 0]] },
+        { range: `'${TRACKING_SHEET}'!M${row}:S${row}`, values: [[draft.note, item.sku, actor.userId, draft.groupId, actor.userId, serial, key]] }
+      );
+      return { sku: item.sku, displayName: sku.displayName, unit: sku.unit, requestedQuantity: 0,
+        orderedQuantity: item.quantity, receivedQuantity: 0, outstandingQuantity: item.quantity, status: '已下單', expectedDate: draft.expectedDate };
+    });
+    for (const source of sources) for (const item of source.items) data.push(
+      { range: `'${TRACKING_SHEET}'!G${item.rowNumber}`, values: [['已轉單']] },
+      { range: `'${TRACKING_SHEET}'!Q${item.rowNumber}:R${item.rowNumber}`, values: [[actor.userId, serial]] }
+    );
+    draft.status = '已送出'; draft.requestId = newId;
+    for (const link of links) {
+      link.status = '已轉單'; link.requestId = newId; link.updatedAt = draft.updatedAt;
+    }
+    data.push({ range: `'${OPERATIONS_SHEET}'!A${operation.nextRow}:F${operation.nextRow}`,
+      values: [[key, '草稿轉單', newId, actor.userId, serial, `草稿 ${draft.id}；來源 ${links.map(link => link.sourceId).join('、') || '自行建立'}`]] });
+    await store.flush(data);
+    return { requestId: newId, applicant: actor.displayName, groupId: draft.groupId, note: draft.note, items: created, idempotentReplay: false };
   }
 
   async #createRequest(input) {
@@ -543,6 +606,7 @@ export class SheetsRepository {
       return { ...(await this.getRequest(input.requestId)), idempotentReplay: true };
     }
 
+    await this.#checkDraftReservation(input.requestId);
     const request = await this.getRequest(input.requestId);
     if (isOrderedCancellation) {
       const validStatuses = request.items.every((item) => ['已下單', '取消'].includes(item.status));
@@ -631,6 +695,7 @@ export class SheetsRepository {
       return { ...(await this.getRequest(input.requestId)), idempotentReplay: true };
     }
 
+    await this.#checkDraftReservation(input.requestId);
     const request = await this.getRequest(input.requestId);
     const inputMap = new Map(input.items.map((item) => [item.sku, item]));
     if (inputMap.size !== input.items.length) {

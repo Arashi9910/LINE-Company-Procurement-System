@@ -395,3 +395,12 @@ textarea { resize: vertical; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; }
 }
+
+.purchase-tools { margin: 16px 0; padding: 16px; border: 1px solid #cdded3; border-radius: 16px; background: #f5fbf7; }
+.purchase-tools button { margin: 6px 0; }
+.purchase-tools h2 { margin: 16px 0 8px; }
+.purchase-source { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; overflow-wrap: anywhere; }
+.purchase-source input[type="checkbox"] { width: 22px; height: 22px; flex-shrink: 0; }
+#purchase-sources { overflow-wrap: anywhere; }
+#purchase-sources a { display: inline-block; margin-bottom: 8px; }
+#purchase-save-status { font-weight: 600; }

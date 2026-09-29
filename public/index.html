@@ -19,6 +19,22 @@
 
       <div id="status" class="status" role="status">正在連接 LINE…</div>
 
+      <section id="purchase-tools" class="purchase-tools" hidden>
+        <button id="purchase-open" class="secondary" type="button">採購草稿／合併需求</button>
+        <button id="purchase-create" class="secondary" type="button">將目前選擇存成新草稿</button>
+        <div id="purchase-list" hidden></div>
+        <div id="purchase-editor" hidden>
+          <h2>編輯採購草稿</h2>
+          <div id="purchase-sources"></div>
+          <label for="purchase-date">預計到貨日（正式送出時必填）</label>
+          <input id="purchase-date" type="date">
+          <p id="purchase-save-status" role="status"></p>
+          <button id="purchase-save" class="primary" type="button">儲存草稿</button>
+          <button id="purchase-refresh" class="secondary" type="button">更新商品清單</button>
+          <button id="purchase-discard" class="text-button danger" type="button">捨棄草稿</button>
+        </div>
+      </section>
+
       <section id="catalog" hidden>
         <div class="catalog-intro">
           <h2 id="catalog-title">選擇商品</h2>

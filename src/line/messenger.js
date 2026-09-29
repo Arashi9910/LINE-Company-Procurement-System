@@ -5,7 +5,8 @@ const STATUS_ACTIONS = new Map([
   ['已下單', { label: '登記到貨', mode: 'receipt' }],
   ['部分到貨', { label: '繼續登記', mode: 'receipt' }],
   ['已完成', { label: '查看明細', mode: 'detail' }],
-  ['取消', { label: '查看明細', mode: 'detail' }]
+  ['取消', { label: '查看明細', mode: 'detail' }],
+  ['已轉單', { label: '查看轉單', mode: 'detail' }]
 ]);
 
 const STATUS_COLORS = new Map([
@@ -13,7 +14,8 @@ const STATUS_COLORS = new Map([
   ['已下單', '#0066cc'],
   ['部分到貨', '#7a4db3'],
   ['已完成', '#16833b'],
-  ['取消', '#777777']
+  ['取消', '#777777'],
+  ['已轉單', '#547080']
 ]);
 
 const STATUS_COMMANDS = new Map([
@@ -22,7 +24,8 @@ const STATUS_COMMANDS = new Map([
   ['已下單', '查已下單'],
   ['部分到貨', '查部分到貨'],
   ['已完成', '查已完成'],
-  ['取消', '查取消']
+  ['取消', '查取消'],
+  ['已轉單', '查已轉單']
 ]);
 
 function workflowUrl(liffId, mode, requestId) {
