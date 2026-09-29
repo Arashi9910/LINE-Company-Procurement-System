@@ -33,6 +33,16 @@ export function createApp(dependencies = {}) {
   const app = express();
   app.disable('x-powered-by');
 
+  // Use during revision cutover so old write requests can drain before enabling a new writer.
+  app.use((request, response, next) => {
+    if (config.maintenanceMode && !['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+      return response.status(503).set('Retry-After', '60').json({
+        error: { code: 'MAINTENANCE', message: '系統更新中，請保留目前內容，稍後再送出' }
+      });
+    }
+    next();
+  });
+
   app.get('/health', (_request, response) => {
     response.json(deploymentMetadata(config, true));
   });

@@ -49,6 +49,7 @@ export function loadConfig(env = process.env, options = {}) {
     jobToken: (env.JOB_TOKEN ?? '').trim(),
     dailyTodosEnabled: booleanFlag(env.DAILY_TODOS_ENABLED, 'DAILY_TODOS_ENABLED'),
     purchaseDraftsEnabled: booleanFlag(env.PURCHASE_DRAFTS_ENABLED, 'PURCHASE_DRAFTS_ENABLED'),
+    maintenanceMode: booleanFlag(env.MAINTENANCE_MODE, 'MAINTENANCE_MODE'),
     googleCloudProject: env.GOOGLE_CLOUD_PROJECT ?? '',
     googleCloudRegion: env.GOOGLE_CLOUD_REGION ?? 'asia-east1',
     flyingmouseCatalogJobName: env.FLYINGMOUSE_CATALOG_JOB_NAME ?? 'flyingmouse-catalog-sync',
