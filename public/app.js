@@ -15,6 +15,7 @@ import {
 } from './line-session.js';
 import { sendLineFallbackNotification } from './line-notification.js';
 import { createDraftControls, reconcileDraftItems } from './purchase-drafts.js';
+import { receiptImage } from './receipt-image.js';
 import {
   selectWorkflowItems,
   workflowConfig,
@@ -528,7 +529,14 @@ function workflowItem(item, mode) {
   meta.className = 'muted';
   meta.textContent = view.meta;
   heading.append(title, meta);
-  row.append(heading);
+  if (mode === 'receipt') {
+    const summary = document.createElement('div');
+    summary.className = 'receipt-summary';
+    summary.append(receiptImage(item, imageFrame), heading);
+    row.append(summary);
+  } else {
+    row.append(heading);
+  }
 
   if (view.readOnly) return row;
 

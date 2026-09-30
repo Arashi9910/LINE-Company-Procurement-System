@@ -33,7 +33,24 @@ export async function getRequestDetails({ actor, requestId }, repository) {
     repository.getAuthorization(actor.userId)
   ]);
   const transfers = repository.getTransferLinks ? await repository.getTransferLinks(request.requestId) : [];
-  return { ...request, transfers, actorRole: authorization.enabled ? authorization.role : '' };
+  // Images are optional: a failed image lookup must not prevent receiving stock.
+  let images = [];
+  try {
+    images = repository.listProductImages ? await repository.listProductImages() : [];
+  } catch {
+    images = [];
+  }
+  const imagesBySku = new Map(images.map(image => [image.sku, image]));
+  const items = request.items.map(item => {
+    const image = imagesBySku.get(item.sku);
+    return {
+      ...item,
+      variantImageUrl: image?.variantImageUrl ?? '',
+      mainImageUrl: image?.mainImageUrl ?? '',
+      listImageUrl: image?.listImageUrl ?? ''
+    };
+  });
+  return { ...request, items, transfers, actorRole: authorization.enabled ? authorization.role : '' };
 }
 
 export async function confirmOrder(input, repository) {

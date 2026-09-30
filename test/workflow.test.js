@@ -19,6 +19,26 @@ test('getRequestDetails includes the current actor role', async () => {
   assert.equal(result.actorRole, '採購確認');
 });
 
+test('request images match effective SKU without changing quantities or requiring an available catalog item', async () => {
+  const repo = repository('到貨確認');
+  repo.getRequest = async () => ({ requestId: 'RQ-1', items: [
+    { sku: 'corrected', originalSku: 'old', outstandingQuantity: 3 },
+    { sku: 'missing', outstandingQuantity: 1 }
+  ] });
+  repo.listProductImages = async () => [
+    { sku: 'old', variantImageUrl: 'https://example.com/wrong.jpg' },
+    { sku: 'corrected', variantImageUrl: 'https://example.com/right.jpg', mainImageUrl: 'https://example.com/main.jpg' }
+  ];
+  const result = await getRequestDetails({ actor: { userId: 'U1' }, requestId: 'RQ-1' }, repo);
+  assert.equal(result.items[0].variantImageUrl, 'https://example.com/right.jpg');
+  assert.equal(result.items[0].outstandingQuantity, 3);
+  assert.equal(result.items[1].variantImageUrl, '');
+  repo.listProductImages = async () => { throw new Error('image sheet unavailable'); };
+  const fallback = await getRequestDetails({ actor: { userId: 'U1' }, requestId: 'RQ-1' }, repo);
+  assert.equal(fallback.items[0].outstandingQuantity, 3);
+  assert.equal(fallback.items[0].variantImageUrl, '');
+});
+
 test('confirmOrder enforces role, quantity, date and normalizes items', async () => {
   const denied = repository('申請人');
   await assert.rejects(confirmOrder({

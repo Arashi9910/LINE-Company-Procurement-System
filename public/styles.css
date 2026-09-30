@@ -357,6 +357,17 @@ textarea { resize: vertical; }
 .workflow-items { display: grid; gap: 12px; margin-top: 16px; }
 .workflow-row { padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: #fff; }
 .workflow-row.purchase-added { border-color: #83d5a0; background: #f5fff8; }
+.receipt-summary { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 12px; align-items: start; }
+.receipt-summary h3, .receipt-summary p { overflow-wrap: anywhere; }
+.receipt-image-button { padding: 0; border: 0; background: transparent; color: var(--deep-green); cursor: zoom-in; }
+.receipt-image-button:disabled { cursor: default; color: #666; }
+.receipt-image-button > span { display: block; margin-top: 5px; font-size: .75rem; }
+.receipt-image { width: 88px; height: 88px; border-radius: 10px; }
+.receipt-image-dialog { width: min(92vw, 640px); max-height: 90vh; max-height: 90dvh; box-sizing: border-box; padding: 16px; border: 0; border-radius: 16px; overflow: auto; }
+.receipt-image-dialog::backdrop { background: rgba(0, 0, 0, .7); }
+.receipt-image-close { display: block; margin: 0 0 12px auto; min-height: 44px; padding: 8px 16px; cursor: pointer; }
+.receipt-image-preview { width: 100%; height: min(65vh, 560px); }
+.receipt-image-dialog p { overflow-wrap: anywhere; }
 .workflow-addition-badge {
   display: inline-block;
   margin-bottom: 6px;
