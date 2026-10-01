@@ -266,9 +266,19 @@ export function createLineMessenger({ channelAccessToken, liffId }, dependencies
           text: [
             `${allComplete ? '補貨單已完成' : '已登記到貨'} ${result.requestId}`,
             `操作人：${actor.displayName}`,
-            ...lines,
-            allComplete ? '' : `仍未到齊，可再次開啟：${liffWorkflowUrl('receipt', result.requestId)}`
+            ...lines
           ].filter(Boolean).join('\n')
+        }, {
+          type: 'template',
+          altText: `到貨明細 ${result.requestId}`,
+          template: {
+            type: 'buttons',
+            text: `${result.requestId} ${allComplete ? '已完成到貨' : '尚有品項未到齊'}`,
+            actions: [
+              { type: 'uri', label: '查看明細', uri: liffWorkflowUrl('detail', result.requestId) },
+              ...(!allComplete ? [{ type: 'uri', label: '繼續登記到貨', uri: liffWorkflowUrl('receipt', result.requestId) }] : [])
+            ]
+          }
         }]
       });
     },
