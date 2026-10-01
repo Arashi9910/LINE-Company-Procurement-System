@@ -529,7 +529,7 @@ function workflowItem(item, mode) {
   meta.className = 'muted';
   meta.textContent = view.meta;
   heading.append(title, meta);
-  if (mode === 'receipt') {
+  if (mode === 'receipt' || mode === 'detail') {
     const summary = document.createElement('div');
     summary.className = 'receipt-summary';
     summary.append(receiptImage(item, imageFrame), heading);

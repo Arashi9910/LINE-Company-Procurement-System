@@ -57,6 +57,21 @@ try {
   await mkdir('artifacts', { recursive: true });
   await page.screenshot({ path: 'artifacts/receipt-images-mobile.png', fullPage: true });
   console.log('PASS: mobile thumbnails, fallback, missing images, zoom, Escape, quantity preservation; no receipt submitted');
+  items[0].status = '已完成';
+  items[1].status = '取消';
+  await page.goto(`http://127.0.0.1:${server.address().port}/?mode=detail&requestId=RQ-preview`);
+  await buttons.first().waitFor();
+  assert.equal(await buttons.count(), 3);
+  assert.equal(await page.locator('.workflow-quantity').count(), 0);
+  assert.equal(await page.locator('#workflow-submit').isVisible(), false);
+  await buttons.first().click();
+  await page.getByRole('dialog').waitFor();
+  await page.getByRole('button', { name: '關閉圖片' }).click();
+  await page.locator('dialog').waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  assert.deepEqual(errors, []);
+  await page.screenshot({ path: 'artifacts/detail-images-mobile.png', fullPage: true });
+  console.log('PASS: read-only details include completed/cancelled items, zoom, and no receiving controls');
 } finally {
   await browser?.close();
   await new Promise(resolve => server.close(resolve));
