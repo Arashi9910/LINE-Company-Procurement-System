@@ -119,6 +119,7 @@ test('SheetsRepository parses product image mappings and tolerates a missing she
 
   assert.deepEqual(await repository.listProductImages(), [{
     productId: 'PRODUCT-1',
+    productBindings: [],
     sku: 'SKU-A',
     productCode: 'SALE-001',
     productName: '商品 A',

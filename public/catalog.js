@@ -32,7 +32,18 @@ export function variantLabel(item) {
 export function groupCatalog(items) {
   const groups = new Map();
 
-  for (const item of items) {
+  const listings = items.flatMap((item) => item.productBindings?.length
+    ? item.productBindings.map((binding) => ({
+      ...item,
+      productId: binding.productId,
+      productCode: binding.productCode,
+      productName: binding.productName,
+      variantName: binding.variantName,
+      mainImageUrl: binding.mainImageUrl,
+      variantImageUrl: binding.variantImageUrl
+    }))
+    : [item]);
+  for (const item of listings) {
     const productCode = String(item.productCode ?? '').trim();
     const productName = String(item.productName ?? '').trim();
     const key = productCode
@@ -49,6 +60,7 @@ export function groupCatalog(items) {
       openCount: 0,
       searchText: ''
     };
+    if (group.items.some((existing) => existing.sku === item.sku)) continue;
     group.items.push(item);
     group.openCount += Number(item.openCount ?? 0);
     group.searchText += ` ${searchableItemText(item)}`;

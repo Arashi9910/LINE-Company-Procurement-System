@@ -203,7 +203,13 @@ export class SheetsRepository {
     try {
       const response = await this.sheets.spreadsheets.values.get({
         spreadsheetId: this.spreadsheetId,
-        range: `'${PRODUCT_IMAGES_SHEET}'!A2:O`
+        range: `'${PRODUCT_IMAGES_SHEET}'!A2:P`
+      }).catch((error) => {
+        if (Number(error.code ?? error.response?.status) !== 400) throw error;
+        return this.sheets.spreadsheets.values.get({
+          spreadsheetId: this.spreadsheetId,
+          range: `'${PRODUCT_IMAGES_SHEET}'!A2:O`
+        });
       });
 
       return (response.data.values ?? [])
@@ -211,6 +217,7 @@ export class SheetsRepository {
         .map((row) => ({
           productId: String(row[2] ?? ''),
           sku: String(row[1]),
+          productBindings: row[15] ? JSON.parse(row[15]) : [],
           productCode: String(row[3] ?? ''),
           productName: String(row[4] ?? ''),
           variantName: String(row[5] ?? ''),

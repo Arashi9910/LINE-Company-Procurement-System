@@ -370,7 +370,7 @@ test('image sync is idempotent, protects manual rows, and inserts into the first
               properties: {
                 sheetId: 7,
                 title: '商品圖片對照',
-                gridProperties: { rowCount: 4, columnCount: 15 }
+                gridProperties: { rowCount: 4, columnCount: 16 }
               }
             }]
           }
@@ -414,7 +414,7 @@ test('image sync is idempotent, protects manual rows, and inserts into the first
     expandedRows: 0
   });
   assert.equal(write.requestBody.data.length, 1);
-  assert.equal(write.requestBody.data[0].range, "'商品圖片對照'!A4:O4");
+  assert.equal(write.requestBody.data[0].range, "'商品圖片對照'!A4:P4");
   assert.equal(write.requestBody.data[0].values[0][12], '未配對');
 });
 
@@ -432,7 +432,7 @@ test('image sync expands capacity and updates only source-managed changed rows',
               properties: {
                 sheetId: 7,
                 title: '商品圖片對照',
-                gridProperties: { rowCount: 2, columnCount: 15 }
+                gridProperties: { rowCount: 2, columnCount: 16 }
               }
             }]
           }
@@ -473,8 +473,8 @@ test('image sync expands capacity and updates only source-managed changed rows',
   assert.equal(result.expandedRows, 100);
   assert.equal(structural[0].requestBody.requests[0].appendDimension.length, 100);
   assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
-    "'商品圖片對照'!A2:O2",
-    "'商品圖片對照'!A3:O3"
+    "'商品圖片對照'!A2:P2",
+    "'商品圖片對照'!A3:P3"
   ]);
 });
 
@@ -497,7 +497,7 @@ test('image sync never downgrades a previously bound product when the page omits
               properties: {
                 sheetId: 7,
                 title: '商品圖片對照',
-                gridProperties: { rowCount: 1000, columnCount: 15 }
+                gridProperties: { rowCount: 1000, columnCount: 16 }
               }
             }]
           }

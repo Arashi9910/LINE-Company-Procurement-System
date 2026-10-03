@@ -196,6 +196,13 @@ test('captures every FlyingMouse list page whose page title is an h3', async (t)
       response.end('<a href="/admin/dashboard">管理首頁</a>');
       return;
     }
+    if (url.pathname === '/api/admin/product/2') {
+      response.setHeader('Content-Type', 'application/json; charset=utf-8');
+      response.end(JSON.stringify({ code: 0, product: { id: 2, code: 'P-2', name: '透明版',
+        spec: [{ sku: 'SKU-0001', specY: '三入裝', item_cover: { url: 'https://img.fslol.com/10371/a/triple.jpg' } }]
+      } }));
+      return;
+    }
     if (url.pathname === '/api/admin/product/1') {
       response.setHeader('Content-Type', 'application/json; charset=utf-8');
       response.end(JSON.stringify({
@@ -242,7 +249,7 @@ test('captures every FlyingMouse list page whose page title is an h3', async (t)
               '<td><a href="/admin/part/edit/' + number + '">' + sku + '</a></td>' +
               '<td><img src="https://img.fslol.com/10371/a/example.jpg"><div style="padding-left:84px"><div><b>測試商品</b></div>藍色<br></div></td>' +
               '<td>3</td><td></td><td><a href="/admin/item/edit/' + number + '">' + sku + '</a></td>' +
-              '<td><a href="/admin/product/edit/1">P-1</a></td><td></td><td></td>' +
+              '<td><a href="/admin/product/edit/1">P-1</a>' + (number === 1 ? '<a href="/admin/product/edit/2">P-2</a>' : '') + '</td><td></td><td></td>' +
               '</tr>');
           }
           document.querySelector('tbody').innerHTML = rows.join('');
@@ -271,7 +278,8 @@ test('captures every FlyingMouse list page whose page title is an h3', async (t)
 
   assert.equal(result.metadata.rowCount, 1001);
   assert.equal(result.metadata.pageCount, 2);
-  assert.equal(result.metadata.productCount, 1);
+  assert.equal(result.metadata.productCount, 2);
+  assert.equal(result.items[0].productBindings[1].variantName, '三入裝');
   assert.equal(result.items[0].partId, '1');
   assert.equal(result.items[1000].partId, '1001');
   assert.equal(result.items[0].productName, '商品頁最新名稱');

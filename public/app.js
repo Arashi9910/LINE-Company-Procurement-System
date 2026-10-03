@@ -185,7 +185,8 @@ function imageFrame(values, alt, extraClass = '') {
 }
 
 function groupForItem(item) {
-  return state.groupsBySku.get(item.sku);
+  return state.groups.find((group) => item.productCode && group.productCode === item.productCode)
+    ?? state.groupsBySku.get(item.sku);
 }
 
 function itemImageUrls(item) {

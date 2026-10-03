@@ -82,6 +82,11 @@ export function normalizeProductListRows(rawRows, { capturedAt = new Date() } = 
     const sku = normalizeText(raw.sku);
     const productId = parseId(raw.productHref, 'product');
     const productCode = normalizeText(raw.productCode);
+    const productBindings = (raw.productLinks ?? (raw.productHref ? [{ href: raw.productHref, code: raw.productCode }] : []))
+      .map((link) => ({ productId: parseId(link.href, 'product'), productCode: normalizeText(link.code) }));
+    if (productBindings.some((binding) => !binding.productId || !binding.productCode)) {
+      throw new Error(`飛鼠貨品 ${sku} 的銷售商品連結不完整`);
+    }
     const productName = normalizeText(raw.productName);
     const spec = normalizeText(raw.spec);
     const listImageUrl = String(raw.listImageUrl ?? '').trim();
@@ -99,6 +104,7 @@ export function normalizeProductListRows(rawRows, { capturedAt = new Date() } = 
       sku,
       productId,
       productCode,
+      productBindings,
       productName,
       spec,
       sourceSpec: spec,
@@ -179,8 +185,24 @@ export function mergeProductDetails(items, productDetails) {
     if (!detailSpec) {
       throw new Error(`飛鼠銷售商品 ${item.productId} 找不到 SKU ${item.sku}`);
     }
+    const productBindings = (item.productBindings ?? [item]).map((binding) => {
+      const boundDetail = detailsById.get(binding.productId);
+      const boundSpec = boundDetail?.specs.find((candidate) => candidate.sku === item.sku);
+      if (!boundSpec || boundDetail.productCode !== binding.productCode) {
+        throw new Error(`飛鼠貨品 ${item.sku} 的銷售商品 ${binding.productId} 綁定不完整`);
+      }
+      return {
+        productId: boundDetail.productId,
+        productCode: boundDetail.productCode,
+        productName: boundDetail.productName,
+        variantName: boundSpec.spec || item.spec,
+        mainImageUrl: boundDetail.mainImageUrl,
+        variantImageUrl: boundSpec.variantImageUrl
+      };
+    });
     return Object.freeze({
       ...item,
+      productBindings,
       productName: detail.productName,
       spec: detailSpec.spec || item.spec,
       ...imageFields({
@@ -249,6 +271,8 @@ async function capturePageRows(page, config, timeoutMs, pageCode) {
     const cells = Array.from(row.querySelectorAll(':scope > td'));
     const partLink = cells[0]?.querySelector('a[href*="/admin/part/edit/"]');
     const productLink = cells[5]?.querySelector('a[href*="/admin/product/edit/"]');
+    const productLinks = Array.from(cells[5]?.querySelectorAll('a[href*="/admin/product/edit/"]') ?? [])
+      .map((link) => ({ href: link.getAttribute('href'), code: link.textContent }));
     const details = cells[1]?.querySelector('div[style*="padding-left"]') ?? cells[1];
     const name = details?.querySelector('b');
     const normalize = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -261,6 +285,7 @@ async function capturePageRows(page, config, timeoutMs, pageCode) {
       partHref: partLink?.getAttribute('href') ?? '',
       sku: normalize(partLink?.textContent),
       productHref: productLink?.getAttribute('href') ?? '',
+      productLinks,
       productCode: normalize(productLink?.textContent),
       productName,
       spec,
@@ -307,7 +332,7 @@ async function concurrentMap(values, concurrency, mapper) {
 }
 
 async function captureProductDetails(page, config, items, timeoutMs) {
-  const productIds = [...new Set(items.map((item) => item.productId).filter(Boolean))];
+  const productIds = [...new Set(items.flatMap((item) => (item.productBindings ?? [item]).map((binding) => binding.productId)).filter(Boolean))];
   return concurrentMap(productIds, PRODUCT_DETAIL_CONCURRENCY, async (productId) => {
     const url = new URL(`/api/admin/product/${encodeURIComponent(productId)}`, config.adminUrl);
     const response = await page.request.get(url.toString(), {

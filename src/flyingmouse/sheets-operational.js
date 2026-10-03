@@ -16,7 +16,8 @@ export const PRODUCT_IMAGE_HEADERS = Object.freeze([
   '綁定狀態',
   'SKU主檔配對',
   '資料來源',
-  '擷取時間'
+  '擷取時間',
+  '銷售商品綁定JSON'
 ]);
 
 const AUTOMATED_IMAGE_SOURCE = '飛鼠貨品列表';
@@ -360,7 +361,7 @@ async function getSheetProperties({ sheets, spreadsheetId }) {
     ?.map((sheet) => sheet.properties)
     .find((sheet) => sheet.title === PRODUCT_IMAGES_SHEET_NAME);
   if (!properties) throw new Error(`缺少 ${PRODUCT_IMAGES_SHEET_NAME} 分頁`);
-  if ((properties.gridProperties?.columnCount ?? 0) < PRODUCT_IMAGE_HEADERS.length) {
+  if ((properties.gridProperties?.columnCount ?? 0) < 15) {
     throw new Error(`${PRODUCT_IMAGES_SHEET_NAME} 欄數不足`);
   }
   return properties;
@@ -397,12 +398,13 @@ function imageRow(item, matched) {
     item.bindingStatus,
     matched ? '已配對' : '未配對',
     item.source,
-    item.capturedAt
+    item.capturedAt,
+    item.productBindings?.length > 1 ? JSON.stringify(item.productBindings) : ''
   ];
 }
 
 function sameManagedValues(current, next) {
-  return next.slice(0, 14).every((value, index) => String(current[index] ?? '') === String(value ?? ''));
+  return next.every((value, index) => index === 14 || String(current[index] ?? '') === String(value ?? ''));
 }
 
 function mergeProtectedBinding(current, next) {
@@ -410,7 +412,7 @@ function mergeProtectedBinding(current, next) {
   const protectsBinding = String(current[11] ?? '') === '已綁定銷售商品' &&
     String(next[11] ?? '') === '未綁定銷售商品';
   if (protectsBinding) {
-    for (const index of [2, 3, 6, 11]) merged[index] = current[index] ?? '';
+    for (const index of [2, 3, 6, 11, 15]) merged[index] = current[index] ?? '';
   }
   const listImageUrl = String(merged[8] ?? '');
   const isDefault = /(?:^|\/)img\/default-cover\.jpg(?:\?.*)?$/i.test(listImageUrl);
@@ -428,17 +430,21 @@ export async function syncProductImages({
   ensureUniqueImageItems(imageItems);
   const properties = await getSheetProperties({ sheets, spreadsheetId });
   const rowCount = properties.gridProperties?.rowCount ?? 0;
+  const lastColumn = properties.gridProperties.columnCount >= 16 ? 'P' : 'O';
   const response = await sheets.spreadsheets.values.batchGet({
     spreadsheetId,
     ranges: [
-      `'${PRODUCT_IMAGES_SHEET_NAME}'!A1:O${rowCount}`,
+      `'${PRODUCT_IMAGES_SHEET_NAME}'!A1:${lastColumn}${rowCount}`,
       `'${MAIN_SHEET_NAME}'!A1:A`
     ],
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
   const imageValues = response.data.valueRanges?.[0]?.values ?? [];
   const mainValues = response.data.valueRanges?.[1]?.values ?? [];
-  exactHeaders(imageValues[0] ?? [], PRODUCT_IMAGE_HEADERS, PRODUCT_IMAGES_SHEET_NAME);
+  exactHeaders(imageValues[0] ?? [], PRODUCT_IMAGE_HEADERS.slice(0, 15), PRODUCT_IMAGES_SHEET_NAME);
+  if (imageValues[0]?.[15] && imageValues[0][15] !== PRODUCT_IMAGE_HEADERS[15]) {
+    throw new Error(`${PRODUCT_IMAGES_SHEET_NAME} 綁定欄位已被占用`);
+  }
   exactHeaders(mainValues[0] ?? [], MAIN_HEADERS.slice(0, 1), MAIN_SHEET_NAME);
 
   const mainSkus = new Set();
@@ -495,6 +501,14 @@ export async function syncProductImages({
   };
 
   const data = [];
+  if (!dryRun) {
+    if (properties.gridProperties.columnCount < 16) {
+      await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: [{
+        appendDimension: { sheetId: properties.sheetId, dimension: 'COLUMNS', length: 16 - properties.gridProperties.columnCount }
+      }] } });
+    }
+    if (!imageValues[0]?.[15]) data.push({ range: `'${PRODUCT_IMAGES_SHEET_NAME}'!P1`, values: [[PRODUCT_IMAGE_HEADERS[15]]] });
+  }
   let inserted = 0;
   let updated = 0;
   let unchanged = 0;
@@ -506,7 +520,7 @@ export async function syncProductImages({
     const existing = existingByPartId.get(partId);
     if (!existing) {
       const rowNumber = takeEmptyRow();
-      data.push({ range: `'${PRODUCT_IMAGES_SHEET_NAME}'!A${rowNumber}:O${rowNumber}`, values: [next] });
+      data.push({ range: `'${PRODUCT_IMAGES_SHEET_NAME}'!A${rowNumber}:P${rowNumber}`, values: [next] });
       inserted += 1;
       continue;
     }
@@ -522,7 +536,7 @@ export async function syncProductImages({
       continue;
     }
     data.push({
-      range: `'${PRODUCT_IMAGES_SHEET_NAME}'!A${existing.rowNumber}:O${existing.rowNumber}`,
+      range: `'${PRODUCT_IMAGES_SHEET_NAME}'!A${existing.rowNumber}:P${existing.rowNumber}`,
       values: [next]
     });
     updated += 1;
