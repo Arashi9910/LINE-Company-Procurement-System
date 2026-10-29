@@ -435,6 +435,10 @@ export function createDashboardReader({ sheets, spreadsheetId, enabled }) {
 }
 
 
+// 「查過了，結果是空的」跟「還沒查過」必須分得出來。
+// 近 30 天真的沒有任何有效訂單是合法結果（例如只剩更早的未寄預購單），
+// 這時候還是要篩——分不出來就會退回「列出全部缺貨」，正好是要避免的雜訊。
+// 做法：空集合時寫一列「SKU 空白、但有起算日與更新時間」當完成標記。
 export function parseMovementRows(values) {
   assertSheetHeaders(values?.[0] ?? [], MOVEMENT_HEADERS, MOVEMENT_SHEET_NAME);
   const skus = new Set();
@@ -444,15 +448,16 @@ export function parseMovementRows(values) {
     const row = paddedRow(values[index], MOVEMENT_HEADERS.length);
     if (!hasValues(row)) continue;
     const sku = normalizeText(row[0]);
-    if (!sku) throw new Error(`${MOVEMENT_SHEET_NAME} 第 ${index + 1} 列缺少 SKU`);
-    skus.add(sku);
+    const rowUpdatedAt = normalizeText(row[2]);
+    if (!sku && !rowUpdatedAt) {
+      throw new Error(`${MOVEMENT_SHEET_NAME} 第 ${index + 1} 列缺少 SKU`);
+    }
+    if (sku) skus.add(sku);
     since = since || normalizeText(row[1]);
-    updatedAt = updatedAt || normalizeText(row[2]);
+    updatedAt = updatedAt || rowUpdatedAt;
   }
-  // 只有表頭的分頁代表「建好了但還沒寫過」，不是「這 30 天沒人買任何東西」。
-  // 分不出來就會把所有要叫貨的都濾掉，剛初始化完第一次查就全空。
-  const initialized = skus.size > 0 && Boolean(updatedAt);
-  return Object.freeze({ skus, since, updatedAt, initialized });
+  // 只有表頭＝建好了但還沒寫過，不是「這 30 天沒人買任何東西」。
+  return Object.freeze({ skus, since, updatedAt, initialized: Boolean(updatedAt) });
 }
 
 export async function readMovementSkus({ sheets, spreadsheetId }) {
@@ -482,7 +487,11 @@ export async function writeMovementSkus({ sheets, spreadsheetId, skus, since, up
   const existing = response.data.values ?? [];
   assertSheetHeaders(existing[0] ?? [], MOVEMENT_HEADERS, MOVEMENT_SHEET_NAME);
 
-  const values = [[...MOVEMENT_HEADERS], ...sorted.map((sku) => [sku, sinceText, atText])];
+  // 空集合也要留下完成標記，不然讀取端分不出「查過且為空」與「還沒查過」。
+  const dataRows = sorted.length > 0
+    ? sorted.map((sku) => [sku, sinceText, atText])
+    : [['', sinceText, atText]];
+  const values = [[...MOVEMENT_HEADERS], ...dataRows];
   const blankRows = Math.max(0, existing.length - values.length);
   const payload = [
     ...values,

@@ -618,7 +618,16 @@ test('parseMovementRows skips the blanked tail and reports the window', () => {
   assert.equal(parsed.initialized, true);
   // 只有表頭＝建好了但還沒寫過，不是「這 30 天沒人買任何東西」。
   assert.equal(parseMovementRows([[...MOVEMENT_HEADERS]]).initialized, false);
-  assert.throws(() => parseMovementRows([[...MOVEMENT_HEADERS], ['', '2026-09-29', 'x']]),
+  // 但「查過了、結果是空的」要分得出來，否則會退回列出全部缺貨。
+  const emptyButQueried = parseMovementRows([
+    [...MOVEMENT_HEADERS],
+    ['', '2026-09-29 00:00:00', '2026-10-29 10:00:00']
+  ]);
+  assert.equal(emptyButQueried.initialized, true);
+  assert.equal(emptyButQueried.skus.size, 0);
+  assert.equal(emptyButQueried.updatedAt, '2026-10-29 10:00:00');
+  // 有內容卻既沒有 SKU 也沒有更新時間：那不是完成標記，是壞掉的列。
+  assert.throws(() => parseMovementRows([[...MOVEMENT_HEADERS], ['', '2026-09-29', '']]),
     /第 2 列缺少 SKU/);
 });
 
@@ -669,4 +678,41 @@ test('readMovementSkus reads the whole column, not a fixed budget', async () => 
 
   assert.deepEqual(state.calls.reads.filter((range) => range.includes('動銷清單')), ["'動銷清單'!A:C"]);
   assert.deepEqual([...result.skus], ['SKU-A']);
+});
+
+test('a non-empty movement list that becomes empty still filters, end to end', async () => {
+  // 近 30 天沒有任何有效訂單是合法結果（例如只剩更早的未寄預購單）。
+  // 「查過且為空」若被當成「還沒查過」，就會退回列出全部缺貨。
+  const state = sheetsFor({
+    movement: [
+      [...MOVEMENT_HEADERS],
+      ['SKU-A', '2026-09-28 00:00:00', '2026-10-28 14:00:00']
+    ]
+  });
+
+  const written = await writeMovementSkus({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    skus: new Set(),
+    since: '2026-09-29 00:00:00',
+    updatedAt: '2026-10-29 14:00:00'
+  });
+  assert.equal(written.skus, 0);
+
+  const readBack = parseMovementRows(state.calls.updates[0].values);
+  assert.equal(readBack.initialized, true, '空集合也要留下完成標記');
+  assert.equal(readBack.skus.size, 0);
+
+  const reply = formatShortageReply({
+    syncStatus: { status: DASHBOARD_SYNC_OK, lastSuccessAt: '2026-10-29 14:00:00' },
+    movement: readBack,
+    rows: [{
+      sku: 'SKU-OLD', displayName: '只剩舊預購單', flyingmouseStock: 7, processing: 0,
+      preparing: 0, unshipped: 3, onOrder: 0, preorderAllowance: 10, safetyStock: 0,
+      estimatedStock: 0, gap: 3, status: '要叫貨', note: '', updatedAt: '2026-10-29 14:00:00'
+    }]
+  });
+  assert.match(reply, /目前沒有要叫貨的品項/);
+  assert.match(reply, /另有 1 個有缺口但近 30 天沒有訂單/);
+  assert.equal(reply.includes('SKU-OLD'), false);
 });
