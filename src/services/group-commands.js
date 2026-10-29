@@ -404,25 +404,50 @@ function inventoryFreshness(syncStatus) {
 function inventoryLine(row) {
   const gap = row.gap === null ? '—' : row.gap;
   // SKU 一定要帶：名稱可能同名或前 24 字相同，只看名稱分不出要補哪個規格。
+  // 備註也要帶：異常列的缺口照樣是正的，不講原因會被當成一般叫貨直接去下單。
+  const note = row.note ? `\n　${row.note}` : '';
   return `${compactName(row.displayName || row.sku, 24)}\n`
     + `　SKU ${row.sku}\n`
-    + `　缺口 ${gap}｜未寄 ${row.unshipped}｜叫貨中 ${row.onOrder}｜飛鼠 ${row.flyingmouseStock}`;
+    + `　缺口 ${gap}｜未寄 ${row.unshipped}｜叫貨中 ${row.onOrder}｜飛鼠 ${row.flyingmouseStock}${note}`;
+}
+
+function byGapDescending(left, right) {
+  return right.gap - left.gap;
 }
 
 export function formatShortageReply(dashboard) {
   const prefix = inventoryFreshness(dashboard?.syncStatus);
-  const rows = (dashboard?.rows ?? []).filter((row) => typeof row.gap === 'number' && row.gap > 0);
-  if (rows.length === 0) {
+  const all = (dashboard?.rows ?? []).filter((row) => typeof row.gap === 'number' && row.gap > 0);
+  // 缺口為正的不一定能直接叫貨：上游會把查無貨號、規格修正失效、
+  // 推算實際為負的列標成「異常」，缺口照樣是正的。混在一起報會害人誤下單。
+  const reorder = all.filter((row) => row.status === '要叫貨').sort(byGapDescending);
+  const anomaly = all.filter((row) => row.status !== '要叫貨').sort(byGapDescending);
+
+  if (all.length === 0) {
     const blocked = (dashboard?.rows ?? []).filter((row) => row.status === '回寫未完成').length;
     const tail = blocked > 0 ? `\n（另有 ${blocked} 個貨號因回寫未完成暫不計算）` : '';
     return `${prefix}目前沒有要叫貨的品項。${tail}`;
   }
-  const sorted = [...rows].sort((left, right) => right.gap - left.gap);
-  const shown = sorted.slice(0, INVENTORY_REPLY_LIMIT);
-  const more = sorted.length > shown.length
-    ? `\n…還有 ${sorted.length - shown.length} 個，詳見「庫存看板」分頁`
-    : '';
-  return `${prefix}要叫貨 ${sorted.length} 個：\n${shown.map(inventoryLine).join('\n')}${more}`;
+
+  const sections = [];
+  if (reorder.length > 0) {
+    const shown = reorder.slice(0, INVENTORY_REPLY_LIMIT);
+    const more = reorder.length > shown.length
+      ? `\n…還有 ${reorder.length - shown.length} 個，詳見「庫存看板」分頁`
+      : '';
+    sections.push(`要叫貨 ${reorder.length} 個：\n${shown.map(inventoryLine).join('\n')}${more}`);
+  }
+  if (anomaly.length > 0) {
+    const shown = anomaly.slice(0, INVENTORY_REPLY_LIMIT);
+    const more = anomaly.length > shown.length
+      ? `\n…還有 ${anomaly.length - shown.length} 個，詳見「庫存看板」分頁`
+      : '';
+    sections.push(
+      `⚠️ 異常 ${anomaly.length} 個，缺口僅供參考，請先人工確認：\n`
+      + `${shown.map(inventoryLine).join('\n')}${more}`
+    );
+  }
+  return `${prefix}${sections.join('\n\n')}`;
 }
 
 export function formatStockReply(dashboard, keyword) {

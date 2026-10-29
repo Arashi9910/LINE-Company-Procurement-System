@@ -21,6 +21,7 @@ import {
 } from '../src/sheets/inventory-dashboard.js';
 import { DASHBOARD_STATUS, buildInventoryDashboard } from '../src/services/inventory-dashboard.js';
 import { readFile } from 'node:fs/promises';
+import { formatShortageReply } from '../src/services/group-commands.js';
 import { initializeInventoryDashboard } from '../scripts/setup-inventory-dashboard.mjs';
 
 function row(overrides = {}) {
@@ -514,4 +515,34 @@ test('the production entry point actually wires the dashboard reader', async () 
   assert.match(source, /createDashboardReader/);
   assert.match(source, /enabled: config\.inventoryDashboardEnabled/);
   assert.match(source, /dashboardReader\s*$/m);
+});
+
+test('an anomaly survives calc → board → read back → reply, with its reason', async () => {
+  // 預購額度填了一個 SKU主檔 沒有的貨號：上游標「異常」但缺口照樣是正的。
+  // 這條走完整條鏈——真的計算、真的序列化成看板列、真的讀回來、真的組回覆。
+  const dashboard = buildInventoryDashboard({
+    catalog: [{ sku: 'SKU-A', displayName: '商品 A', stock: 7 }],
+    orderQuantities: [{ partNo: 'SKU-A', processing: 3, preparing: 0 }],
+    tracking: [],
+    preorders: [
+      { sku: 'SKU-A', preorderAllowance: 10, safetyStock: 0 },
+      { sku: 'SKU-GHOST', preorderAllowance: 10, safetyStock: 0 }
+    ],
+    updatedAt: '2026-10-29 14:00:00'
+  });
+  const values = buildDashboardValues(dashboard);
+  const readBack = parseDashboardRows(values);
+  const reply = formatShortageReply({
+    rows: readBack,
+    syncStatus: { status: DASHBOARD_SYNC_OK, lastSuccessAt: '2026-10-29 14:00:00' }
+  });
+
+  assert.equal(readBack.find((row) => row.sku === 'SKU-GHOST').status, DASHBOARD_STATUS.ANOMALY);
+  assert.match(reply, /要叫貨 1 個/);
+  assert.match(reply, /SKU SKU-A/);
+  // 異常列不可以混在「要叫貨」裡——缺口是正的，直接拿去下單就錯了。
+  assert.match(reply, /異常 1 個/);
+  assert.match(reply, /SKU SKU-GHOST/);
+  assert.match(reply, /不在 SKU主檔/);
+  assert.equal(reply.indexOf('SKU SKU-A') < reply.indexOf('異常'), true, '要叫貨要排在異常前面');
 });
