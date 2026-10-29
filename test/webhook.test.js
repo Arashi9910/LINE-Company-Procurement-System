@@ -639,7 +639,13 @@ test('查缺貨 hides SKUs that have not moved in 30 days, and says how many', a
           estimatedStock: 0, gap: 3, status: '要叫貨', note: '', updatedAt: '2026-10-29 17:00:00' }
       ],
       // 新品上架一律先填預購額度 10，賣出第一筆就有缺口——但那是測試品。
-      movement: { skus: new Set(['SKU-A']), since: '2026-09-29 00:00:00', updatedAt: '' }
+      // updatedAt 要跟看板那一輪一致，否則會被當成舊清單而不篩。
+      movement: {
+        skus: new Set(['SKU-A']),
+        since: '2026-09-29 00:00:00',
+        updatedAt: '2026-10-29 17:00:00',
+        initialized: true
+      }
     })
   };
   const baseUrl = await start(t, calls);
@@ -664,6 +670,56 @@ test('查缺貨 falls back to showing everything when the movement list is unrea
   await sendText(baseUrl, '查缺貨');
 
   // 篩子壞了不該讓人連缺貨都查不到。
+  assert.match(calls.texts[0].text, /要叫貨 1 個/);
+  assert.equal(calls.texts[0].text.includes('近 30 天沒有訂單'), false);
+});
+
+test('查缺貨 ignores a movement list left over from an older run', async (t) => {
+  const base = dashboardFixture();
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => ({
+      ...base,
+      rows: [
+        ...base.rows,
+        { sku: 'SKU-NEW', displayName: '今天才開始出單', flyingmouseStock: 7, processing: 0,
+          preparing: 0, unshipped: 0, onOrder: 0, preorderAllowance: 10, safetyStock: 0,
+          estimatedStock: 0, gap: 3, status: '要叫貨', note: '', updatedAt: '2026-10-29 17:00:00' }
+      ],
+      // 看板是 17:00 那輪的，動銷清單卻停在昨天——代表昨天之後動銷那一步都失敗了。
+      movement: {
+        skus: new Set(['SKU-A']),
+        since: '2026-09-28 00:00:00',
+        updatedAt: '2026-10-28 17:00:00',
+        initialized: true
+      }
+    })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  // 拿舊清單去篩，會把今天才開始出單的商品誤判成「沒在動」而藏起來。
+  const reply = calls.texts[0].text;
+  assert.match(reply, /要叫貨 2 個/);
+  assert.match(reply, /SKU-NEW/);
+  assert.equal(reply.includes('近 30 天沒有訂單'), false);
+});
+
+test('查缺貨 does not filter against a freshly initialised empty movement sheet', async (t) => {
+  const base = dashboardFixture();
+  const calls = {
+    groups: [], links: [], texts: [],
+    // 只有表頭的分頁代表「建好了但還沒寫過」，不是「這 30 天沒人買任何東西」。
+    dashboardReader: async () => ({
+      ...base,
+      movement: { skus: new Set(), since: '', updatedAt: '', initialized: false }
+    })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
   assert.match(calls.texts[0].text, /要叫貨 1 個/);
   assert.equal(calls.texts[0].text.includes('近 30 天沒有訂單'), false);
 });

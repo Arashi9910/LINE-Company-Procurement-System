@@ -406,24 +406,23 @@ export async function readInventoryDashboard({ sheets, spreadsheetId }) {
     spreadsheetId,
     ranges: [
       `'${DASHBOARD_SHEET_NAME}'!A:${DASHBOARD_LAST_COLUMN}`,
-      `'${SYNC_STATUS_SHEET_NAME}'!A1:${SYNC_STATUS_LAST_COLUMN}2`,
-      `'${MOVEMENT_SHEET_NAME}'!A:${MOVEMENT_LAST_COLUMN}`
+      `'${SYNC_STATUS_SHEET_NAME}'!A1:${SYNC_STATUS_LAST_COLUMN}2`
     ],
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
-  // 動銷清單讀不到就當成「沒有篩選依據」，指令照常回答全部——
-  // 它只是個篩子，壞了不該讓人連缺貨都查不到。
+  const rows = parseDashboardRows(response.data.valueRanges?.[0]?.values ?? []);
+  const syncStatus = parseSyncStatusRows(response.data.valueRanges?.[1]?.values ?? []);
+
+  // 動銷清單是另一個請求，不可以跟看板放在同一次 batchGet：
+  // 那張分頁還沒建立時，無效的 range 會讓整個請求失敗，
+  // 連 `查缺貨`／`查庫存` 都回不出來——而它只是個篩子。
   let movement = null;
   try {
-    movement = parseMovementRows(response.data.valueRanges?.[2]?.values ?? []);
+    movement = await readMovementSkus({ sheets, spreadsheetId });
   } catch {
     movement = null;
   }
-  return Object.freeze({
-    rows: parseDashboardRows(response.data.valueRanges?.[0]?.values ?? []),
-    syncStatus: parseSyncStatusRows(response.data.valueRanges?.[1]?.values ?? []),
-    movement
-  });
+  return Object.freeze({ rows, syncStatus, movement });
 }
 
 // 開關關閉時回 null，webhook 會回「尚未啟用」。
@@ -450,7 +449,10 @@ export function parseMovementRows(values) {
     since = since || normalizeText(row[1]);
     updatedAt = updatedAt || normalizeText(row[2]);
   }
-  return Object.freeze({ skus, since, updatedAt });
+  // 只有表頭的分頁代表「建好了但還沒寫過」，不是「這 30 天沒人買任何東西」。
+  // 分不出來就會把所有要叫貨的都濾掉，剛初始化完第一次查就全空。
+  const initialized = skus.size > 0 && Boolean(updatedAt);
+  return Object.freeze({ skus, since, updatedAt, initialized });
 }
 
 export async function readMovementSkus({ sheets, spreadsheetId }) {

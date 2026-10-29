@@ -94,9 +94,6 @@ export async function runInventoryDashboard({
   spreadsheetId,
   readOrders,
   listTrackingRows,
-  // 近 30 天有訂單的貨號。只有這個 Job 進得去飛鼠，所以由它寫進「動銷清單」分頁，
-  // 給跑在 web 服務上的 `查缺貨` 當篩選依據。寫失敗不影響看板本身。
-  readRecentlyOrdered = null,
   updatedAt,
   logger = null
 }) {
@@ -144,12 +141,17 @@ export async function runInventoryDashboard({
 
     // 動銷清單是給 `查缺貨` 用的附加品，不是看板的一部分。
     // 它失敗不可以把整輪拖成「同步失敗」——看板數字本身是好的。
+    // 更新時間刻意用跟看板同一個 attemptedAt：讀取端靠「兩邊時間相同」判斷
+    // 這份清單是不是跟看板同一輪寫出來的，不一致就不拿它篩。
     let movement = null;
-    if (typeof readRecentlyOrdered === 'function') {
+    if (orders.recentlyOrdered) {
       try {
-        const recent = await readRecentlyOrdered();
         movement = await writeMovementSkus({
-          sheets, spreadsheetId, skus: recent.skus, since: recent.since, updatedAt: attemptedAt
+          sheets,
+          spreadsheetId,
+          skus: orders.recentlyOrdered.skus,
+          since: orders.recentlyOrdered.since,
+          updatedAt: attemptedAt
         });
       } catch (error) {
         log(logger, 'warn', {

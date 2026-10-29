@@ -615,6 +615,9 @@ test('parseMovementRows skips the blanked tail and reports the window', () => {
   ]);
   assert.deepEqual([...parsed.skus], ['SKU-A', 'SKU-B']);
   assert.equal(parsed.since, '2026-09-29 00:00:00');
+  assert.equal(parsed.initialized, true);
+  // 只有表頭＝建好了但還沒寫過，不是「這 30 天沒人買任何東西」。
+  assert.equal(parseMovementRows([[...MOVEMENT_HEADERS]]).initialized, false);
   assert.throws(() => parseMovementRows([[...MOVEMENT_HEADERS], ['', '2026-09-29', 'x']]),
     /第 2 列缺少 SKU/);
 });
@@ -631,6 +634,28 @@ test('readInventoryDashboard tolerates a missing movement sheet', async () => {
   const result = await readInventoryDashboard({ sheets: state.sheets, spreadsheetId: 'sheet-123' });
 
   // 動銷清單只是篩子，壞了不該讓人連缺貨都查不到。
+  assert.equal(result.movement, null);
+  assert.deepEqual(result.rows.map((row) => row.sku), ['SKU-A']);
+});
+
+test('readInventoryDashboard still answers when the movement sheet does not exist', async () => {
+  const state = sheetsFor({
+    dashboard: [
+      [...DASHBOARD_HEADERS],
+      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
+    ]
+  });
+  // Google 對不存在的分頁會讓整個請求失敗，所以動銷清單不可以跟看板同一次 batchGet。
+  const original = state.sheets.spreadsheets.values.get;
+  state.sheets.spreadsheets.values.get = async (request) => {
+    if (String(request.range).includes(MOVEMENT_SHEET_NAME)) {
+      throw new Error("Unable to parse range: '動銷清單'!A:C");
+    }
+    return original(request);
+  };
+
+  const result = await readInventoryDashboard({ sheets: state.sheets, spreadsheetId: 'sheet-123' });
+
   assert.equal(result.movement, null);
   assert.deepEqual(result.rows.map((row) => row.sku), ['SKU-A']);
 });

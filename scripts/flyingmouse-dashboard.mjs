@@ -105,8 +105,10 @@ export async function runFlyingMouseDashboard(options, {
   const sheets = sheetsFactory();
   const repository = repositoryFactory({ sheets, spreadsheetId: options.spreadsheetId });
 
-  // 兩次查詢共用一次登入：未寄訂單（不帶日期）與近 30 天動銷（帶日期）。
-  const withOrderClient = async (operation) => {
+  // 兩次查詢共用同一個 session：readOpenOrderQuantities（不帶日期）與
+  // readRecentlyOrderedSkus（帶日期）在同一個 withAuthenticatedPage 裡跑完。
+  // 分成兩次呼叫的話會登入兩次——每次都開瀏覽器、登入、關掉，又慢又多一次失敗機會。
+  const readOrders = async () => {
     const config = await configFactory({ options, env });
     return withAuthenticatedPage({
       config,
@@ -118,18 +120,29 @@ export async function runFlyingMouseDashboard(options, {
         if (route.request().method() !== 'GET') return route.abort();
         return route.continue();
       });
-      return operation(orderClientFactory(page));
+      const client = orderClientFactory(page);
+      const orders = await readOpenOrderQuantities(client, { logger });
+      // 動銷清單是附加品：它失敗不可以讓看板跟著失敗。
+      let recentlyOrdered = null;
+      let recentlyOrderedError = '';
+      try {
+        recentlyOrdered = await readRecentlyOrderedSkus(client, { now: now(), logger });
+      } catch (error) {
+        recentlyOrderedError = String(error?.message ?? '未知錯誤').slice(0, 200);
+        logger.warn({
+          component: 'inventory-dashboard',
+          status: 'recent-orders-failed',
+          error: recentlyOrderedError
+        });
+      }
+      return { ...orders, recentlyOrdered, recentlyOrderedError };
     });
   };
-  const readOrders = () => withOrderClient((client) => readOpenOrderQuantities(client, { logger }));
-  const readRecentlyOrdered = () => withOrderClient((client) =>
-    readRecentlyOrderedSkus(client, { now: now(), logger }));
 
   return runInventoryDashboard({
     sheets,
     spreadsheetId: options.spreadsheetId,
     readOrders,
-    readRecentlyOrdered,
     listTrackingRows: () => repository.listRequestRows(),
     updatedAt: timestampInTaipei(now()),
     logger

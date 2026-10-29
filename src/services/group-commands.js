@@ -411,6 +411,13 @@ function inventoryLine(row) {
     + `　缺口 ${gap}｜未寄 ${row.unshipped}｜叫貨中 ${row.onOrder}｜飛鼠 ${row.flyingmouseStock}${note}`;
 }
 
+function movementUsable(dashboard) {
+  const movement = dashboard?.movement;
+  if (!movement?.initialized) return false;
+  const boardAt = normalizeText(dashboard?.rows?.[0]?.updatedAt);
+  return Boolean(boardAt) && movement.updatedAt === boardAt;
+}
+
 function byGapDescending(left, right) {
   return right.gap - left.gap;
 }
@@ -424,8 +431,11 @@ export function formatShortageReply(dashboard) {
   const anomaly = all.filter((row) => row.status !== '要叫貨').sort(byGapDescending);
 
   // 動銷篩選（使用者決定）：新品一律先填預購額度 10，賣出第一筆就會算出缺口，
-  // 但那是測試品，不該跟真正在動的商品混在一起報。清單讀不到就不篩。
-  const moving = dashboard?.movement?.skus ?? null;
+  // 但那是測試品，不該跟真正在動的商品混在一起報。
+  // 只在清單確實是「跟這份看板同一輪寫出來的」時才篩：
+  // Job 用同一個時間戳寫看板與動銷清單，所以時間不一致就代表動銷那一步失敗了，
+  // 清單是舊的。拿舊清單去篩會把今天才開始出單的商品誤判成「沒在動」而藏起來。
+  const moving = movementUsable(dashboard) ? dashboard.movement.skus : null;
   const active = moving ? reorder.filter((row) => moving.has(row.sku)) : reorder;
   const quiet = moving ? reorder.length - active.length : 0;
 
