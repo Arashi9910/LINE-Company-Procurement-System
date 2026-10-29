@@ -219,11 +219,12 @@ test('到貨量大於下單量時以 0 計，不產生負的已叫貨未到', ()
   assert.equal(rowFor(result, 'A').onOrder, 0);
 });
 
-test('resolveTrackingSku 優先用修正後規格，沒有才用原 SKU', () => {
-  assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW' }), 'NEW');
-  assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: '' }), 'OLD');
-  assert.equal(resolveTrackingSku({ sku: 'OLD' }), 'OLD');
-  assert.equal(resolveTrackingSku({ sku: ' OLD ', correctionSku: '  ' }), 'OLD');
+test('resolveTrackingSku 在修正生效時優先用修正後規格，沒有才用原 SKU', () => {
+  const pending = { status: '已下單', receivedQuantity: 0 };
+  assert.equal(resolveTrackingSku({ ...pending, sku: 'OLD', correctionSku: 'NEW' }), 'NEW');
+  assert.equal(resolveTrackingSku({ ...pending, sku: 'OLD', correctionSku: '' }), 'OLD');
+  assert.equal(resolveTrackingSku({ ...pending, sku: 'OLD' }), 'OLD');
+  assert.equal(resolveTrackingSku({ ...pending, sku: ' OLD ', correctionSku: '  ' }), 'OLD');
 });
 
 test('已叫貨未到算進修正後規格，不算進原 SKU', () => {
@@ -425,4 +426,92 @@ test('輸出商品名稱供看板顯示', () => {
     preorders: [{ sku: 'A', preorderAllowance: 1 }]
   });
   assert.equal(rowFor(result, 'A').displayName, '金屬主機架');
+});
+
+// ── Codex 檢查發現 ──────────────────────────────────────────
+
+test('回寫未完成時，備註不可洩漏被壓下來的缺貨數字', () => {
+  // 計畫的商品 A：快照 7、未寄 3、額度 10，已登記到貨 5 但還沒回寫。
+  // 回寫完成後庫存會變 12，其實夠用，這時不該宣稱還差 3 個。
+  const result = dashboard({
+    catalog: [{ sku: 'A', displayName: '商品 A', stock: 7 }],
+    orderQuantities: [{ partNo: 'A', processing: 3, preparing: 0, total: 3 }],
+    preorders: [{ sku: 'A', preorderAllowance: 10 }],
+    writebackPendingSkus: ['A']
+  });
+  const row = rowFor(result, 'A');
+  assert.equal(row.status, DASHBOARD_STATUS.WRITEBACK_PENDING);
+  assert.equal(row.preorderCloseShortfall, null);
+  assert.ok(!row.note.includes('關閉預購'), `備註不該提關閉預購：${row.note}`);
+  assert.ok(!/\d/.test(row.note), `備註不該出現任何數字：${row.note}`);
+});
+
+test('規格修正已有到貨時不生效，未到量算回原 SKU 並標異常', () => {
+  // order-spec-correction.js 明確拒絕「已有到貨」的規格修改，貨不會以 NEW 進來。
+  const result = dashboard({
+    catalog: [
+      { sku: 'OLD', displayName: '原規格', stock: 0 },
+      { sku: 'NEW', displayName: '修正後規格', stock: 0 }
+    ],
+    tracking: [{
+      sku: 'OLD', correctionSku: 'NEW', status: '部分到貨',
+      orderedQuantity: 10, receivedQuantity: 2
+    }]
+  });
+  assert.equal(rowFor(result, 'OLD').onOrder, 8, '算回原 SKU');
+  assert.equal(rowFor(result, 'OLD').status, DASHBOARD_STATUS.ANOMALY);
+  assert.match(rowFor(result, 'OLD').note, /規格修正/);
+  assert.equal(rowFor(result, 'OLD').reorderable, false);
+});
+
+test('規格修正只在已下單且尚未到貨時生效', () => {
+  const result = dashboard({
+    catalog: [
+      { sku: 'OLD', displayName: '原規格', stock: 0 },
+      { sku: 'NEW', displayName: '修正後規格', stock: 0 }
+    ],
+    tracking: [{
+      sku: 'OLD', correctionSku: 'NEW', status: '已下單',
+      orderedQuantity: 4, receivedQuantity: 0
+    }]
+  });
+  assert.equal(rowFor(result, 'NEW').onOrder, 4);
+  assert.equal(rowFor(result, 'NEW').status, DASHBOARD_STATUS.NORMAL);
+});
+
+test('已套用的規格修正（originalSku 已填）照常採用', () => {
+  const result = dashboard({
+    catalog: [{ sku: 'NEW', displayName: '修正後規格', stock: 0 }],
+    tracking: [{
+      sku: 'NEW', correctionSku: 'NEW', originalSku: 'OLD',
+      status: '部分到貨', orderedQuantity: 6, receivedQuantity: 1
+    }]
+  });
+  assert.equal(rowFor(result, 'NEW').onOrder, 5);
+  assert.equal(rowFor(result, 'NEW').status, DASHBOARD_STATUS.NORMAL);
+});
+
+test('上游已解析出 skuCorrectionError 時，一律算回原 SKU 並標異常', () => {
+  const result = dashboard({
+    catalog: [
+      { sku: 'OLD', displayName: '原規格', stock: 0 },
+      { sku: 'NEW', displayName: '修正後規格', stock: 0 }
+    ],
+    tracking: [{
+      sku: 'OLD', correctionSku: 'NEW', status: '已下單',
+      orderedQuantity: 3, receivedQuantity: 0,
+      skuCorrectionError: '修正後 SKU NEW 目前不可補貨'
+    }]
+  });
+  assert.equal(rowFor(result, 'OLD').onOrder, 3);
+  assert.equal(rowFor(result, 'OLD').status, DASHBOARD_STATUS.ANOMALY);
+  assert.match(rowFor(result, 'OLD').note, /不可補貨|規格修正/);
+});
+
+test('resolveTrackingSku 在規格修正不生效時回傳原 SKU', () => {
+  assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW', status: '已下單', receivedQuantity: 0 }), 'NEW');
+  assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW', status: '已下單', receivedQuantity: 2 }), 'OLD');
+  assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW', status: '部分到貨' }), 'OLD');
+  assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW', skuCorrectionError: 'x' }), 'OLD');
+  assert.equal(resolveTrackingSku({ sku: 'NEW', correctionSku: 'NEW', originalSku: 'OLD', status: '部分到貨' }), 'NEW');
 });

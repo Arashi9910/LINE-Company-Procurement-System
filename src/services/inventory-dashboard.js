@@ -57,9 +57,44 @@ function requireSku(value, label) {
   return sku;
 }
 
+// 規格修正不生效的原因；回空字串代表這筆修正可以採用。
+// 判斷依據與 src/sheets/order-spec-correction.js 一致（不需要 SKU主檔的那幾項）。
+export function describeCorrectionIssue(item) {
+  const sku = text(item?.sku);
+  const correctionSku = text(item?.correctionSku);
+  const originalSku = text(item?.originalSku);
+  if (!correctionSku) return '';
+  // 上游已經解析過就直接採信。
+  const upstream = text(item?.skuCorrectionError);
+  if (upstream) return upstream;
+  // originalSku 已填代表修正早就套用完成，此時 correctionSku 就等於現行 SKU。
+  if (originalSku) {
+    return correctionSku === sku ? '' : '規格修正已套用，不可再改成別的 SKU';
+  }
+  if (correctionSku === sku) return '';
+  // 尚未套用的修正：已有到貨或不在已下單狀態時，到貨流程會擋下來，貨不會以修正後 SKU 進來。
+  if (Number(item?.receivedQuantity ?? 0) > 0) return '此品項已有到貨，規格修正不會生效';
+  if (text(item?.status) !== '已下單') return '只有已下單且尚未到貨的品項，規格修正才會生效';
+  return '';
+}
+
 export function resolveTrackingSku(item) {
   // 規格第 2 節：貨號優先用「修正後規格」，沒有才用原 SKU。
+  // 但修正不生效時貨還是會以原 SKU 進來，硬算給修正後 SKU 會把缺口壓低。
+  if (describeCorrectionIssue(item)) return text(item?.sku);
   return text(item?.correctionSku) || text(item?.sku);
+}
+
+export function collectCorrectionIssues(tracking = []) {
+  const issues = new Map();
+  for (const item of tracking) {
+    if (!OUTSTANDING_STATUSES.has(text(item?.status))) continue;
+    const issue = describeCorrectionIssue(item);
+    if (!issue) continue;
+    const sku = text(item?.sku);
+    if (sku && !issues.has(sku)) issues.set(sku, issue);
+  }
+  return issues;
 }
 
 export function sumOutstandingBySku(tracking = []) {
@@ -121,12 +156,15 @@ function indexOrders(orderQuantities) {
   return bySku;
 }
 
-function decide({ known, writebackPending, estimatedStock, gap }) {
+function decide({ known, writebackPending, correctionIssue, estimatedStock, gap }) {
   if (writebackPending) {
     return { status: DASHBOARD_STATUS.WRITEBACK_PENDING, note: '回寫尚未完成，暫不計算缺口' };
   }
   if (!known) {
     return { status: DASHBOARD_STATUS.ANOMALY, note: '這個貨號不在 SKU主檔，請人工確認' };
+  }
+  if (correctionIssue) {
+    return { status: DASHBOARD_STATUS.ANOMALY, note: `規格修正不會生效：${correctionIssue}，已將未到量算回原 SKU` };
   }
   if (estimatedStock < 0) {
     return {
@@ -150,6 +188,7 @@ export function buildInventoryDashboard({
   const preorderBySku = indexPreorders(preorders);
   const orderBySku = indexOrders(orderQuantities);
   const outstandingBySku = sumOutstandingBySku(tracking);
+  const correctionIssues = collectCorrectionIssues(tracking);
   const pendingSkus = new Set(writebackPendingSkus.map((sku) => requireSku(sku, '回寫未完成的 SKU')));
 
   // 規格第 4.1 節：只列有庫存、有訂單、有叫貨中，或有填預購額度的 SKU。
@@ -158,7 +197,8 @@ export function buildInventoryDashboard({
     ...[...catalogBySku].filter(([, entry]) => entry.stock !== 0).map(([sku]) => sku),
     ...orderBySku.keys(),
     ...outstandingBySku.keys(),
-    ...preorderBySku.keys()
+    ...preorderBySku.keys(),
+    ...correctionIssues.keys()
   ]);
 
   const rows = [...candidates].map((sku) => {
@@ -177,13 +217,19 @@ export function buildInventoryDashboard({
     const gap = preorderAllowance + safetyStock - flyingmouseStock - onOrder;
 
     const writebackPending = pendingSkus.has(sku);
-    const { status, note } = decide({ known, writebackPending, estimatedStock, gap });
+    const correctionIssue = correctionIssues.get(sku) ?? '';
+    const { status, note } = decide({ known, writebackPending, correctionIssue, estimatedStock, gap });
     const publishable = status !== DASHBOARD_STATUS.WRITEBACK_PENDING;
 
     // 規格第 3 節最後一列：還有單沒寄而實際不夠時，現在不能關閉預購。
-    const closeShortfall = preorderAllowance > 0 ? Math.max(0, unshipped - estimatedStock) : null;
+    const closeShortfall = publishable && preorderAllowance > 0
+      ? Math.max(0, unshipped - estimatedStock)
+      : null;
     const notes = [note];
-    if (closeShortfall > 0) notes.push(`目前不能關閉預購，還差 ${closeShortfall} 個`);
+    // 數字不可發布時，備註也不能帶出來，否則等於把壓下來的缺貨量又publish 一次。
+    if (publishable && closeShortfall > 0) {
+      notes.push(`目前不能關閉預購，還差 ${closeShortfall} 個`);
+    }
 
     return {
       sku,
@@ -200,7 +246,7 @@ export function buildInventoryDashboard({
       status,
       // 只有主檔有資料、回寫也跑完的要叫貨列，才可以拿去推播叫貨提醒。
       reorderable: status === DASHBOARD_STATUS.REORDER,
-      preorderCloseShortfall: publishable ? closeShortfall : null,
+      preorderCloseShortfall: closeShortfall,
       note: notes.filter(Boolean).join('；'),
       updatedAt
     };
