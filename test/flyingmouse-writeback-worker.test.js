@@ -271,14 +271,14 @@ test('a retry with a saved target still refuses to PUT when SKU主檔 is broken'
 });
 
 test('a failing retry never rolls SKU主檔 back to the saved beforeStock', async () => {
-  // PUT 已經把 −5 加到 −3，驗證 GET 失敗；期間目錄同步已把主檔寫成 −3。
+  // PUT 已經把 −5 加到 0，驗證 GET 失敗；期間目錄同步已把主檔寫成 0。
   const waiting = transitionWritebackEvent(
-    transitionWritebackEvent(queueEvent(), {
+    transitionWritebackEvent(queueEvent({ receivedQuantity: 5 }), {
       status: '已準備',
       attempts: 1,
       partId: 933,
       beforeStock: -5,
-      targetStock: -3,
+      targetStock: 0,
       processedAt: '2026-07-16 10:05:00'
     }),
     {
@@ -298,7 +298,7 @@ test('a failing retry never rolls SKU主檔 back to the saved beforeStock', asyn
             return { data: { values: [WRITEBACK_HEADERS, writebackEventRow(waiting)] } };
           }
           if (range.includes('SKU主檔')) {
-            return { data: { values: [MAIN_HEADERS.slice(0, 5), ['SKU-A', '商品 A', '', '', -3]] } };
+            return { data: { values: [MAIN_HEADERS.slice(0, 5), ['SKU-A', '商品 A', '', '', 0]] } };
           }
           throw new Error(`unexpected range: ${range}`);
         },

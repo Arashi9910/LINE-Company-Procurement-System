@@ -110,12 +110,28 @@ export function expectedStock(currentStock, receivedQuantity) {
       manualReview: true
     });
   }
+  // 飛鼠讀得出負庫存，但存檔會把負數正規化為 0。補貨量補不滿超賣時（例如 −5 收 2 件），
+  // 送出 −3 會被它存成 0，等於無聲抹掉 5 個超賣帳，而且驗證 GET 一定對不上。
+  // 這種情況只能交給人處理，不可自動修改。
+  if (result < 0) {
+    throw new FlyingMouseWritebackError(
+      `本次到貨量補不滿超賣：${current} 加 ${increment} 仍是 ${result}，飛鼠無法保存負庫存`,
+      { code: 'NEGATIVE_TARGET_STOCK', manualReview: true }
+    );
+  }
   return result;
 }
 
 export function buildPartUpdatePayload(rawPart, targetStock) {
   const part = normalizePart(rawPart, rawPart?.no);
   const stock = safeStockInteger(targetStock, '目標庫存');
+  // 最後一道：不論上游怎麼算，負數都不會離開這個函式進到 PUT。
+  if (stock < 0) {
+    throw new FlyingMouseWritebackError(`目標庫存 ${stock} 是負數，飛鼠會存成 0，不可送出`, {
+      code: 'NEGATIVE_TARGET_STOCK',
+      manualReview: true
+    });
+  }
   const payload = { ...part, stock };
   return Object.freeze(Object.fromEntries(PART_UPDATE_FIELDS.map((field) => [field, payload[field]])));
 }

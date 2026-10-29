@@ -55,7 +55,11 @@ test('expectedStock and payload validation permit only safe inventory values', (
   assert.equal(expectedStock(10, 2), 12);
   // 飛鼠超賣後庫存是負的，到貨就是要從負的加上來，不可擋。
   assert.equal(expectedStock(-1, 2), 1);
-  assert.equal(expectedStock(-5, 2), -3);
+  assert.equal(expectedStock(-5, 5), 0);
+  // 但補不滿超賣時不可自動處理：飛鼠存檔會把負數正規化為 0，送出去等於抹掉超賣帳。
+  assert.throws(() => expectedStock(-5, 2), (error) => error instanceof FlyingMouseWritebackError &&
+    error.code === 'NEGATIVE_TARGET_STOCK' && error.manualReview === true);
+  assert.throws(() => buildPartUpdatePayload(part(), -1), /負數/);
   assert.throws(() => expectedStock(10, 0), /正整數/);
   assert.throws(() => expectedStock(Number.MAX_SAFE_INTEGER, 1), /安全整數/);
   // Number() 會把這些都變成 0，解析庫存時等於把「欄位不見了」當成「庫存 0」。
@@ -95,8 +99,8 @@ test('prepareFlyingMouseWriteback refuses a part whose stock field is missing', 
   }
 });
 
-test('applyPreparedFlyingMouseWriteback PUTs the honest total from a negative stock', async () => {
-  const reads = [part({ stock: -5 }), part({ stock: -3 })];
+test('applyPreparedFlyingMouseWriteback climbs out of a negative stock', async () => {
+  const reads = [part({ stock: -1 }), part({ stock: 1 })];
   const puts = [];
   const client = {
     async getBySku() { return reads.shift(); },
@@ -105,13 +109,45 @@ test('applyPreparedFlyingMouseWriteback PUTs the honest total from a negative st
 
   const result = await applyPreparedFlyingMouseWriteback({
     client,
-    event: preparedEvent({ beforeStock: -5, targetStock: -3 }),
+    event: preparedEvent({ beforeStock: -1, targetStock: 1 }),
     mode: 'live'
   });
 
-  assert.deepEqual(result, { action: 'applied', partId: 933, beforeStock: -5, targetStock: -3 });
-  assert.equal(puts.length, 1);
-  assert.equal(puts[0].payload.stock, -3);
+  assert.deepEqual(result, { action: 'applied', partId: 933, beforeStock: -1, targetStock: 1 });
+  assert.deepEqual(puts.map((entry) => entry.payload.stock), [1]);
+});
+
+test('applyPreparedFlyingMouseWriteback sends no PUT when the target is still negative', async () => {
+  const puts = [];
+  const client = {
+    async getBySku() { return part({ stock: -5 }); },
+    async putPart(id, payload) { puts.push(payload.stock); }
+  };
+
+  // 飛鼠存檔會把負數正規化為 0，送 −3 等於把 5 個超賣帳無聲抹掉。
+  await assert.rejects(applyPreparedFlyingMouseWriteback({
+    client,
+    event: preparedEvent({ beforeStock: -5, targetStock: -3 }),
+    mode: 'live'
+  }), (error) => error instanceof FlyingMouseWritebackError &&
+    error.code === 'NEGATIVE_TARGET_STOCK' && error.manualReview === true);
+  assert.deepEqual(puts, []);
+});
+
+test('prepareFlyingMouseWriteback refuses to queue a target that stays negative', async () => {
+  const client = { async getBySku() { return part({ stock: -5 }); } };
+
+  await assert.rejects(prepareFlyingMouseWriteback({
+    client,
+    event: pendingEvent({ receivedQuantity: 2 })
+  }), (error) => error instanceof FlyingMouseWritebackError &&
+    error.code === 'NEGATIVE_TARGET_STOCK' && error.manualReview === true);
+
+  // 補得滿就照常準備：−5 收 5 件剛好回到 0。
+  assert.deepEqual(await prepareFlyingMouseWriteback({
+    client,
+    event: pendingEvent({ receivedQuantity: 5 })
+  }), { partId: 933, beforeStock: -5, targetStock: 0 });
 });
 
 test('prepareFlyingMouseWriteback reads an exact SKU and computes before and target', async () => {
