@@ -8,6 +8,7 @@ import { readWritebackEvents } from '../flyingmouse/sheets-writeback.js';
 import {
   DASHBOARD_SYNC_FAILED,
   DASHBOARD_SYNC_OK,
+  SheetHeaderError,
   readCatalogSnapshots,
   readDashboardSyncStatus,
   readPreorderAllowances,
@@ -154,14 +155,32 @@ export async function runInventoryDashboard({
     // 規格第 5 節：失敗時不覆寫看板，保留上一次的數值與最後成功時間。
     const message = safeSyncMessage(error?.message ?? '未知錯誤');
     let previous = null;
+    // 表頭不符代表分頁結構被改過。這時候再按固定位置寫 A2:D2，只會把錯誤摘要
+    // 塞進別的欄、順手清掉最後成功時間——補救動作本身變成第二次破壞。
+    let structurallyBroken = error instanceof SheetHeaderError;
     try {
       previous = await readDashboardSyncStatus({ sheets, spreadsheetId });
     } catch (readError) {
+      if (readError instanceof SheetHeaderError) structurallyBroken = true;
       // 連狀態都讀不到時，寧可讓「最後成功時間」空白，也不要謊報一個時間。
       log(logger, 'warn', {
         component: 'inventory-dashboard',
         status: 'sync-status-unreadable',
         error: safeSyncMessage(readError?.message ?? '未知錯誤')
+      });
+    }
+    if (structurallyBroken) {
+      log(logger, 'error', {
+        component: 'inventory-dashboard',
+        status: 'sheet-structure-broken',
+        error: message
+      });
+      return Object.freeze({
+        ok: false,
+        error: message,
+        lastSuccessAt: previous?.lastSuccessAt ?? '',
+        syncStatus: null,
+        structurallyBroken: true
       });
     }
     let syncStatus = null;
@@ -186,7 +205,8 @@ export async function runInventoryDashboard({
       ok: false,
       error: message,
       lastSuccessAt: previous?.lastSuccessAt ?? '',
-      syncStatus
+      syncStatus,
+      structurallyBroken: false
     });
   }
 }

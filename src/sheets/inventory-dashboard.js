@@ -1,3 +1,5 @@
+import { MAIN_HEADERS } from '../flyingmouse/sheets-review.js';
+
 // 庫存看板的 Google Sheets 讀寫：讀「預購額度」、整張覆寫「庫存看板」。
 // 欄位依 docs/inventory-dashboard-spec.md 第 4.1、4.2 節。
 // 這裡只負責搬資料，數字怎麼算在 src/services/inventory-dashboard.js，兩邊不重複驗證。
@@ -71,10 +73,23 @@ function hasValues(row) {
   return row.some((value) => normalizeText(value) !== '');
 }
 
+// 表頭不符要跟「暫時讀不到」分開：前者代表分頁結構被改過，
+// 任何「寫固定位置」的補救動作都會寫到錯的欄位，必須整個停手。
+export class SheetHeaderError extends Error {
+  constructor(message, sheetName) {
+    super(message);
+    this.name = 'SheetHeaderError';
+    this.sheetName = sheetName;
+  }
+}
+
 export function assertSheetHeaders(actual, expected, sheetName) {
   const normalized = Array.from({ length: expected.length }, (_, index) => String(actual?.[index] ?? ''));
   if (normalized.some((header, index) => header !== expected[index])) {
-    throw new Error(`${sheetName} 表頭不符，預期：${expected.join('、')}；實際：${normalized.join('、')}`);
+    throw new SheetHeaderError(
+      `${sheetName} 表頭不符，預期：${expected.join('、')}；實際：${normalized.join('、')}`,
+      sheetName
+    );
   }
 }
 
@@ -219,21 +234,34 @@ export async function writeInventoryDashboard({ sheets, spreadsheetId, dashboard
 
 // 只取看板要用的三個欄位。庫存快照原樣傳下去：空白或壞值由
 // src/services/inventory-dashboard.js 的 indexCatalog 丟錯，這裡不先猜成 0。
+//
+// 讀之前一定要驗表頭：這裡是用固定欄位序號取值的，庫存快照欄一旦搬家，
+// 第 5 欄若剛好還是整數就會被當成庫存發布出去，缺口整個錯而且沒人會發現。
 export async function readCatalogSnapshots({ sheets, spreadsheetId }) {
   if (!sheets || !spreadsheetId) throw new Error('SKU主檔讀取設定不完整');
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `'${CATALOG_SHEET_NAME}'!A2:N`,
+    range: `'${CATALOG_SHEET_NAME}'!A1:N`,
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
-  return (response.data.values ?? [])
-    .filter((row) => normalizeText(row?.[0]))
-    .map((row) => Object.freeze({
-      sku: normalizeText(row[0]),
+  const values = response.data.values ?? [];
+  assertSheetHeaders(values[0] ?? [], MAIN_HEADERS, CATALOG_SHEET_NAME);
+
+  const rows = [];
+  for (let index = 1; index < values.length; index += 1) {
+    const row = paddedRow(values[index], MAIN_HEADERS.length);
+    if (!hasValues(row)) continue;
+    const sku = normalizeText(row[0]);
+    // 有資料卻沒有 SKU 不可以默默跳過：那一列的庫存就這樣從帳上消失了。
+    if (!sku) throw new Error(`${CATALOG_SHEET_NAME} 第 ${index + 1} 列缺少 SKU`);
+    rows.push(Object.freeze({
+      sku,
       // 補貨顯示名稱優先，沒有才用商品名稱，比照 repository 的 catalogSku。
-      displayName: normalizeText(row[7]) || normalizeText(row[1]) || normalizeText(row[0]),
+      displayName: normalizeText(row[7]) || normalizeText(row[1]) || sku,
       stock: row[4]
     }));
+  }
+  return rows;
 }
 
 export function parseSyncStatusRows(values) {

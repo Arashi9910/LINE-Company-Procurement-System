@@ -36,6 +36,7 @@ function writebackRow(sku, status, overrides = {}) {
 
 function sheetsFor({
   catalog = [],
+  catalogHeaders = MAIN_HEADERS,
   preorder = [[...PREORDER_HEADERS]],
   writeback = [[...WRITEBACK_HEADERS]],
   writebackSequence = null,
@@ -46,7 +47,7 @@ function sheetsFor({
   const calls = { reads: [], updates: [], writebackReads: 0 };
   const rangeValues = (range) => {
     if (failOn && range.includes(failOn)) throw new Error(`讀取 ${failOn} 失敗`);
-    if (range.includes('SKU主檔')) return catalog;
+    if (range.includes('SKU主檔')) return [[...catalogHeaders], ...catalog];
     if (range.includes('預購額度')) return preorder;
     if (range.includes('飛鼠庫存回寫')) {
       const index = calls.writebackReads;
@@ -357,6 +358,79 @@ test('the failure path keeps no last-success time when the status sheet cannot b
   assert.deepEqual(statusWrite(state.calls), [DASHBOARD_SYNC_FAILED, '', UPDATED_AT, '登入失敗']);
 });
 
+test('a swapped 看板同步狀態 header stops every write, including the failure note', async () => {
+  // 使用者把「最後成功時間」和「訊息」對調。照固定位置寫 A2:D2 的話，
+  // 會把錯誤摘要寫進時間欄、順手清掉最後成功時間——補救動作變成第二次破壞。
+  const swapped = [...SYNC_STATUS_HEADERS];
+  [swapped[1], swapped[3]] = [swapped[3], swapped[1]];
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-A', 7)],
+    syncStatus: [swapped, [DASHBOARD_SYNC_OK, '2026-10-29 14:00:00', '2026-10-29 14:00:00', '']]
+  });
+
+  const result = await runInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    readOrders: async () => ({
+      parts: [{ partNo: 'SKU-A', processing: 3, preparing: 0, total: 3 }],
+      orderCounts: { processing: 1, preparing: 0 },
+      driftedOrderIds: []
+    }),
+    listTrackingRows: async () => [],
+    updatedAt: UPDATED_AT,
+    logger: silentLogger
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.structurallyBroken, true);
+  assert.match(result.error, /看板同步狀態 表頭不符/);
+  // 看板沒寫、狀態列也沒寫：結構壞掉時什麼都不碰，交給人去修。
+  assert.deepEqual(state.calls.updates, []);
+});
+
+test('a broken SKU主檔 header also stops the failure note', async () => {
+  const moved = [...MAIN_HEADERS];
+  [moved[4], moved[7]] = [moved[7], moved[4]];
+  const state = sheetsFor({ catalog: [catalogRow('SKU-A', 7)], catalogHeaders: moved });
+
+  const result = await runInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    readOrders: async () => ({ parts: [], orderCounts: { processing: 0, preparing: 0 }, driftedOrderIds: [] }),
+    listTrackingRows: async () => [],
+    updatedAt: UPDATED_AT,
+    logger: silentLogger
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.structurallyBroken, true);
+  assert.deepEqual(state.calls.updates, []);
+});
+
+test('a transient read failure still records the failure note', async () => {
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-A', 7)],
+    syncStatus: [[...SYNC_STATUS_HEADERS], [DASHBOARD_SYNC_OK, '2026-10-29 14:00:00', '2026-10-29 14:00:00', '']]
+  });
+
+  const result = await runInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    readOrders: async () => { throw new Error('飛鼠登入逾時'); },
+    listTrackingRows: async () => [],
+    updatedAt: UPDATED_AT,
+    logger: silentLogger
+  });
+
+  // 表頭沒問題、只是這次失敗 → 照常記錄，並保留最後成功時間。
+  assert.equal(result.ok, false);
+  assert.equal(result.structurallyBroken, false);
+  assert.deepEqual(statusWrite(state.calls), [
+    DASHBOARD_SYNC_FAILED, '2026-10-29 14:00:00', UPDATED_AT, '飛鼠登入逾時'
+  ]);
+  assert.deepEqual(dashboardWrites(state.calls), []);
+});
+
 test('safeSyncMessage truncates at the first sensitive keyword', () => {
   assert.equal(safeSyncMessage('第一行\n第二行\r\n第三行'), '第一行 第二行 第三行');
   // 只遮「關鍵字後面第一個詞」會漏：Bearer 之後、分號之後、引號格式都擋不住。
@@ -377,7 +451,7 @@ test('readCatalogSnapshots prefers 補貨顯示名稱 and passes the stock throu
     catalog: [
       catalogRow('SKU-A', -1, '顯示名稱 A'),
       ['SKU-B', '商品 B', '', '', '', '', '', '', '', '', '', '', '', ''],
-      ['', '空列', '', '', 5, '', '', '', '', '', '', '', '', '']
+      []
     ]
   });
 
@@ -387,7 +461,29 @@ test('readCatalogSnapshots prefers 補貨顯示名稱 and passes the stock throu
     { sku: 'SKU-A', displayName: '顯示名稱 A', stock: -1 },
     { sku: 'SKU-B', displayName: '商品 B', stock: '' }
   ]);
-  assert.deepEqual(state.calls.reads.filter((range) => range.includes('SKU主檔')), ["'SKU主檔'!A2:N"]);
+  // 要從第 1 列讀起才驗得到表頭。
+  assert.deepEqual(state.calls.reads.filter((range) => range.includes('SKU主檔')), ["'SKU主檔'!A1:N"]);
+});
+
+test('readCatalogSnapshots stops when a SKU主檔 column moved', async () => {
+  // 這裡是用固定欄位序號取值的。庫存快照搬到別欄而第 5 欄剛好還是整數時，
+  // 會把別的數字當成庫存發布出去，缺口整個錯而且沒人會發現。
+  const moved = [...MAIN_HEADERS];
+  [moved[4], moved[5]] = [moved[5], moved[4]];
+  const state = sheetsFor({ catalog: [catalogRow('SKU-A', 7)], catalogHeaders: moved });
+
+  await assert.rejects(readCatalogSnapshots({ sheets: state.sheets, spreadsheetId: 'sheet-123' }),
+    /SKU主檔 表頭不符/);
+});
+
+test('readCatalogSnapshots refuses a non-empty row without a SKU', async () => {
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-A', 7), ['', '沒有 SKU 的商品', '', '', 99, '', '', '', '', '', '', '', '', '']]
+  });
+
+  // 默默跳過的話，那一列的庫存就這樣從帳上消失了。
+  await assert.rejects(readCatalogSnapshots({ sheets: state.sheets, spreadsheetId: 'sheet-123' }),
+    /SKU主檔 第 3 列缺少 SKU/);
 });
 
 test('readCatalogSnapshots never writes to SKU主檔', async () => {
