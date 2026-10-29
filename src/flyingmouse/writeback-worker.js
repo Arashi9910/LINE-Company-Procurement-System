@@ -53,9 +53,17 @@ function log(logger, level, data) {
   if (typeof writer === 'function') writer.call(logger, data);
 }
 
+// 只要事件已經保存 partId／更新前／目標庫存，就不可以重算增量。
+// PUT 成功但驗證 GET 失敗時 recordFailure 會把狀態打回「等待重試」，若下一輪用狀態
+// 判斷而重新 prepare，就會從已經加過的庫存再加一次到貨量，等於重複入庫。
+// 規格第 5 節要求這種情況下一輪仍依「已準備」的規則判斷。
+function hasPreparedStock(event) {
+  return event.partId !== '' && event.beforeStock !== '' && event.targetStock !== '';
+}
+
 async function dryRunEvent({ client, event, processedAt }) {
   let prepared = event;
-  if (event.status !== '已準備') {
+  if (!hasPreparedStock(event)) {
     const target = await prepareFlyingMouseWriteback({ client, event });
     prepared = transitionWritebackEvent(event, {
       status: '已準備',
@@ -72,7 +80,8 @@ async function dryRunEvent({ client, event, processedAt }) {
 async function liveEvent({ sheets, spreadsheetId, client, event, processedAt }) {
   let prepared = event;
   const attempts = event.attempts + 1;
-  if (event.status !== '已準備') {
+  const alreadyPrepared = hasPreparedStock(event);
+  if (!alreadyPrepared) {
     const target = await prepareFlyingMouseWriteback({ client, event });
     prepared = transitionWritebackEvent(event, {
       status: '已準備',
@@ -83,15 +92,17 @@ async function liveEvent({ sheets, spreadsheetId, client, event, processedAt }) 
       processedAt
     });
   } else {
+    // 沿用保存過的 before／target；快照在第一次 prepare 時就已經刷新過。
     prepared = transitionWritebackEvent(event, {
       status: '已準備',
       attempts,
+      nextRetryAt: '',
       lastError: '',
       processedAt
     });
   }
   try {
-    if (event.status !== '已準備') {
+    if (!alreadyPrepared) {
       await prepareWritebackEvent({ sheets, spreadsheetId, event: prepared });
     } else {
       await writeWritebackEventState({ sheets, spreadsheetId, event: prepared });

@@ -360,6 +360,41 @@ test('inventory sync writes a negative FlyingMouse stock and still stops on garb
   }), /不是安全整數/);
 });
 
+test('inventory sync leaves an already negative cell alone', async () => {
+  let writes = 0;
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get() {
+          return {
+            data: {
+              values: [
+                MAIN_HEADERS.slice(0, 5),
+                ['SKU-A', '商品 A', '', '', -1]
+              ]
+            }
+          };
+        },
+        async batchUpdate() {
+          writes += 1;
+          return { data: {} };
+        }
+      }
+    }
+  };
+
+  // 主檔現值若只認非負，−1 會被當成「讀不到」，於是每輪都重寫一次同樣的值。
+  const result = await syncInventorySnapshots({
+    sheets,
+    spreadsheetId: 'sheet-123',
+    sourceItems: [source('SKU-A', -1)]
+  });
+
+  assert.equal(result.unchanged, 1);
+  assert.equal(result.updated, 0);
+  assert.equal(writes, 0);
+});
+
 test('inventory sync stops before writes when main coverage is too low', async () => {
   let writes = 0;
   const sheets = {

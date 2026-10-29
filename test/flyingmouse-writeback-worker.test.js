@@ -115,6 +115,94 @@ test('processWritebackQueue prepares, applies, verifies, and completes one live 
   ]);
 });
 
+test('a retry after a successful PUT reuses the saved target instead of adding again', async () => {
+  // PUT 已經把 10 加到 12，但驗證 GET 掛掉，事件被退避成「等待重試」。
+  // 下一輪若依狀態重新 prepare，就會從 12 再加 2 變成 14，等於重複入庫。
+  const waiting = transitionWritebackEvent(
+    transitionWritebackEvent(queueEvent(), {
+      status: '已準備',
+      attempts: 1,
+      partId: 933,
+      beforeStock: 10,
+      targetStock: 12,
+      processedAt: '2026-07-16 10:05:00'
+    }),
+    {
+      status: '等待重試',
+      attempts: 1,
+      nextRetryAt: '2026-07-16 10:10:00',
+      lastError: 'NETWORK_ERROR: 驗證 GET 失敗',
+      processedAt: '2026-07-16 10:05:00'
+    }
+  );
+  const state = sheetsFor(waiting);
+  const puts = [];
+  // 有狀態的假飛鼠：PUT 會真的改掉庫存，重複入庫才看得出來。
+  let stock = 12;
+  const client = {
+    async getBySku() { return part(stock); },
+    async putPart(id, payload) {
+      puts.push(payload.stock);
+      stock = payload.stock;
+    }
+  };
+
+  const result = await processWritebackQueue({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    withClient: async (operation) => operation(client),
+    mode: 'live',
+    now: () => new Date('2026-07-16T02:15:00Z'),
+    logger: silentLogger
+  });
+
+  // 目前庫存已經等於保存的 target，照規格只補登完成，不再 PUT。
+  assert.deepEqual(result, {
+    mode: 'live', found: 1, completed: 1, dryRun: 0, retryScheduled: 0, manualReview: 0, failed: 0
+  });
+  assert.deepEqual(puts, []);
+  assert.equal(stock, 12);
+});
+
+test('a retry whose PUT never landed resends the same target, not a new one', async () => {
+  const waiting = transitionWritebackEvent(
+    transitionWritebackEvent(queueEvent(), {
+      status: '已準備',
+      attempts: 1,
+      partId: 933,
+      beforeStock: 10,
+      targetStock: 12,
+      processedAt: '2026-07-16 10:05:00'
+    }),
+    {
+      status: '等待重試',
+      attempts: 1,
+      nextRetryAt: '2026-07-16 10:10:00',
+      lastError: 'NETWORK_ERROR: PUT 失敗',
+      processedAt: '2026-07-16 10:05:00'
+    }
+  );
+  const state = sheetsFor(waiting);
+  const reads = [part(10), part(12)];
+  const puts = [];
+  const client = {
+    async getBySku() { return reads.shift(); },
+    async putPart(id, payload) { puts.push(payload.stock); }
+  };
+
+  const result = await processWritebackQueue({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    withClient: async (operation) => operation(client),
+    mode: 'live',
+    now: () => new Date('2026-07-16T02:15:00Z'),
+    logger: silentLogger
+  });
+
+  assert.equal(result.completed, 1);
+  assert.deepEqual(puts, [12]);
+});
+
 test('processWritebackQueue dry-run performs no PUT and no Sheet writes', async () => {
   const state = sheetsFor(queueEvent());
   const reads = [part(10), part(10)];

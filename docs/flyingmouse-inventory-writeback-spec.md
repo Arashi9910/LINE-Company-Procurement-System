@@ -123,7 +123,8 @@ export function expectedStock(currentStock, receivedQuantity) {
   - 飛鼠目前庫存等於 `target`：視為前次 PUT 已成功，只補登完成。
   - 飛鼠目前庫存等於 `before`：可安全重送同一個 PUT。
   - 其他數量：狀態改為 `需人工確認`，不再自動修改。
-- PUT 成功但驗證 GET 失敗時保持 `已準備`，下次依上述規則判斷。
+- PUT 成功但驗證 GET 失敗時不得重算增量。事件只要已保存 `partId`／`before`／`target`，
+  下一輪一律沿用該 `target` 依上述規則判斷，即使狀態因退避而是 `等待重試`。
 - 不使用「目前庫存大於等於 target」等模糊條件猜測成功。
 - `SKU主檔` 缺少該 SKU、出現重複 SKU、表頭不符或快照寫入失敗時不得 PUT，事件轉人工確認。
 - dry-run 只計算並輸出安全摘要，不修改 queue、`SKU主檔` 或飛鼠。
@@ -138,7 +139,8 @@ export function expectedStock(currentStock, receivedQuantity) {
   `id`、`no`、`mpn`、`name`、`spec_y`、`spec_x`、`gtin`、`storage_location`、`stock`、`op_remark`。
 - 送出前再次確認貨品 ID、貨號、更新前庫存及目標庫存都是合法值。
 - 不修改名稱、規格、GTIN、儲位、備註、圖片或商品關聯。
-- 缺少 SKU、重複查詢結果、負庫存、非整數庫存、欄位結構改變或 4xx 驗證錯誤一律停止該事件。
+- 庫存可以是負的安全整數（飛鼠超賣的真實值），到貨量必須是正安全整數，相加結果必須仍在安全整數範圍內；負庫存不是停止條件。
+- 缺少 SKU、重複查詢結果、非整數庫存（含 `null`、空字串等會被 `Number()` 變成 0 的值）、欄位結構改變或 4xx 驗證錯誤一律停止該事件。
 
 ## 7. 重試與執行方式
 

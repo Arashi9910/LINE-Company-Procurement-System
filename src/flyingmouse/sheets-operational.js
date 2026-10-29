@@ -324,7 +324,8 @@ export async function syncInventorySnapshots({
   for (const item of matched) {
     const nextStock = sourceBySku.get(item.sku).stock;
     const currentText = String(item.row[4] ?? '').replaceAll(',', '').trim();
-    const currentStock = /^\d+$/.test(currentText) ? Number(currentText) : null;
+    // 主檔現值也可能是負的（飛鼠超賣）；只認非負會讓負庫存列每輪都重寫一次。
+    const currentStock = /^-?\d+$/.test(currentText) ? Number(currentText) : null;
     if (currentStock === nextStock) {
       unchanged += 1;
       continue;
