@@ -404,3 +404,12 @@ export async function readInventoryDashboard({ sheets, spreadsheetId }) {
     syncStatus: parseSyncStatusRows(response.data.valueRanges?.[1]?.values ?? [])
   });
 }
+
+// 開關關閉時回 null，webhook 會回「尚未啟用」。
+// 抽成工廠是為了讓「正式入口到底有沒有接上」變成可測的東西——
+// 整合測試都自己注入假的 reader，接線漏掉的話沒有任何測試會紅。
+export function createDashboardReader({ sheets, spreadsheetId, enabled }) {
+  if (!enabled) return null;
+  if (!sheets || !spreadsheetId) throw new Error('庫存看板讀取器設定不完整');
+  return () => readInventoryDashboard({ sheets, spreadsheetId });
+}

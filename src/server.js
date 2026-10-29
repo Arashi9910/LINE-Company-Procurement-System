@@ -6,11 +6,13 @@ import {
   FlyingmouseCatalogJobRunner,
   FlyingmouseWritebackJobRunner
 } from './services/flyingmouse-catalog-job.js';
+import { createDashboardReader } from './sheets/inventory-dashboard.js';
 import { createGoogleSheetsClient, SheetsRepository } from './sheets/repository.js';
 
 const config = loadConfig();
+const sheets = createGoogleSheetsClient();
 const repository = new SheetsRepository({
-  sheets: createGoogleSheetsClient(),
+  sheets,
   spreadsheetId: config.spreadsheetId,
   flyingmouseWritebackEnabled: config.flyingmouseWritebackEnabled,
   dailyTodosEnabled: config.dailyTodosEnabled,
@@ -35,13 +37,20 @@ const writebackRunner = config.googleCloudProject && config.flyingmouseWriteback
       jobName: config.flyingmouseWritebackJobName
     })
   : undefined;
+// 查缺貨／查庫存 讀的是「庫存看板」分頁。開關關閉時不接，指令會回「尚未啟用」。
+const dashboardReader = createDashboardReader({
+  sheets,
+  spreadsheetId: config.spreadsheetId,
+  enabled: config.inventoryDashboardEnabled
+});
 const app = createApp({
   config,
   repository,
   identityVerifier,
   messenger,
   catalogSyncRunner,
-  writebackRunner
+  writebackRunner,
+  dashboardReader
 });
 
 const server = app.listen(config.port, () => {

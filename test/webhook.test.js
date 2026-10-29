@@ -599,3 +599,29 @@ test('查庫存 without a keyword asks for one instead of listing everything', a
 
   assert.match(calls.texts[0].text, /請輸入要查的 SKU 或關鍵字/);
 });
+
+test('查缺貨 always shows the SKU, even when two names look identical', async (t) => {
+  const sameName = '超長商品名稱超長商品名稱超長商品名稱超長商品名稱';
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => ({
+      syncStatus: { status: '正常', lastSuccessAt: '2026-10-29 17:00:00', lastAttemptAt: '', message: '' },
+      rows: [
+        { sku: 'A-紅', displayName: `${sameName}紅色`, flyingmouseStock: 1, processing: 0, preparing: 0,
+          unshipped: 0, onOrder: 0, preorderAllowance: 0, safetyStock: 0, estimatedStock: 1,
+          gap: 5, status: '要叫貨', note: '', updatedAt: '' },
+        { sku: 'A-藍', displayName: `${sameName}藍色`, flyingmouseStock: 1, processing: 0, preparing: 0,
+          unshipped: 0, onOrder: 0, preorderAllowance: 0, safetyStock: 0, estimatedStock: 1,
+          gap: 3, status: '要叫貨', note: '', updatedAt: '' }
+      ]
+    })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  // 名稱截短後兩筆長得一樣，只有 SKU 分得出要補哪個規格。
+  const reply = calls.texts[0].text;
+  assert.match(reply, /SKU A-紅/);
+  assert.match(reply, /SKU A-藍/);
+});

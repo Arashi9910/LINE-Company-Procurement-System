@@ -100,9 +100,21 @@ export function buildRecentOrderQueryPath({ since, offset, size }) {
 
 export function recentOrderSince(now = new Date(), days = RECENT_ORDER_DAYS) {
   if (!Number.isSafeInteger(days) || days < 1) throw new Error('動銷天數必須是正整數');
-  const date = new Date(now.getTime() - days * 86_400_000);
-  const pad = (value) => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} 00:00:00`;
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new Error('動銷查詢時間不正確');
+  // 先換算成台北的日曆日再往前推。用主機時區的話，UTC 主機在台北凌晨會算成前一天，
+  // 整個查詢窗口偏掉一天（Dockerfile 沒有設 TZ，看板其他地方都明寫 Asia/Taipei）。
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(now);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  // 台灣沒有日光節約，所以在 UTC 上做日曆加減是安全的。
+  const shifted = new Date(Date.UTC(Number(value.year), Number(value.month) - 1, Number(value.day))
+    - days * 86_400_000);
+  const pad = (input) => String(input).padStart(2, '0');
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())} 00:00:00`;
 }
 
 // 只收貨號，不算數量——判定是「有沒有訂單」，不是「賣了幾件」。

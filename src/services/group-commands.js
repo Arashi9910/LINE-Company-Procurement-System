@@ -403,7 +403,9 @@ function inventoryFreshness(syncStatus) {
 
 function inventoryLine(row) {
   const gap = row.gap === null ? '—' : row.gap;
+  // SKU 一定要帶：名稱可能同名或前 24 字相同，只看名稱分不出要補哪個規格。
   return `${compactName(row.displayName || row.sku, 24)}\n`
+    + `　SKU ${row.sku}\n`
     + `　缺口 ${gap}｜未寄 ${row.unshipped}｜叫貨中 ${row.onOrder}｜飛鼠 ${row.flyingmouseStock}`;
 }
 

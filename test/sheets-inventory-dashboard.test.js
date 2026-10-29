@@ -14,11 +14,13 @@ import {
   dashboardRowValues,
   parsePreorderRows,
   parseDashboardRows,
+  createDashboardReader,
   readInventoryDashboard,
   readPreorderAllowances,
   writeInventoryDashboard
 } from '../src/sheets/inventory-dashboard.js';
 import { DASHBOARD_STATUS, buildInventoryDashboard } from '../src/services/inventory-dashboard.js';
+import { readFile } from 'node:fs/promises';
 import { initializeInventoryDashboard } from '../scripts/setup-inventory-dashboard.mjs';
 
 function row(overrides = {}) {
@@ -483,4 +485,33 @@ test('readInventoryDashboard returns the rows and the sync status together', asy
   assert.equal(result.syncStatus.lastSuccessAt, '2026-10-29 13:00:00');
   // 讀取不可以寫任何東西。
   assert.deepEqual(state.calls.updates, []);
+});
+
+test('createDashboardReader honours the feature flag', async () => {
+  assert.equal(createDashboardReader({ sheets: {}, spreadsheetId: 'x', enabled: false }), null);
+  assert.throws(() => createDashboardReader({ sheets: null, spreadsheetId: 'x', enabled: true }),
+    /設定不完整/);
+
+  const state = sheetsFor({
+    dashboard: [
+      [...DASHBOARD_HEADERS],
+      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
+    ]
+  });
+  const reader = createDashboardReader({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    enabled: true
+  });
+  assert.equal(typeof reader, 'function');
+  assert.deepEqual((await reader()).rows.map((row) => row.sku), ['SKU-A']);
+});
+
+test('the production entry point actually wires the dashboard reader', async () => {
+  // 整合測試都自己注入假的 reader，所以「正式入口忘了接」不會讓任何測試變紅——
+  // 實際上線後兩個指令就一律回「尚未啟用」。這條直接看接線。
+  const source = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
+  assert.match(source, /createDashboardReader/);
+  assert.match(source, /enabled: config\.inventoryDashboardEnabled/);
+  assert.match(source, /dashboardReader\s*$/m);
 });

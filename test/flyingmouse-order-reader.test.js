@@ -472,11 +472,21 @@ test('buildRecentOrderQueryPath 擋掉壞掉的起始時間', () => {
   assert.ok(buildRecentOrderQueryPath({ since: '2026-09-29 00:00', offset: 0, size: 200 }));
 });
 
-test('recentOrderSince 回推 N 天的當天零時', () => {
-  assert.equal(recentOrderSince(new Date('2026-10-29T12:00:00'), 30), '2026-09-29 00:00:00');
-  assert.equal(recentOrderSince(new Date('2026-03-05T12:00:00'), 7), '2026-02-26 00:00:00');
+test('recentOrderSince 一律以台北日曆日回推，不受主機時區影響', () => {
+  // 台北 01:00 在 UTC 還是前一天 17:00。用主機時區算的話整個窗口會偏掉一天。
+  assert.equal(recentOrderSince(new Date('2026-10-29T01:00:00+08:00'), 30), '2026-09-29 00:00:00');
+  assert.equal(recentOrderSince(new Date('2026-10-29T23:00:00+08:00'), 30), '2026-09-29 00:00:00');
+  // 同一瞬間用 UTC 表示，結果必須一樣。
+  assert.equal(recentOrderSince(new Date('2026-10-28T17:00:00Z'), 30), '2026-09-29 00:00:00');
+  // 台北剛跨日的那一刻，UTC 還是前一天 16:00。
+  assert.equal(recentOrderSince(new Date('2026-10-29T00:00:01+08:00'), 30), '2026-09-29 00:00:00');
+  assert.equal(recentOrderSince(new Date('2026-10-28T23:59:59+08:00'), 30), '2026-09-28 00:00:00');
+  // 跨月與跨年。
+  assert.equal(recentOrderSince(new Date('2026-03-05T12:00:00+08:00'), 7), '2026-02-26 00:00:00');
+  assert.equal(recentOrderSince(new Date('2027-01-05T12:00:00+08:00'), 30), '2026-12-06 00:00:00');
   assert.equal(RECENT_ORDER_DAYS, 30);
   assert.throws(() => recentOrderSince(new Date(), 0), /正整數/);
+  assert.throws(() => recentOrderSince(new Date('nope'), 30), /時間不正確/);
 });
 
 test('collectOrderedSkus 只看有沒有訂單，取消與棄單不算', () => {
