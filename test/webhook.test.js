@@ -625,3 +625,45 @@ test('查缺貨 always shows the SKU, even when two names look identical', async
   assert.match(reply, /SKU A-紅/);
   assert.match(reply, /SKU A-藍/);
 });
+
+test('查缺貨 hides SKUs that have not moved in 30 days, and says how many', async (t) => {
+  const base = dashboardFixture();
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => ({
+      ...base,
+      rows: [
+        ...base.rows,
+        { sku: 'SKU-TEST', displayName: '新上架測試品', flyingmouseStock: 7, processing: 0,
+          preparing: 0, unshipped: 0, onOrder: 0, preorderAllowance: 10, safetyStock: 0,
+          estimatedStock: 0, gap: 3, status: '要叫貨', note: '', updatedAt: '2026-10-29 17:00:00' }
+      ],
+      // 新品上架一律先填預購額度 10，賣出第一筆就有缺口——但那是測試品。
+      movement: { skus: new Set(['SKU-A']), since: '2026-09-29 00:00:00', updatedAt: '' }
+    })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  const reply = calls.texts[0].text;
+  assert.match(reply, /要叫貨 1 個/);
+  assert.match(reply, /SKU SKU-A/);
+  assert.equal(reply.includes('SKU-TEST'), false, '沒在動的不該列出來');
+  assert.match(reply, /另有 1 個有缺口但近 30 天沒有訂單/);
+});
+
+test('查缺貨 falls back to showing everything when the movement list is unreadable', async (t) => {
+  const base = dashboardFixture();
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => ({ ...base, movement: null })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  // 篩子壞了不該讓人連缺貨都查不到。
+  assert.match(calls.texts[0].text, /要叫貨 1 個/);
+  assert.equal(calls.texts[0].text.includes('近 30 天沒有訂單'), false);
+});

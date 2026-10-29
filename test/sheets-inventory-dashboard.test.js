@@ -8,14 +8,17 @@ import {
   PREORDER_SHEET_NAME,
   SYNC_STATUS_HEADERS,
   SYNC_STATUS_SHEET_NAME,
-  REORDER_ALERT_HEADERS,
-  REORDER_ALERT_SHEET_NAME,
+  MOVEMENT_HEADERS,
+  MOVEMENT_SHEET_NAME,
   DASHBOARD_SYNC_OK,
   DASHBOARD_SYNC_FAILED,
   buildDashboardValues,
   dashboardRowValues,
   parsePreorderRows,
   parseDashboardRows,
+  parseMovementRows,
+  readMovementSkus,
+  writeMovementSkus,
   createDashboardReader,
   readInventoryDashboard,
   readPreorderAllowances,
@@ -48,9 +51,15 @@ function row(overrides = {}) {
   };
 }
 
-function sheetsFor({ dashboard = null, preorder = null, syncStatus = null } = {}) {
+function sheetsFor({
+  dashboard = null,
+  preorder = null,
+  syncStatus = null,
+  movement = [[...MOVEMENT_HEADERS]]
+} = {}) {
   const calls = { updates: [], clears: [], reads: [] };
   const rangeValues = (range) => {
+    if (range.includes(MOVEMENT_SHEET_NAME)) return movement;
     if (range.includes(DASHBOARD_SHEET_NAME)) return dashboard;
     if (range.includes(SYNC_STATUS_SHEET_NAME)) return syncStatus ?? [[...SYNC_STATUS_HEADERS]];
     if (range.includes(PREORDER_SHEET_NAME)) return preorder;
@@ -386,13 +395,13 @@ test('initializeInventoryDashboard creates both sheets with frozen bold headers'
   const result = await initializeInventoryDashboard({ sheets, spreadsheetId: 'sheet-123' });
 
   assert.deepEqual(result, {
-    created: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, REORDER_ALERT_SHEET_NAME],
+    created: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME],
     checked: [],
     changes: 8
   });
   const added = batch.requestBody.requests.filter((entry) => entry.addSheet);
   assert.deepEqual(added.map((entry) => entry.addSheet.properties.title),
-    [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, REORDER_ALERT_SHEET_NAME]);
+    [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME]);
   assert.equal(added[1].addSheet.properties.gridProperties.frozenRowCount, 1);
   assert.equal(added[1].addSheet.properties.gridProperties.columnCount, DASHBOARD_HEADERS.length);
   const headers = batch.requestBody.requests.filter((entry) => entry.updateCells);
@@ -409,7 +418,7 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
   const batches = [];
   const sheets = {
     spreadsheets: {
-      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, REORDER_ALERT_SHEET_NAME]).spreadsheets,
+      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME]).spreadsheets,
       async batchUpdate(request) {
         batches.push(request);
         return { data: {} };
@@ -418,7 +427,7 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
         async get({ range }) {
           if (range.includes(PREORDER_SHEET_NAME)) return { data: { values: [[...PREORDER_HEADERS]] } };
           if (range.includes(SYNC_STATUS_SHEET_NAME)) return { data: { values: [[...SYNC_STATUS_HEADERS]] } };
-          if (range.includes(REORDER_ALERT_SHEET_NAME)) return { data: { values: [[...REORDER_ALERT_HEADERS]] } };
+          if (range.includes(MOVEMENT_SHEET_NAME)) return { data: { values: [[...MOVEMENT_HEADERS]] } };
           return { data: { values: [[...DASHBOARD_HEADERS]] } };
         }
       }
@@ -429,7 +438,7 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
 
   assert.deepEqual(result, {
     created: [],
-    checked: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, REORDER_ALERT_SHEET_NAME],
+    checked: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME],
     changes: 0
   });
   assert.deepEqual(batches, []);
@@ -520,7 +529,7 @@ test('the production entry point actually wires the dashboard reader', async () 
   // createApp 的呼叫裡要真的帶上 dashboardReader 與 sheets（排程端點要用）。
   const call = source.slice(source.indexOf('createApp({'));
   assert.match(call, /\bdashboardReader\b/);
-  assert.match(call, /\bsheets\b/);
+
 });
 
 test('an anomaly survives calc → board → read back → reply, with its reason', async () => {
@@ -551,4 +560,88 @@ test('an anomaly survives calc → board → read back → reply, with its reaso
   assert.match(reply, /SKU SKU-GHOST/);
   assert.match(reply, /不在 SKU主檔/);
   assert.equal(reply.indexOf('SKU SKU-A') < reply.indexOf('異常'), true, '要叫貨要排在異常前面');
+});
+
+test('the movement list round-trips and overwrites the previous one', async () => {
+  const state = sheetsFor({
+    movement: [
+      [...MOVEMENT_HEADERS],
+      ['SKU-OLD-1', '2026-09-01 00:00:00', '2026-10-28 09:00:00'],
+      ['SKU-OLD-2', '2026-09-01 00:00:00', '2026-10-28 09:00:00'],
+      ['SKU-OLD-3', '2026-09-01 00:00:00', '2026-10-28 09:00:00']
+    ]
+  });
+
+  const result = await writeMovementSkus({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    skus: new Set(['SKU-B', 'SKU-A', 'SKU-A']),
+    since: '2026-09-29 00:00:00',
+    updatedAt: '2026-10-29 10:00:00'
+  });
+
+  // 舊的 3 列換成 2 列，多出來的 1 列要被蓋成空白（表頭 + 2 + 1 = 4 列）。
+  assert.deepEqual(result, { skus: 2, clearedRows: 1, since: '2026-09-29 00:00:00' });
+  const sent = state.calls.updates[0];
+  assert.equal(sent.range, "'動銷清單'!A1:C4");
+  assert.deepEqual(sent.values[1], ['SKU-A', '2026-09-29 00:00:00', '2026-10-29 10:00:00']);
+  assert.deepEqual(sent.values[2], ['SKU-B', '2026-09-29 00:00:00', '2026-10-29 10:00:00']);
+  assert.deepEqual(sent.values.slice(3), [['', '', '']]);
+});
+
+test('writeMovementSkus refuses a missing window or a changed header', async () => {
+  const state = sheetsFor();
+  await assert.rejects(writeMovementSkus({
+    sheets: state.sheets, spreadsheetId: 'sheet-123', skus: new Set(['A']), since: '', updatedAt: 'x'
+  }), /缺少起算日或更新時間/);
+
+  const renamed = sheetsFor({ movement: [['SKU', '起算', '更新時間']] });
+  await assert.rejects(writeMovementSkus({
+    sheets: renamed.sheets,
+    spreadsheetId: 'sheet-123',
+    skus: new Set(['A']),
+    since: '2026-09-29 00:00:00',
+    updatedAt: '2026-10-29 10:00:00'
+  }), /動銷清單 表頭不符/);
+  assert.deepEqual(renamed.calls.updates, []);
+});
+
+test('parseMovementRows skips the blanked tail and reports the window', () => {
+  const parsed = parseMovementRows([
+    [...MOVEMENT_HEADERS],
+    ['SKU-A', '2026-09-29 00:00:00', '2026-10-29 10:00:00'],
+    ['SKU-B', '2026-09-29 00:00:00', '2026-10-29 10:00:00'],
+    ['', '', '']
+  ]);
+  assert.deepEqual([...parsed.skus], ['SKU-A', 'SKU-B']);
+  assert.equal(parsed.since, '2026-09-29 00:00:00');
+  assert.throws(() => parseMovementRows([[...MOVEMENT_HEADERS], ['', '2026-09-29', 'x']]),
+    /第 2 列缺少 SKU/);
+});
+
+test('readInventoryDashboard tolerates a missing movement sheet', async () => {
+  const state = sheetsFor({
+    dashboard: [
+      [...DASHBOARD_HEADERS],
+      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
+    ],
+    movement: [['壞掉的表頭']]
+  });
+
+  const result = await readInventoryDashboard({ sheets: state.sheets, spreadsheetId: 'sheet-123' });
+
+  // 動銷清單只是篩子，壞了不該讓人連缺貨都查不到。
+  assert.equal(result.movement, null);
+  assert.deepEqual(result.rows.map((row) => row.sku), ['SKU-A']);
+});
+
+test('readMovementSkus reads the whole column, not a fixed budget', async () => {
+  const state = sheetsFor({
+    movement: [[...MOVEMENT_HEADERS], ['SKU-A', '2026-09-29 00:00:00', '2026-10-29 10:00:00']]
+  });
+
+  const result = await readMovementSkus({ sheets: state.sheets, spreadsheetId: 'sheet-123' });
+
+  assert.deepEqual(state.calls.reads.filter((range) => range.includes('動銷清單')), ["'動銷清單'!A:C"]);
+  assert.deepEqual([...result.skus], ['SKU-A']);
 });

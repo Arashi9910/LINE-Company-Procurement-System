@@ -3,7 +3,6 @@ import { timingSafeEqual } from 'node:crypto';
 import { AuthenticationError } from '../errors.js';
 import { runReminders } from '../services/reminders.js';
 import { runDailyTodos } from '../services/daily-todos.js';
-import { runReorderAlerts } from '../services/reorder-alert-job.js';
 
 function validJobToken(request, expected) {
   const match = (request.get('authorization') ?? '').match(/^Bearer\s+(.+)$/i);
@@ -14,7 +13,7 @@ function validJobToken(request, expected) {
   return actual.length === wanted.length && timingSafeEqual(actual, wanted);
 }
 
-export function createJobsRouter({ config, repository, messenger, sheets = null, readRecentlyOrdered = null }) {
+export function createJobsRouter({ config, repository, messenger }) {
   const router = Router();
   router.post('/daily-todos/:slot', async (request, response, next) => {
     try {
@@ -33,26 +32,6 @@ export function createJobsRouter({ config, repository, messenger, sheets = null,
     try {
       if (!validJobToken(request, config.jobToken)) throw new AuthenticationError('排程驗證失敗');
       response.json(await runReminders({ repository, messenger }));
-    } catch (error) {
-      next(error);
-    }
-  });
-  // 推播時間由 Cloud Scheduler 決定（待老闆決定），這裡只負責「被叫到就跑一次」。
-  router.post('/reorder-alerts', async (request, response, next) => {
-    try {
-      if (!validJobToken(request, config.jobToken)) throw new AuthenticationError('排程驗證失敗');
-      if (!config.inventoryDashboardEnabled || !sheets) {
-        response.json({ skipped: 'disabled', sent: 0 });
-        return;
-      }
-      response.json(await runReorderAlerts({
-        sheets,
-        spreadsheetId: config.spreadsheetId,
-        repository,
-        messenger,
-        readRecentlyOrdered,
-        logger: console
-      }));
     } catch (error) {
       next(error);
     }

@@ -9,10 +9,10 @@ import {
   DASHBOARD_SHEET_NAME,
   PREORDER_HEADERS,
   PREORDER_ROW_COUNT,
+  MOVEMENT_HEADERS,
+  MOVEMENT_ROW_COUNT,
+  MOVEMENT_SHEET_NAME,
   PREORDER_SHEET_NAME,
-  REORDER_ALERT_HEADERS,
-  REORDER_ALERT_ROW_COUNT,
-  REORDER_ALERT_SHEET_NAME,
   SYNC_STATUS_HEADERS,
   SYNC_STATUS_ROW_COUNT,
   SYNC_STATUS_SHEET_NAME,
@@ -44,12 +44,12 @@ export const DASHBOARD_TABLES = Object.freeze([
     rowCount: SYNC_STATUS_ROW_COUNT,
     manual: false
   }),
-  // 叫貨提醒的去重基準：記「今天已經提醒到哪個缺口」，缺口變大才會再推。
+  // 近 30 天有訂單的貨號。只有每小時的 Job 進得去飛鼠，web 服務讀這張來篩 查缺貨。
   Object.freeze({
     sheetId: 1720000003,
-    name: REORDER_ALERT_SHEET_NAME,
-    headers: REORDER_ALERT_HEADERS,
-    rowCount: REORDER_ALERT_ROW_COUNT,
+    name: MOVEMENT_SHEET_NAME,
+    headers: MOVEMENT_HEADERS,
+    rowCount: MOVEMENT_ROW_COUNT,
     manual: false
   })
 ]);

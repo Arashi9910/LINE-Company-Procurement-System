@@ -50,8 +50,7 @@ const app = createApp({
   messenger,
   catalogSyncRunner,
   writebackRunner,
-  dashboardReader,
-  sheets
+  dashboardReader
 });
 
 const server = app.listen(config.port, () => {

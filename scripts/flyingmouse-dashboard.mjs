@@ -7,7 +7,11 @@ import {
   loadFlyingMouseConfigFromEnv
 } from '../src/flyingmouse/credentials.js';
 import { withAuthenticatedFlyingMousePage } from '../src/flyingmouse/exporter.js';
-import { createFlyingMouseOrderClient, readOpenOrderQuantities } from '../src/flyingmouse/order-reader.js';
+import {
+  createFlyingMouseOrderClient,
+  readOpenOrderQuantities,
+  readRecentlyOrderedSkus
+} from '../src/flyingmouse/order-reader.js';
 import { timestampInTaipei } from '../src/flyingmouse/sheets-writeback.js';
 import { createGoogleSheetsClient, SheetsRepository } from '../src/sheets/repository.js';
 import { runInventoryDashboard } from '../src/services/inventory-dashboard-job.js';
@@ -101,7 +105,8 @@ export async function runFlyingMouseDashboard(options, {
   const sheets = sheetsFactory();
   const repository = repositoryFactory({ sheets, spreadsheetId: options.spreadsheetId });
 
-  const readOrders = async () => {
+  // 兩次查詢共用一次登入：未寄訂單（不帶日期）與近 30 天動銷（帶日期）。
+  const withOrderClient = async (operation) => {
     const config = await configFactory({ options, env });
     return withAuthenticatedPage({
       config,
@@ -113,14 +118,18 @@ export async function runFlyingMouseDashboard(options, {
         if (route.request().method() !== 'GET') return route.abort();
         return route.continue();
       });
-      return readOpenOrderQuantities(orderClientFactory(page), { logger });
+      return operation(orderClientFactory(page));
     });
   };
+  const readOrders = () => withOrderClient((client) => readOpenOrderQuantities(client, { logger }));
+  const readRecentlyOrdered = () => withOrderClient((client) =>
+    readRecentlyOrderedSkus(client, { now: now(), logger }));
 
   return runInventoryDashboard({
     sheets,
     spreadsheetId: options.spreadsheetId,
     readOrders,
+    readRecentlyOrdered,
     listTrackingRows: () => repository.listRequestRows(),
     updatedAt: timestampInTaipei(now()),
     logger

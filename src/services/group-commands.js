@@ -423,6 +423,12 @@ export function formatShortageReply(dashboard) {
   const reorder = all.filter((row) => row.status === '要叫貨').sort(byGapDescending);
   const anomaly = all.filter((row) => row.status !== '要叫貨').sort(byGapDescending);
 
+  // 動銷篩選（使用者決定）：新品一律先填預購額度 10，賣出第一筆就會算出缺口，
+  // 但那是測試品，不該跟真正在動的商品混在一起報。清單讀不到就不篩。
+  const moving = dashboard?.movement?.skus ?? null;
+  const active = moving ? reorder.filter((row) => moving.has(row.sku)) : reorder;
+  const quiet = moving ? reorder.length - active.length : 0;
+
   if (all.length === 0) {
     const blocked = (dashboard?.rows ?? []).filter((row) => row.status === '回寫未完成').length;
     const tail = blocked > 0 ? `\n（另有 ${blocked} 個貨號因回寫未完成暫不計算）` : '';
@@ -430,12 +436,17 @@ export function formatShortageReply(dashboard) {
   }
 
   const sections = [];
-  if (reorder.length > 0) {
-    const shown = reorder.slice(0, INVENTORY_REPLY_LIMIT);
-    const more = reorder.length > shown.length
-      ? `\n…還有 ${reorder.length - shown.length} 個，詳見「庫存看板」分頁`
+  if (active.length > 0) {
+    const shown = active.slice(0, INVENTORY_REPLY_LIMIT);
+    const more = active.length > shown.length
+      ? `\n…還有 ${active.length - shown.length} 個，詳見「庫存看板」分頁`
       : '';
-    sections.push(`要叫貨 ${reorder.length} 個：\n${shown.map(inventoryLine).join('\n')}${more}`);
+    sections.push(`要叫貨 ${active.length} 個：\n${shown.map(inventoryLine).join('\n')}${more}`);
+  } else if (anomaly.length === 0) {
+    sections.push('目前沒有要叫貨的品項。');
+  }
+  if (quiet > 0) {
+    sections.push(`（另有 ${quiet} 個有缺口但近 30 天沒有訂單，未列出）`);
   }
   if (anomaly.length > 0) {
     const shown = anomaly.slice(0, INVENTORY_REPLY_LIMIT);
