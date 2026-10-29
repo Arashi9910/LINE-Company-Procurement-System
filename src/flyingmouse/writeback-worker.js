@@ -7,6 +7,7 @@ import {
   completeWritebackEvent,
   listProcessableWritebacks,
   prepareWritebackEvent,
+  resumeWritebackEvent,
   timestampInTaipei,
   transitionWritebackEvent,
   writeWritebackEventState
@@ -80,7 +81,8 @@ async function dryRunEvent({ client, event, processedAt }) {
 async function liveEvent({ sheets, spreadsheetId, client, event, processedAt }) {
   let prepared = event;
   const attempts = event.attempts + 1;
-  if (!hasPreparedStock(event)) {
+  const alreadyPrepared = hasPreparedStock(event);
+  if (!alreadyPrepared) {
     const target = await prepareFlyingMouseWriteback({ client, event });
     prepared = transitionWritebackEvent(event, {
       status: '已準備',
@@ -101,10 +103,13 @@ async function liveEvent({ sheets, spreadsheetId, client, event, processedAt }) 
     });
   }
   try {
-    // 每次送出 PUT 前都要先過 prepareWritebackEvent 的主檔檢查（表頭、SKU 唯一），
-    // 規格第 5 節：主檔缺少該 SKU、重複或表頭不符時不得 PUT。
-    // 快照一律刷成 beforeStock，完成時再由 completeWritebackEvent 寫成 targetStock。
-    await prepareWritebackEvent({ sheets, spreadsheetId, event: prepared });
+    // 兩條路徑都會先檢查主檔表頭與 SKU 唯一性，規格第 5 節：檢查不過不得 PUT。
+    // 差別只在快照：第一次準備要把 beforeStock 寫進快照；重送則不可倒寫歷史值。
+    if (alreadyPrepared) {
+      await resumeWritebackEvent({ sheets, spreadsheetId, event: prepared });
+    } else {
+      await prepareWritebackEvent({ sheets, spreadsheetId, event: prepared });
+    }
     const result = await applyPreparedFlyingMouseWriteback({ client, event: prepared, mode: 'live' });
     await completeWritebackEvent({
       sheets,

@@ -491,6 +491,22 @@ export async function prepareWritebackEvent({ sheets, spreadsheetId, event }) {
   return prepared;
 }
 
+// 重送已保存 before／target 的事件：主檔檢查照做（規格第 5 節，檢查不過不得 PUT），
+// 但不可把快照倒寫成歷史的 beforeStock——期間的目錄同步可能已經寫入更新的值，
+// 倒寫之後若這一輪又失敗，主檔就會一直停在舊值。成功時由 completeWritebackEvent 寫 target。
+export async function resumeWritebackEvent({ sheets, spreadsheetId, event }) {
+  if (!sheets || !spreadsheetId) throw new Error('飛鼠庫存回寫重送設定不完整');
+  const prepared = normalizeEvent(event);
+  if (prepared.status !== '已準備') throw new Error('只有已準備事件可以重送回寫');
+  await findMainSkuRow({
+    sheets,
+    spreadsheetId,
+    sku: prepared.sku,
+    operation: '重送回寫'
+  });
+  return writeWritebackEventState({ sheets, spreadsheetId, event: prepared });
+}
+
 export async function completeWritebackEvent({ sheets, spreadsheetId, event, completedAt }) {
   if (!sheets || !spreadsheetId) throw new Error('飛鼠庫存回寫完成設定不完整');
   const completed = transitionWritebackEvent(event, {

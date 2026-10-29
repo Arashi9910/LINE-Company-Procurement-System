@@ -270,6 +270,72 @@ test('a retry with a saved target still refuses to PUT when SKU主檔 is broken'
   }
 });
 
+test('a failing retry never rolls SKU主檔 back to the saved beforeStock', async () => {
+  // PUT 已經把 −5 加到 −3，驗證 GET 失敗；期間目錄同步已把主檔寫成 −3。
+  const waiting = transitionWritebackEvent(
+    transitionWritebackEvent(queueEvent(), {
+      status: '已準備',
+      attempts: 1,
+      partId: 933,
+      beforeStock: -5,
+      targetStock: -3,
+      processedAt: '2026-07-16 10:05:00'
+    }),
+    {
+      status: '等待重試',
+      attempts: 1,
+      nextRetryAt: '2026-07-16 10:10:00',
+      lastError: 'NETWORK_ERROR: 驗證 GET 失敗',
+      processedAt: '2026-07-16 10:05:00'
+    }
+  );
+  const mainWrites = [];
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          if (range.includes('飛鼠庫存回寫')) {
+            return { data: { values: [WRITEBACK_HEADERS, writebackEventRow(waiting)] } };
+          }
+          if (range.includes('SKU主檔')) {
+            return { data: { values: [MAIN_HEADERS.slice(0, 5), ['SKU-A', '商品 A', '', '', -3]] } };
+          }
+          throw new Error(`unexpected range: ${range}`);
+        },
+        async update() { return { data: {} }; },
+        async batchUpdate(request) {
+          for (const entry of request.requestBody.data ?? []) {
+            if (String(entry.range).includes('SKU主檔')) mainWrites.push(entry.values[0][0]);
+          }
+          return { data: {} };
+        }
+      }
+    }
+  };
+  const client = {
+    async getBySku() {
+      throw new FlyingMouseWritebackError('暫時無法讀取飛鼠', {
+        code: 'NETWORK_ERROR',
+        retryable: true
+      });
+    },
+    async putPart() { throw new Error('不該送出 PUT'); }
+  };
+
+  const result = await processWritebackQueue({
+    sheets,
+    spreadsheetId: 'sheet-123',
+    withClient: async (operation) => operation(client),
+    mode: 'live',
+    now: () => new Date('2026-07-16T02:15:00Z'),
+    logger: silentLogger
+  });
+
+  assert.equal(result.retryScheduled, 1);
+  // 重送只檢查主檔，不可把快照倒寫回 −5；否則這輪失敗後主檔就一直停在舊值。
+  assert.deepEqual(mainWrites, []);
+});
+
 test('processWritebackQueue dry-run performs no PUT and no Sheet writes', async () => {
   const state = sheetsFor(queueEvent());
   const reads = [part(10), part(10)];
