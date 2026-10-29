@@ -8,6 +8,8 @@ import {
   PREORDER_SHEET_NAME,
   SYNC_STATUS_HEADERS,
   SYNC_STATUS_SHEET_NAME,
+  DASHBOARD_SYNC_OK,
+  DASHBOARD_SYNC_FAILED,
   buildDashboardValues,
   dashboardRowValues,
   parsePreorderRows,
@@ -39,19 +41,34 @@ function row(overrides = {}) {
   };
 }
 
-function sheetsFor({ dashboard = null, preorder = null } = {}) {
+function sheetsFor({ dashboard = null, preorder = null, syncStatus = null } = {}) {
   const calls = { updates: [], clears: [], reads: [] };
+  const rangeValues = (range) => {
+    if (range.includes(DASHBOARD_SHEET_NAME)) return dashboard;
+    if (range.includes(SYNC_STATUS_SHEET_NAME)) return syncStatus ?? [[...SYNC_STATUS_HEADERS]];
+    if (range.includes(PREORDER_SHEET_NAME)) return preorder;
+    throw new Error(`unexpected range: ${range}`);
+  };
   const sheets = {
     spreadsheets: {
       values: {
         async get({ range }) {
           calls.reads.push(range);
-          if (range.includes(DASHBOARD_SHEET_NAME)) return { data: { values: dashboard } };
-          if (range.includes(PREORDER_SHEET_NAME)) return { data: { values: preorder } };
-          throw new Error(`unexpected range: ${range}`);
+          return { data: { values: rangeValues(range) } };
+        },
+        async batchGet({ ranges }) {
+          calls.reads.push(...ranges);
+          return { data: { valueRanges: ranges.map((range) => ({ values: rangeValues(range) })) } };
         },
         async update(request) {
-          calls.updates.push(request);
+          calls.updates.push({ range: request.range, values: request.requestBody.values });
+          return { data: {} };
+        },
+        async batchUpdate(request) {
+          calls.updates.push(...request.requestBody.data.map((entry) => ({
+            range: entry.range,
+            values: entry.values
+          })));
           return { data: {} };
         },
         // clear 只留著當警報器：整張覆寫是一次寫入，不該再有人呼叫它。
@@ -63,6 +80,17 @@ function sheetsFor({ dashboard = null, preorder = null } = {}) {
     }
   };
   return { sheets, calls };
+}
+
+const OK_STATUS = Object.freeze({
+  status: DASHBOARD_SYNC_OK,
+  lastSuccessAt: '2026-10-29 14:00:00',
+  lastAttemptAt: '2026-10-29 14:00:00',
+  message: ''
+});
+
+function boardWrite(calls) {
+  return calls.updates.find((entry) => entry.range.includes(DASHBOARD_SHEET_NAME));
 }
 
 test('preorder headers and dashboard headers match the spec', () => {
@@ -164,24 +192,27 @@ test('writeInventoryDashboard replaces a shrinking table in one request', async 
   const result = await writeInventoryDashboard({
     sheets: state.sheets,
     spreadsheetId: 'sheet-123',
-    dashboard: { rows: [row()], updatedAt: '2026-10-29 14:00:00' }
+    dashboard: { rows: [row()], updatedAt: '2026-10-29 14:00:00' },
+    syncStatus: OK_STATUS
   });
 
   assert.deepEqual(result, {
     sheet: DASHBOARD_SHEET_NAME,
     rows: 1,
     clearedRows: 2,
-    updatedAt: '2026-10-29 14:00:00'
+    updatedAt: '2026-10-29 14:00:00',
+    syncStatus: OK_STATUS
   });
   // 分成寫入與清除兩次請求的話，中間失敗會留下 C、B、C 這種新舊混合的看板。
-  assert.equal(state.calls.updates.length, 1);
+  // 看板與同步狀態在同一次 batchUpdate 裡，所以是兩筆 range、一次請求。
+  assert.deepEqual(state.calls.updates.map((entry) => entry.range),
+    ["'庫存看板'!A1:N4", "'看板同步狀態'!A2:D2"]);
   assert.deepEqual(state.calls.clears, []);
-  const sent = state.calls.updates[0];
-  assert.equal(sent.range, "'庫存看板'!A1:N4");
-  assert.deepEqual(sent.requestBody.values[0], [...DASHBOARD_HEADERS]);
-  assert.equal(sent.requestBody.values[1][0], 'SKU-A');
+  const sent = boardWrite(state.calls);
+  assert.deepEqual(sent.values[0], [...DASHBOARD_HEADERS]);
+  assert.equal(sent.values[1][0], 'SKU-A');
   // 多出來的兩列在同一次寫入裡被蓋成整列空白，不是留著舊值。
-  assert.deepEqual(sent.requestBody.values.slice(2), [
+  assert.deepEqual(sent.values.slice(2), [
     DASHBOARD_HEADERS.map(() => ''),
     DASHBOARD_HEADERS.map(() => '')
   ]);
@@ -193,13 +224,14 @@ test('writeInventoryDashboard pads nothing when the table grew', async () => {
   const result = await writeInventoryDashboard({
     sheets: state.sheets,
     spreadsheetId: 'sheet-123',
-    dashboard: { rows: [row(), row({ sku: 'SKU-B' })], updatedAt: '2026-10-29 14:00:00' }
+    dashboard: { rows: [row(), row({ sku: 'SKU-B' })], updatedAt: '2026-10-29 14:00:00' },
+    syncStatus: OK_STATUS
   });
 
   assert.equal(result.clearedRows, 0);
   assert.deepEqual(state.calls.clears, []);
-  assert.equal(state.calls.updates[0].requestBody.values.length, 3);
-  assert.equal(state.calls.updates[0].range, "'庫存看板'!A1:N3");
+  assert.equal(boardWrite(state.calls).values.length, 3);
+  assert.equal(boardWrite(state.calls).range, "'庫存看板'!A1:N3");
 });
 
 test('writeInventoryDashboard empties every old row when nothing qualifies', async () => {
@@ -210,11 +242,12 @@ test('writeInventoryDashboard empties every old row when nothing qualifies', asy
   const result = await writeInventoryDashboard({
     sheets: state.sheets,
     spreadsheetId: 'sheet-123',
-    dashboard: { rows: [], updatedAt: '2026-10-29 14:00:00' }
+    dashboard: { rows: [], updatedAt: '2026-10-29 14:00:00' },
+    syncStatus: OK_STATUS
   });
 
   assert.equal(result.rows, 0);
-  assert.deepEqual(state.calls.updates[0].requestBody.values, [
+  assert.deepEqual(boardWrite(state.calls).values, [
     [...DASHBOARD_HEADERS],
     DASHBOARD_HEADERS.map(() => '')
   ]);
@@ -226,7 +259,8 @@ test('writeInventoryDashboard refuses a missing sheet or a changed header', asyn
   await assert.rejects(writeInventoryDashboard({
     sheets: missing.sheets,
     spreadsheetId: 'sheet-123',
-    dashboard: { rows: [row()], updatedAt: '2026-10-29 14:00:00' }
+    dashboard: { rows: [row()], updatedAt: '2026-10-29 14:00:00' },
+    syncStatus: OK_STATUS
   }), /庫存看板 表頭不符/);
   assert.deepEqual(missing.calls.updates, []);
 
@@ -234,9 +268,38 @@ test('writeInventoryDashboard refuses a missing sheet or a changed header', asyn
   await assert.rejects(writeInventoryDashboard({
     sheets: renamed.sheets,
     spreadsheetId: 'sheet-123',
-    dashboard: { rows: [row()], updatedAt: '2026-10-29 14:00:00' }
+    dashboard: { rows: [row()], updatedAt: '2026-10-29 14:00:00' },
+    syncStatus: OK_STATUS
   }), /庫存看板 表頭不符/);
   assert.deepEqual(renamed.calls.updates, []);
+});
+
+test('writeInventoryDashboard also refuses when 看板同步狀態 is missing or renamed', async () => {
+  const state = sheetsFor({
+    dashboard: [[...DASHBOARD_HEADERS]],
+    syncStatus: [['狀態', '最後成功', '最後嘗試時間', '訊息']]
+  });
+
+  await assert.rejects(writeInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    dashboard: { rows: [row()], updatedAt: '2026-10-29 14:00:00' },
+    syncStatus: OK_STATUS
+  }), /看板同步狀態 表頭不符/);
+  // 兩張分頁的表頭都要先驗過，不可以只驗一張就把看板寫下去。
+  assert.deepEqual(state.calls.updates, []);
+});
+
+test('writeInventoryDashboard refuses to publish a failed status', async () => {
+  const state = sheetsFor({ dashboard: [[...DASHBOARD_HEADERS]] });
+
+  await assert.rejects(writeInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    dashboard: { rows: [row()], updatedAt: '2026-10-29 14:00:00' },
+    syncStatus: { ...OK_STATUS, status: DASHBOARD_SYNC_FAILED }
+  }), /只接受成功狀態/);
+  assert.deepEqual(state.calls.updates, []);
 });
 
 test('writeInventoryDashboard refuses to exceed the sheet row budget', async () => {
@@ -246,7 +309,8 @@ test('writeInventoryDashboard refuses to exceed the sheet row budget', async () 
   await assert.rejects(writeInventoryDashboard({
     sheets: state.sheets,
     spreadsheetId: 'sheet-123',
-    dashboard: { rows, updatedAt: '2026-10-29 14:00:00' }
+    dashboard: { rows, updatedAt: '2026-10-29 14:00:00' },
+    syncStatus: OK_STATUS
   }), /超過上限 5000/);
   assert.deepEqual(state.calls.updates, []);
 });
@@ -268,10 +332,11 @@ test('the sheet layer carries a real dashboard end to end', async () => {
   await writeInventoryDashboard({
     sheets: state.sheets,
     spreadsheetId: 'sheet-123',
-    dashboard
+    dashboard,
+    syncStatus: OK_STATUS
   });
 
-  assert.deepEqual(state.calls.updates[0].requestBody.values[1], [
+  assert.deepEqual(boardWrite(state.calls).values[1], [
     'SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '目前不能關閉預購，還差 3 個', '2026-10-29 14:00:00'
   ]);
 });

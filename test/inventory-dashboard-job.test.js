@@ -38,26 +38,46 @@ function sheetsFor({
   catalog = [],
   preorder = [[...PREORDER_HEADERS]],
   writeback = [[...WRITEBACK_HEADERS]],
+  writebackSequence = null,
   dashboard = [[...DASHBOARD_HEADERS]],
   syncStatus = [[...SYNC_STATUS_HEADERS]],
   failOn = null
 } = {}) {
-  const calls = { reads: [], updates: [] };
+  const calls = { reads: [], updates: [], writebackReads: 0 };
+  const rangeValues = (range) => {
+    if (failOn && range.includes(failOn)) throw new Error(`讀取 ${failOn} 失敗`);
+    if (range.includes('SKU主檔')) return catalog;
+    if (range.includes('預購額度')) return preorder;
+    if (range.includes('飛鼠庫存回寫')) {
+      const index = calls.writebackReads;
+      calls.writebackReads += 1;
+      if (!writebackSequence) return writeback;
+      return writebackSequence[Math.min(index, writebackSequence.length - 1)];
+    }
+    if (range.includes('庫存看板')) return dashboard;
+    if (range.includes('看板同步狀態')) return syncStatus;
+    throw new Error(`unexpected range: ${range}`);
+  };
   const sheets = {
     spreadsheets: {
       values: {
         async get({ range }) {
           calls.reads.push(range);
-          if (failOn && range.includes(failOn)) throw new Error(`讀取 ${failOn} 失敗`);
-          if (range.includes('SKU主檔')) return { data: { values: catalog } };
-          if (range.includes('預購額度')) return { data: { values: preorder } };
-          if (range.includes('飛鼠庫存回寫')) return { data: { values: writeback } };
-          if (range.includes('庫存看板')) return { data: { values: dashboard } };
-          if (range.includes('看板同步狀態')) return { data: { values: syncStatus } };
-          throw new Error(`unexpected range: ${range}`);
+          return { data: { values: rangeValues(range) } };
+        },
+        async batchGet({ ranges }) {
+          calls.reads.push(...ranges);
+          return { data: { valueRanges: ranges.map((range) => ({ values: rangeValues(range) })) } };
         },
         async update(request) {
-          calls.updates.push(request);
+          calls.updates.push({ range: request.range, values: request.requestBody.values });
+          return { data: {} };
+        },
+        async batchUpdate(request) {
+          calls.updates.push(...request.requestBody.data.map((entry) => ({
+            range: entry.range,
+            values: entry.values
+          })));
           return { data: {} };
         }
       }
@@ -71,7 +91,7 @@ function dashboardWrites(calls) {
 }
 
 function statusWrite(calls) {
-  return calls.updates.find((entry) => entry.range.includes('看板同步狀態'))?.requestBody.values[0];
+  return calls.updates.find((entry) => entry.range.includes('看板同步狀態'))?.values[0];
 }
 
 const silentLogger = { info() {}, warn() {}, error() {} };
@@ -109,7 +129,7 @@ test('runInventoryDashboard writes the board and marks the sync successful', asy
   assert.equal(result.ok, true);
   assert.equal(result.rows, 1);
   // 規格第 3 節商品 A「賣 3」：飛鼠 7、未寄 3、推算實際 0、缺口 3。
-  const written = dashboardWrites(state.calls)[0].requestBody.values;
+  const written = dashboardWrites(state.calls)[0].values;
   assert.deepEqual(written[1].slice(0, 12),
     ['SKU-A', '商品 SKU-A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨']);
   assert.deepEqual(statusWrite(state.calls), [DASHBOARD_SYNC_OK, UPDATED_AT, UPDATED_AT, '']);
@@ -140,7 +160,7 @@ test('runInventoryDashboard suppresses a SKU that still has an unfinished writeb
     });
 
     assert.equal(result.writebackPendingSkus, 1, `${status} 應該被擋下來`);
-    const row = dashboardWrites(state.calls)[0].requestBody.values[1];
+    const row = dashboardWrites(state.calls)[0].values[1];
     assert.equal(row[11], '回寫未完成', `${status} 的狀態欄不對`);
     // 缺口與推算實際要空白，不可寫 0——寫 0 在看板上看起來就是「不缺貨」。
     assert.equal(row[9], '', `${status} 的推算實際庫存應該空白`);
@@ -163,7 +183,67 @@ test('runInventoryDashboard never reads the processable-only writeback view', as
   // listProcessableWritebacks 會跳過還沒到期的重試、不回需人工確認、還有批次上限，
   // 代表不了「所有未完成的回寫」，所以整張讀。
   const writebackReads = state.calls.reads.filter((range) => range.includes('飛鼠庫存回寫'));
-  assert.deepEqual(writebackReads, ["'飛鼠庫存回寫'!A1:O5000"]);
+  // 一輪讀兩次：讀其他分頁之前與之後各一次，用來偵測讀取途中的變動。
+  assert.deepEqual(writebackReads, ["'飛鼠庫存回寫'!A1:O5000", "'飛鼠庫存回寫'!A1:O5000"]);
+});
+
+test('a receipt landing mid-read makes the round start over, not publish a half snapshot', async () => {
+  // 登記到貨會在同一批 update 裡把補貨追蹤的未到量減掉、並附上一筆回寫事件。
+  // 如果先讀到「沒有待回寫事件」、再讀到「未到量已歸零」，就會發布一個
+  // 該被「回寫未完成」擋下來的缺口——飛鼠庫存還沒回寫加上去，缺口整個高估。
+  const empty = [[...WRITEBACK_HEADERS]];
+  const withEvent = [[...WRITEBACK_HEADERS], writebackRow('SKU-A', '待處理')];
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-A', 7)],
+    preorder: [[...PREORDER_HEADERS], ['SKU-A', 10, '', '', '', '']],
+    // 第 1 輪：讀前沒事件、讀後有事件（到貨剛落地）→ 必須重讀。
+    // 第 2 輪：前後都有事件 → 一致，採用。
+    writebackSequence: [empty, withEvent, withEvent, withEvent]
+  });
+
+  const result = await runInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    readOrders: async () => ({
+      parts: [{ partNo: 'SKU-A', processing: 3, preparing: 0, total: 3 }],
+      orderCounts: { processing: 1, preparing: 0 },
+      driftedOrderIds: []
+    }),
+    listTrackingRows: async () => [],
+    updatedAt: UPDATED_AT,
+    logger: silentLogger
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.writebackPendingSkus, 1);
+  assert.equal(state.calls.writebackReads, 4);
+  assert.equal(dashboardWrites(state.calls)[0].values[1][11], '回寫未完成');
+});
+
+test('a queue that keeps changing gives up instead of publishing', async () => {
+  const empty = [[...WRITEBACK_HEADERS]];
+  const withEvent = [[...WRITEBACK_HEADERS], writebackRow('SKU-A', '待處理')];
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-A', 7)],
+    // 每一輪的前後都不一樣，三輪都失敗。
+    writebackSequence: [empty, withEvent, empty, withEvent, empty, withEvent],
+    syncStatus: [[...SYNC_STATUS_HEADERS], [DASHBOARD_SYNC_OK, '2026-10-29 14:00:00', '2026-10-29 14:00:00', '']]
+  });
+
+  const result = await runInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    readOrders: async () => ({ parts: [], orderCounts: { processing: 0, preparing: 0 }, driftedOrderIds: [] }),
+    listTrackingRows: async () => [],
+    updatedAt: UPDATED_AT,
+    logger: silentLogger
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /讀取途中持續變動/);
+  // 寧可保留上一次的看板，也不要發布一份對不起來的。
+  assert.deepEqual(dashboardWrites(state.calls), []);
+  assert.equal(statusWrite(state.calls)[1], '2026-10-29 14:00:00');
 });
 
 test('runInventoryDashboard reads the sheets fresh, after the writeback phase', async () => {
@@ -277,10 +357,19 @@ test('the failure path keeps no last-success time when the status sheet cannot b
   assert.deepEqual(statusWrite(state.calls), [DASHBOARD_SYNC_FAILED, '', UPDATED_AT, '登入失敗']);
 });
 
-test('safeSyncMessage strips newlines and redacts secrets', () => {
+test('safeSyncMessage truncates at the first sensitive keyword', () => {
   assert.equal(safeSyncMessage('第一行\n第二行\r\n第三行'), '第一行 第二行 第三行');
-  assert.equal(safeSyncMessage('login failed password=hunter2'), 'login failed password=<redacted>');
-  assert.equal(safeSyncMessage('x'.repeat(400)).length, 300);
+  // 只遮「關鍵字後面第一個詞」會漏：Bearer 之後、分號之後、引號格式都擋不住。
+  assert.equal(safeSyncMessage('login failed password=hunter2'), 'login failed <redacted>');
+  assert.equal(safeSyncMessage('HTTP 401 Authorization: Bearer secret123'), 'HTTP 401 <redacted>');
+  assert.equal(safeSyncMessage('Cookie: a=1; session=secret123'), '<redacted>');
+  assert.equal(safeSyncMessage('{"password":"secret123"}'), '{"<redacted>');
+  assert.equal(safeSyncMessage('api_key 用完了'), '<redacted>');
+  // 長得像 token 的連續字串也整段換掉。
+  assert.equal(safeSyncMessage(`refresh 失敗 ya29.${'A'.repeat(40)}`), 'refresh 失敗 <redacted>');
+  assert.equal(safeSyncMessage('讀取逾時'), '讀取逾時');
+  assert.equal(safeSyncMessage('第 5 列的庫存快照必須是整數'), '第 5 列的庫存快照必須是整數');
+  assert.equal(safeSyncMessage('垮'.repeat(400)).length, 300);
 });
 
 test('readCatalogSnapshots prefers 補貨顯示名稱 and passes the stock through raw', async () => {

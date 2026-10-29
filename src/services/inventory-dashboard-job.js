@@ -39,6 +39,52 @@ export function pendingWritebackSkus(events) {
   return [...skus];
 }
 
+// 四筆讀取是四個各自獨立的 HTTP 請求，不是一致快照。
+// 危險的那一種交錯是「登記到貨」：repository 會在同一批 update 裡把補貨追蹤的未到量減掉、
+// 並附上一筆回寫事件。如果我們先讀到「沒有待回寫事件」，接著到貨登記落地，
+// 再讀到「未到量已歸零」，就會發布一個該被「回寫未完成」擋下來的缺口——
+// 飛鼠庫存還沒被回寫加上去，缺口整個高估，正好是排在回寫之後要避免的那件事。
+//
+// 回寫佇列是這類寫入的共同足跡（到貨登記會新增事件、回寫完成會改狀態），
+// 所以用它當前後哨兵：讀之前與讀之後各取一次，不一致就重讀。
+const MAX_SNAPSHOT_REREADS = 2;
+
+function eventsFingerprint(events) {
+  return events
+    // 用 JSON 串，避免事件 ID 或狀態裡出現分隔字元造成兩組不同的事件印出同一個指紋。
+    .map((event) => JSON.stringify([event.eventId, event.status]))
+    .sort()
+    .join('|');
+}
+
+async function readConsistentSnapshot({ sheets, spreadsheetId, listTrackingRows, logger }) {
+  let lastFingerprints = null;
+  for (let attempt = 0; attempt <= MAX_SNAPSHOT_REREADS; attempt += 1) {
+    const before = await readWritebackEvents({ sheets, spreadsheetId });
+    const [catalog, tracking, preorders] = await Promise.all([
+      readCatalogSnapshots({ sheets, spreadsheetId }),
+      listTrackingRows(),
+      readPreorderAllowances({ sheets, spreadsheetId })
+    ]);
+    const after = await readWritebackEvents({ sheets, spreadsheetId });
+
+    const beforePrint = eventsFingerprint(before);
+    const afterPrint = eventsFingerprint(after);
+    if (beforePrint === afterPrint) return { catalog, tracking, preorders, events: after };
+
+    lastFingerprints = { before: before.length, after: after.length };
+    log(logger, 'warn', {
+      component: 'inventory-dashboard',
+      status: 'snapshot-drift',
+      attempt: attempt + 1,
+      ...lastFingerprints
+    });
+  }
+  throw new Error(
+    `回寫佇列在讀取途中持續變動（最後一次 ${lastFingerprints?.before} → ${lastFingerprints?.after} 筆），這一輪不發布`
+  );
+}
+
 export async function runInventoryDashboard({
   sheets,
   spreadsheetId,
@@ -58,12 +104,12 @@ export async function runInventoryDashboard({
     const orders = await readOrders();
 
     // 回寫之後重新讀，不可重用回寫前讀到的值。
-    const [catalog, tracking, events, preorders] = await Promise.all([
-      readCatalogSnapshots({ sheets, spreadsheetId }),
-      listTrackingRows(),
-      readWritebackEvents({ sheets, spreadsheetId }),
-      readPreorderAllowances({ sheets, spreadsheetId })
-    ]);
+    const { catalog, tracking, preorders, events } = await readConsistentSnapshot({
+      sheets,
+      spreadsheetId,
+      listTrackingRows,
+      logger
+    });
     const writebackPendingSkus = pendingWritebackSkus(events);
 
     const dashboard = buildInventoryDashboard({
@@ -74,15 +120,20 @@ export async function runInventoryDashboard({
       writebackPendingSkus,
       updatedAt: attemptedAt
     });
-    const written = await writeInventoryDashboard({ sheets, spreadsheetId, dashboard });
-    const syncStatus = await writeDashboardSyncStatus({
+    // 看板與「同步成功」同一批寫入：分兩次的話，看板換新了而狀態寫入失敗，
+    // 就會留下「看板是新的、狀態說失敗、最後成功時間是舊的」這種對不起來的組合。
+    const written = await writeInventoryDashboard({
       sheets,
       spreadsheetId,
-      status: DASHBOARD_SYNC_OK,
-      lastSuccessAt: attemptedAt,
-      lastAttemptAt: attemptedAt,
-      message: ''
+      dashboard,
+      syncStatus: {
+        status: DASHBOARD_SYNC_OK,
+        lastSuccessAt: attemptedAt,
+        lastAttemptAt: attemptedAt,
+        message: ''
+      }
     });
+    const syncStatus = written.syncStatus;
 
     log(logger, 'info', {
       component: 'inventory-dashboard',

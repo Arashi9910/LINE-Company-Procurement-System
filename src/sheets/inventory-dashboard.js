@@ -57,6 +57,7 @@ function columnLetter(count) {
 
 const PREORDER_LAST_COLUMN = columnLetter(PREORDER_HEADERS.length);
 const DASHBOARD_LAST_COLUMN = columnLetter(DASHBOARD_HEADERS.length);
+const SYNC_STATUS_LAST_COLUMN = columnLetter(SYNC_STATUS_HEADERS.length);
 
 function normalizeText(value) {
   return String(value ?? '').trim();
@@ -150,21 +151,35 @@ export function buildDashboardValues({ rows = [], updatedAt = '' } = {}) {
   return [[...DASHBOARD_HEADERS], ...rows.map((row) => dashboardRowValues(row, timestamp))];
 }
 
-// 整張覆寫，只送一次 values.update：新表格 + 把上一輪多出來的列補成空白。
-// 分成「寫入」與「清除」兩次請求的話，中間失敗會留下新舊混在一起的看板
-// （舊的 A、B、C 換成只剩 C 時，會變成 C、B、C），而且上一次的完整看板已經沒了。
-export async function writeInventoryDashboard({ sheets, spreadsheetId, dashboard }) {
+// 整張覆寫 + 同步狀態，**同一次 values.batchUpdate**。
+// 分兩次請求的話：看板已經換成新的、狀態寫入卻失敗，就留下「看板是新的、
+// 狀態說同步失敗、最後成功時間還是舊的」這種對不起來的組合，而且舊看板已經沒了。
+// 看板內部也只用一次寫入：新表格後面補整列空白蓋掉上一輪多出來的列。
+// 另外送一次 clear 的話，中間失敗會留下新舊混在一起的看板。
+export async function writeInventoryDashboard({ sheets, spreadsheetId, dashboard, syncStatus }) {
   if (!sheets || !spreadsheetId) throw new Error('庫存看板寫入設定不完整');
   const values = buildDashboardValues(dashboard);
+  const status = normalizeSyncStatus(syncStatus);
+  if (status.status !== DASHBOARD_SYNC_OK) {
+    throw new Error('庫存看板寫入只接受成功狀態，失敗請用 writeDashboardSyncStatus');
+  }
 
-  const response = await sheets.spreadsheets.values.get({
+  // 兩張分頁的表頭都要先驗過，不要只驗一張就把資料送出去。
+  const response = await sheets.spreadsheets.values.batchGet({
     spreadsheetId,
-    range: `'${DASHBOARD_SHEET_NAME}'!A:${DASHBOARD_LAST_COLUMN}`,
+    ranges: [
+      `'${DASHBOARD_SHEET_NAME}'!A:${DASHBOARD_LAST_COLUMN}`,
+      `'${SYNC_STATUS_SHEET_NAME}'!A1:${SYNC_STATUS_LAST_COLUMN}2`
+    ],
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
-  const existing = response.data.values ?? [];
-  // 分頁還沒建立或表頭被改過就停手，不要把資料寫進位置不對的欄。
+  const existing = response.data.valueRanges?.[0]?.values ?? [];
   assertSheetHeaders(existing[0] ?? [], DASHBOARD_HEADERS, DASHBOARD_SHEET_NAME);
+  assertSheetHeaders(
+    response.data.valueRanges?.[1]?.values?.[0] ?? [],
+    SYNC_STATUS_HEADERS,
+    SYNC_STATUS_SHEET_NAME
+  );
 
   // existing 的尾端空白列不會回傳，所以 existing.length 就是上一輪的實際高度。
   const blankRows = Math.max(0, existing.length - values.length);
@@ -176,18 +191,29 @@ export async function writeInventoryDashboard({ sheets, spreadsheetId, dashboard
     throw new Error(`${DASHBOARD_SHEET_NAME} 需要 ${payload.length} 列，超過上限 ${DASHBOARD_ROW_COUNT}`);
   }
 
-  await sheets.spreadsheets.values.update({
+  await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId,
-    range: `'${DASHBOARD_SHEET_NAME}'!A1:${DASHBOARD_LAST_COLUMN}${payload.length}`,
-    valueInputOption: 'RAW',
-    requestBody: { values: payload }
+    requestBody: {
+      valueInputOption: 'RAW',
+      data: [
+        {
+          range: `'${DASHBOARD_SHEET_NAME}'!A1:${DASHBOARD_LAST_COLUMN}${payload.length}`,
+          values: payload
+        },
+        {
+          range: `'${SYNC_STATUS_SHEET_NAME}'!A2:${SYNC_STATUS_LAST_COLUMN}2`,
+          values: [syncStatusValues(status)]
+        }
+      ]
+    }
   });
 
   return Object.freeze({
     sheet: DASHBOARD_SHEET_NAME,
     rows: values.length - 1,
     clearedRows: blankRows,
-    updatedAt: normalizeText(dashboard?.updatedAt)
+    updatedAt: normalizeText(dashboard?.updatedAt),
+    syncStatus: status
   });
 }
 
@@ -225,18 +251,44 @@ export async function readDashboardSyncStatus({ sheets, spreadsheetId }) {
   if (!sheets || !spreadsheetId) throw new Error('看板同步狀態讀取設定不完整');
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `'${SYNC_STATUS_SHEET_NAME}'!A1:${columnLetter(SYNC_STATUS_HEADERS.length)}2`
+    range: `'${SYNC_STATUS_SHEET_NAME}'!A1:${SYNC_STATUS_LAST_COLUMN}2`
   });
   return parseSyncStatusRows(response.data.values ?? []);
 }
 
-// 錯誤訊息會被人看到，也可能被 LINE 指令帶出去，所以去換行、遮敏感值、限長。
+// 錯誤訊息會寫進試算表，也可能被 LINE 指令帶出去。
+// 用黑名單只遮「關鍵字後面第一個詞」是擋不住的：
+//   Authorization: Bearer secret123   → 只遮掉 Bearer，secret123 還在
+//   Cookie: a=1; session=secret123    → 只遮掉 a=1
+//   {"password":"secret123"}          → 引號格式根本不匹配
+// 所以改成**截斷**：看到敏感關鍵字就把那個字之後的全部砍掉，不去猜值在哪裡結束。
+// 另外把 32 字以上、長得像 token 的連續字串整段換掉。
+const SENSITIVE_KEYWORD = /(password|passwd|cookie|authorization|bearer|credential|secret|token|api[-_ ]?key|private[-_ ]?key)/i;
+const OPAQUE_RUN = /[A-Za-z0-9._\-+/=]{32,}/g;
+
 export function safeSyncMessage(value) {
-  return String(value ?? '')
-    .replace(/[\r\n]+/g, ' ')
-    .replace(/(password|cookie|authorization|token)\s*[:=]\s*\S+/ig, '$1=<redacted>')
-    .trim()
-    .slice(0, 300);
+  const flat = String(value ?? '').replace(/[\r\n]+/g, ' ');
+  const hit = SENSITIVE_KEYWORD.exec(flat);
+  const truncated = hit ? `${flat.slice(0, hit.index)}<redacted>` : flat;
+  return truncated.replace(OPAQUE_RUN, '<redacted>').trim().slice(0, 300);
+}
+
+function normalizeSyncStatus({ status, lastSuccessAt = '', lastAttemptAt, message = '' } = {}) {
+  if (![DASHBOARD_SYNC_OK, DASHBOARD_SYNC_FAILED].includes(status)) {
+    throw new Error(`看板同步狀態不正確：${status}`);
+  }
+  const attemptedAt = normalizeText(lastAttemptAt);
+  if (!attemptedAt) throw new Error('看板同步狀態缺少最後嘗試時間');
+  return Object.freeze({
+    status,
+    lastSuccessAt: normalizeText(lastSuccessAt),
+    lastAttemptAt: attemptedAt,
+    message: safeSyncMessage(message)
+  });
+}
+
+function syncStatusValues(status) {
+  return [status.status, status.lastSuccessAt, status.lastAttemptAt, status.message];
 }
 
 export async function writeDashboardSyncStatus({
@@ -248,22 +300,12 @@ export async function writeDashboardSyncStatus({
   message = ''
 }) {
   if (!sheets || !spreadsheetId) throw new Error('看板同步狀態寫入設定不完整');
-  if (![DASHBOARD_SYNC_OK, DASHBOARD_SYNC_FAILED].includes(status)) {
-    throw new Error(`看板同步狀態不正確：${status}`);
-  }
-  const attemptedAt = normalizeText(lastAttemptAt);
-  if (!attemptedAt) throw new Error('看板同步狀態缺少最後嘗試時間');
-  const values = [[status, normalizeText(lastSuccessAt), attemptedAt, safeSyncMessage(message)]];
+  const normalized = normalizeSyncStatus({ status, lastSuccessAt, lastAttemptAt, message });
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `'${SYNC_STATUS_SHEET_NAME}'!A2:${columnLetter(SYNC_STATUS_HEADERS.length)}2`,
+    range: `'${SYNC_STATUS_SHEET_NAME}'!A2:${SYNC_STATUS_LAST_COLUMN}2`,
     valueInputOption: 'RAW',
-    requestBody: { values }
+    requestBody: { values: [syncStatusValues(normalized)] }
   });
-  return Object.freeze({
-    status,
-    lastSuccessAt: values[0][1],
-    lastAttemptAt: attemptedAt,
-    message: values[0][3]
-  });
+  return normalized;
 }
