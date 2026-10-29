@@ -251,7 +251,12 @@ export class SheetsRepository {
       receivedQuantity: item.receivedQuantity,
       outstandingQuantity: item.outstandingQuantity,
       sku: item.sku,
-      ...(item.skuCorrectionError ? { skuCorrectionError: item.skuCorrectionError } : {})
+      ...(item.skuCorrectionError ? { skuCorrectionError: item.skuCorrectionError } : {}),
+      // 重複 SKU 是在換過 sku 之後才標記的，少了這兩個欄位就找不回原 SKU。
+      ...(item.skuCorrectionPending ? { skuCorrectionPending: true } : {}),
+      ...(item.skuCorrectionOriginalSku
+        ? { skuCorrectionOriginalSku: item.skuCorrectionOriginalSku }
+        : {})
     }));
   }
 
@@ -285,7 +290,12 @@ export class SheetsRepository {
       receivedQuantity: item.receivedQuantity,
       outstandingQuantity: item.outstandingQuantity,
       sku: item.sku,
-      ...(item.skuCorrectionError ? { skuCorrectionError: item.skuCorrectionError } : {})
+      ...(item.skuCorrectionError ? { skuCorrectionError: item.skuCorrectionError } : {}),
+      // 重複 SKU 是在換過 sku 之後才標記的，少了這兩個欄位就找不回原 SKU。
+      ...(item.skuCorrectionPending ? { skuCorrectionPending: true } : {}),
+      ...(item.skuCorrectionOriginalSku
+        ? { skuCorrectionOriginalSku: item.skuCorrectionOriginalSku }
+        : {})
     }));
   }
 

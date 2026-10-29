@@ -76,7 +76,14 @@ export function describeCorrectionIssue(item) {
 
 export function resolveTrackingSku(item) {
   // 規格第 2 節的「貨號優先用修正後規格」已由上游解析完成，item.sku 就是生效的貨號。
-  return text(item?.sku);
+  const sku = text(item?.sku);
+  if (!text(item?.skuCorrectionError)) return sku;
+  // flagDuplicateEffectiveSkus 是在 resolveOrderSpecCorrection 換過 sku 之後才標錯誤的，
+  // 所以「尚未套用的修正」失敗時 sku 已經是修正後的值，但貨還是會以原 SKU 進來。
+  // 已經套用過的修正（skuCorrectionPending 為 false）不可退回歷史 SKU。
+  if (item?.skuCorrectionPending !== true) return sku;
+  const original = text(item?.skuCorrectionOriginalSku);
+  return original || sku;
 }
 
 export function collectCorrectionIssues(tracking = []) {
@@ -85,8 +92,10 @@ export function collectCorrectionIssues(tracking = []) {
     if (!OUTSTANDING_STATUSES.has(text(item?.status))) continue;
     const issue = describeCorrectionIssue(item);
     if (!issue) continue;
-    const sku = text(item?.sku);
-    if (sku && !issues.has(sku)) issues.set(sku, issue);
+    // 未到量算到哪個 SKU，異常就標在哪個 SKU，兩者不可分家。
+    for (const sku of new Set([resolveTrackingSku(item), text(item?.sku)])) {
+      if (sku && !issues.has(sku)) issues.set(sku, issue);
+    }
   }
   return issues;
 }

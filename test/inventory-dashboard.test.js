@@ -7,6 +7,10 @@ import {
   sumOutstandingBySku,
   buildInventoryDashboard
 } from '../src/services/inventory-dashboard.js';
+import {
+  flagDuplicateEffectiveSkus,
+  resolveOrderSpecCorrection
+} from '../src/sheets/order-spec-correction.js';
 
 const UPDATED_AT = '2026-10-29T12:00:00.000Z';
 
@@ -553,4 +557,106 @@ test('補貨已全數到貨、只剩回寫未完成的 SKU 仍要出現在看板
 test('回寫未完成的 SKU 連 SKU主檔都沒有時，仍列出且標回寫未完成', () => {
   const result = dashboard({ catalog: [], writebackPendingSkus: ['GHOST'] });
   assert.equal(rowFor(result, 'GHOST').status, DASHBOARD_STATUS.WRITEBACK_PENDING);
+});
+
+// ── 串接真實的規格修正解析器 + repository 輸出形狀 ──────────────
+
+const CORRECTION_CATALOG = new Map([
+  ['OLD', { sku: 'OLD', productName: '收納盒', displayName: '收納盒｜紅', unit: '個', available: true }],
+  ['NEW', { sku: 'NEW', productName: '收納盒', displayName: '收納盒｜藍', unit: '個', available: true }]
+]);
+
+// 比照 repository.listOpenRequests／listRequestRows 的輸出欄位。
+function asRepositoryRow(item) {
+  return {
+    requestId: item.requestId,
+    displayName: item.displayName,
+    status: item.status,
+    orderedQuantity: item.orderedQuantity,
+    receivedQuantity: item.receivedQuantity,
+    outstandingQuantity: item.outstandingQuantity,
+    sku: item.sku,
+    ...(item.skuCorrectionError ? { skuCorrectionError: item.skuCorrectionError } : {}),
+    ...(item.skuCorrectionPending ? { skuCorrectionPending: true } : {}),
+    ...(item.skuCorrectionOriginalSku ? { skuCorrectionOriginalSku: item.skuCorrectionOriginalSku } : {})
+  };
+}
+
+function resolvedTracking(items) {
+  return flagDuplicateEffectiveSkus(
+    items.map((item) => resolveOrderSpecCorrection({ item, catalogBySku: CORRECTION_CATALOG }))
+  ).map(asRepositoryRow);
+}
+
+test('修正後與既有列撞號時，未到量回到原 SKU，兩個 SKU 都標異常', () => {
+  // OLD 要改成 NEW，但同一張單本來就有 NEW → flagDuplicateEffectiveSkus 在換過
+  // sku 之後才標錯誤，所以該列的 sku 已經是 NEW，貨卻還是會以 OLD 進來。
+  const tracking = resolvedTracking([
+    { requestId: 'R1', sku: 'OLD', status: '已下單', receivedQuantity: 0, orderedQuantity: 5, correctionSku: 'NEW', originalSku: '' },
+    { requestId: 'R1', sku: 'NEW', status: '已下單', receivedQuantity: 0, orderedQuantity: 2, correctionSku: '', originalSku: '' }
+  ]);
+  assert.equal(tracking[0].sku, 'NEW', '前提：上游確實已經把 sku 換成 NEW');
+  assert.match(tracking[0].skuCorrectionError, /重複 SKU/);
+
+  const result = buildInventoryDashboard({
+    catalog: [
+      { sku: 'OLD', displayName: '收納盒｜紅', stock: 0 },
+      { sku: 'NEW', displayName: '收納盒｜藍', stock: 0 }
+    ],
+    orderQuantities: [],
+    tracking,
+    preorders: [{ sku: 'OLD', safetyStock: 5 }],
+    writebackPendingSkus: [],
+    updatedAt: UPDATED_AT
+  });
+
+  assert.equal(rowFor(result, 'OLD').onOrder, 5, '貨會以 OLD 進來，未到量要掛回 OLD');
+  assert.equal(rowFor(result, 'OLD').status, DASHBOARD_STATUS.ANOMALY);
+  assert.equal(rowFor(result, 'OLD').reorderable, false, '修正出錯時不可自動叫貨');
+  assert.equal(rowFor(result, 'NEW').status, DASHBOARD_STATUS.ANOMALY);
+});
+
+test('已套用的修正即使再次出錯，也不可把未到量退回歷史 SKU', () => {
+  const tracking = resolvedTracking([
+    // originalSku 已填代表修正早就套用完成，現在又想改成別的 → 上游報錯。
+    { requestId: 'R2', sku: 'NEW', status: '部分到貨', receivedQuantity: 1, orderedQuantity: 6, correctionSku: 'OLD', originalSku: 'OLD' }
+  ]);
+  assert.match(tracking[0].skuCorrectionError, /不可再修改/);
+
+  const result = buildInventoryDashboard({
+    catalog: [
+      { sku: 'OLD', displayName: '收納盒｜紅', stock: 0 },
+      { sku: 'NEW', displayName: '收納盒｜藍', stock: 0 }
+    ],
+    orderQuantities: [],
+    tracking,
+    preorders: [],
+    writebackPendingSkus: [],
+    updatedAt: UPDATED_AT
+  });
+
+  assert.equal(rowFor(result, 'NEW').onOrder, 5, '貨以現行的 NEW 進來');
+  assert.equal(result.rows.find((row) => row.sku === 'OLD'), undefined, '不可退回歷史 SKU');
+});
+
+test('合法且無衝突的修正，未到量算到修正後 SKU 且不標異常', () => {
+  const tracking = resolvedTracking([
+    { requestId: 'R3', sku: 'OLD', status: '已下單', receivedQuantity: 0, orderedQuantity: 4, correctionSku: 'NEW', originalSku: '' }
+  ]);
+  assert.equal(tracking[0].skuCorrectionError, undefined);
+
+  const result = buildInventoryDashboard({
+    catalog: [
+      { sku: 'OLD', displayName: '收納盒｜紅', stock: 0 },
+      { sku: 'NEW', displayName: '收納盒｜藍', stock: 0 }
+    ],
+    orderQuantities: [],
+    tracking,
+    preorders: [],
+    writebackPendingSkus: [],
+    updatedAt: UPDATED_AT
+  });
+
+  assert.equal(rowFor(result, 'NEW').onOrder, 4);
+  assert.equal(rowFor(result, 'NEW').status, DASHBOARD_STATUS.NORMAL);
 });
