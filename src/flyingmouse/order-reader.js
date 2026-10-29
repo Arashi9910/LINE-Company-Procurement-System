@@ -22,11 +22,27 @@ function normalizeText(value) {
   return String(value ?? '').trim();
 }
 
-function positiveInteger(value, label) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 1) {
-    throw new FlyingMouseOrderError(`${label}必須是正整數`, { code: 'INVALID_ORDER' });
+// Number() 會把 null、''、false、[] 都變成 0，拿來驗證等於放行壞資料。
+function strictInteger(value, label, { code = 'INVALID_ORDER' } = {}) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new FlyingMouseOrderError(`${label}必須是整數`, { code });
+    }
+    return value;
   }
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const number = Number(value.trim());
+    if (!Number.isSafeInteger(number)) {
+      throw new FlyingMouseOrderError(`${label}必須是整數`, { code });
+    }
+    return number;
+  }
+  throw new FlyingMouseOrderError(`${label}必須是整數`, { code });
+}
+
+function positiveInteger(value, label) {
+  const number = strictInteger(value, `${label}數量`);
+  if (number < 1) throw new FlyingMouseOrderError(`${label}數量必須是正整數`, { code: 'INVALID_ORDER' });
   return number;
 }
 
@@ -46,17 +62,25 @@ export function buildOrderQueryPath({ status, offset, size }) {
 function accumulate(target, orders, key) {
   for (const order of orders) {
     const orderNo = normalizeText(order?.no) || String(order?.id ?? '');
-    for (const product of order?.products ?? []) {
+    // 明細缺失不等於沒有未寄商品，必須丟錯讓呼叫端保留上一次看板。
+    if (!Array.isArray(order?.products)) {
+      throw new FlyingMouseOrderError(`訂單 ${orderNo} 缺少 products 明細`, { code: 'INVALID_ORDER' });
+    }
+    for (const product of order.products) {
       const partList = product?.part_list;
       // 折價列與沒有對應貨號的列不扣庫存。判斷依據是 part_list，不是 product_type。
-      if (!Array.isArray(partList) || partList.length === 0) continue;
-      const productQty = positiveInteger(product?.qty, `訂單 ${orderNo} 的購買數量`);
+      if (partList === undefined || partList === null) continue;
+      if (!Array.isArray(partList)) {
+        throw new FlyingMouseOrderError(`訂單 ${orderNo} 的 part_list 型別不正確`, { code: 'INVALID_ORDER' });
+      }
+      if (partList.length === 0) continue;
+      const productQty = positiveInteger(product?.qty, `訂單 ${orderNo} 的購買`);
       for (const part of partList) {
         const partNo = normalizeText(part?.no);
         if (!partNo) {
           throw new FlyingMouseOrderError(`訂單 ${orderNo} 的 part_list 缺少貨號`, { code: 'INVALID_ORDER' });
         }
-        const partQty = positiveInteger(part?.qty, `訂單 ${orderNo} 貨號 ${partNo} 的數量`);
+        const partQty = positiveInteger(part?.qty, `訂單 ${orderNo} 貨號 ${partNo} 的`);
         if (!target.has(partNo)) target.set(partNo, { processing: 0, preparing: 0 });
         // part_list[].qty 是每 1 件的用量，要乘上購買數量。
         target.get(partNo)[key] += productQty * partQty;
@@ -112,10 +136,11 @@ async function requestOrders(page, path) {
     });
   }
   const data = response.body?.data;
-  const total = Number(data?.total);
-  if (!data || !Array.isArray(data.list) || !Number.isSafeInteger(total) || total < 0) {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.list)) {
     throw new FlyingMouseOrderError('飛鼠訂單回應格式不正確', { code: 'INVALID_RESPONSE' });
   }
+  const total = strictInteger(data.total, '飛鼠訂單 total', { code: 'INVALID_RESPONSE' });
+  if (total < 0) throw new FlyingMouseOrderError('飛鼠訂單 total 不可為負', { code: 'INVALID_RESPONSE' });
   return { total, list: data.list };
 }
 
@@ -140,8 +165,8 @@ export function createFlyingMouseOrderClient(page) {
           );
         }
         for (const order of list) {
-          const id = positiveInteger(order?.id, '訂單 id');
-          if (Number(order?.status) !== wanted) {
+          const id = positiveInteger(order?.id, '訂單 id 的');
+          if (strictInteger(order?.status, `訂單 ${normalizeText(order?.no) || id} 的狀態`) !== wanted) {
             throw new FlyingMouseOrderError(
               `訂單 ${normalizeText(order?.no) || id} 的狀態與查詢不符`,
               { code: 'STATUS_MISMATCH', retryable: true }
@@ -173,7 +198,7 @@ export function createFlyingMouseOrderClient(page) {
   });
 }
 
-export async function readOpenOrderQuantities(client, { maxRereads = MAX_REREADS } = {}) {
+export async function readOpenOrderQuantities(client, { maxRereads = MAX_REREADS, logger = null } = {}) {
   if (!client || typeof client.fetchOrdersByStatus !== 'function') {
     throw new Error('飛鼠訂單客戶端不完整');
   }
@@ -189,6 +214,12 @@ export async function readOpenOrderQuantities(client, { maxRereads = MAX_REREADS
         .map((order) => Number(order.id))
         .filter((id) => preparingIds.has(id));
       const settledProcessing = processing.filter((order) => !preparingIds.has(Number(order.id)));
+      if (driftedOrderIds.length > 0 && typeof logger?.warn === 'function') {
+        // 整批記一次，不是每筆一次。
+        logger.warn(
+          `飛鼠訂單在查詢途中由處理中轉為備貨中，已以備貨中為準去重：${driftedOrderIds.join(', ')}`
+        );
+      }
 
       return {
         parts: aggregateOrderQuantities({ processing: settledProcessing, preparing }),

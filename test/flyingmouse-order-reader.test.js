@@ -294,3 +294,94 @@ test('readOpenOrderQuantities 重讀用盡後丟錯，讓呼叫端保留上一�
   await assert.rejects(readOpenOrderQuantities(client), (error) => error.code === 'COUNT_MISMATCH');
   assert.equal(attempts, 3, '初次加上最多 2 次重讀');
 });
+
+// ── Codex 檢查發現的格式驗證漏洞 ──────────────────────────────
+
+test('aggregateOrderQuantities 對缺少或型別錯誤的 products 丟錯，不可當成沒有未寄商品', () => {
+  const bad = (products) => () => aggregateOrderQuantities({
+    processing: [{ id: 1, no: 'A1', status: 0, products }], preparing: []
+  });
+  assert.throws(bad(undefined), /products/, '缺 products 是明細不完整，不是沒有商品');
+  assert.throws(bad(null), /products/);
+  assert.throws(bad({}), /products/);
+  assert.throws(bad('x'), /products/);
+});
+
+test('aggregateOrderQuantities 允許 part_list 缺省或空陣列，但型別錯誤要丟錯', () => {
+  const build = (partList) => ({
+    processing: [{ id: 1, no: 'A1', status: 0, products: [{ qty: 1, part_list: partList }] }],
+    preparing: []
+  });
+  assert.deepEqual(aggregateOrderQuantities(build(undefined)), []);
+  assert.deepEqual(aggregateOrderQuantities(build(null)), []);
+  assert.deepEqual(aggregateOrderQuantities(build([])), []);
+  assert.throws(() => aggregateOrderQuantities(build({ no: 'S1', qty: 1 })), /part_list/);
+  assert.throws(() => aggregateOrderQuantities(build('S1')), /part_list/);
+});
+
+test('aggregateOrderQuantities 拒絕 null、布林與空字串當成數量', () => {
+  const bad = (qty) => () => aggregateOrderQuantities({
+    processing: [{ id: 1, no: 'A1', status: 0, products: [{ qty, part_list: [{ no: 'S1', qty: 1 }] }] }],
+    preparing: []
+  });
+  for (const value of [null, undefined, '', '  ', true, [], {}]) {
+    assert.throws(bad(value), /數量/, `${JSON.stringify(value)} 不是合法數量`);
+  }
+  assert.equal(aggregateOrderQuantities({
+    processing: [{ id: 1, no: 'A1', status: 0, products: [{ qty: '2', part_list: [{ no: 'S1', qty: 1 }] }] }],
+    preparing: []
+  })[0].total, 2, '數字字串仍要接受');
+});
+
+test('fetchOrdersByStatus 拒絕 null 或空字串的 total，不可當成 0 筆', async () => {
+  for (const total of [null, '', undefined, true]) {
+    const client = createFlyingMouseOrderClient({
+      async evaluate() { return { status: 200, body: { data: { total, list: [] } } }; }
+    });
+    await assert.rejects(
+      client.fetchOrdersByStatus(ORDER_STATUS_PROCESSING),
+      (error) => error.code === 'INVALID_RESPONSE',
+      `total=${JSON.stringify(total)} 必須被拒絕`
+    );
+  }
+});
+
+test('fetchOrdersByStatus 拒絕 null 或空字串的訂單狀態，不可當成狀態 0', async () => {
+  for (const status of [null, '', undefined, false]) {
+    const client = createFlyingMouseOrderClient({
+      async evaluate() {
+        return { status: 200, body: { data: { total: 1, list: [{ id: 1, no: 'A1', status, products: [] }] } } };
+      }
+    });
+    await assert.rejects(
+      client.fetchOrdersByStatus(ORDER_STATUS_PROCESSING),
+      (error) => error.code === 'INVALID_ORDER' || error.code === 'STATUS_MISMATCH',
+      `status=${JSON.stringify(status)} 必須被拒絕`
+    );
+  }
+});
+
+test('readOpenOrderQuantities 在偵測到跨狀態漂移時記錄一次警告', async () => {
+  const warnings = [];
+  const moved = { id: 1, no: 'A1', status: 0, products: [{ qty: 2, part_list: [{ no: 'S1', qty: 1 }] }] };
+  const client = {
+    async fetchOrdersByStatus(status) {
+      return status === ORDER_STATUS_PROCESSING ? [moved] : [{ ...moved, status: 2 }];
+    }
+  };
+
+  const result = await readOpenOrderQuantities(client, { logger: { warn: (m) => warnings.push(m) } });
+
+  assert.equal(warnings.length, 1, '漂移要記一次，不是每筆一次');
+  assert.match(warnings[0], /1/);
+  assert.deepEqual(result.driftedOrderIds, [1]);
+});
+
+test('readOpenOrderQuantities 沒有漂移時不記警告', async () => {
+  const warnings = [];
+  const client = {
+    async fetchOrdersByStatus() { return []; }
+  };
+  await readOpenOrderQuantities(client, { logger: { warn: (m) => warnings.push(m) } });
+  assert.equal(warnings.length, 0);
+});
