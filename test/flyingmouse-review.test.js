@@ -334,6 +334,31 @@ test('importApprovedReviewSnapshots keeps an approved negative stock', async () 
   assert.equal(state.getWrite().requestBody.data[0].values[0][4], -3);
 });
 
+test('importApprovedReviewSnapshots refuses an approval whose stock is not an integer', async () => {
+  const item = source('SKU-BLANK', { stock: 7, productName: '庫存被清掉的新品' });
+  const finding = buildReviewFindings(emptyDiff({ newItems: [item] }))[0];
+
+  // 指紋不含庫存，所以庫存欄被清空或改壞時只有這裡擋得住；
+  // 放過去就會把 Number('') 的 0 當成真實零庫存寫進 SKU主檔並標記已匯入。
+  for (const broken of ['', ' ', false, null, '10.5', '待盤點']) {
+    const row = reviewRow(finding, '核准匯入');
+    row[8] = broken;
+    const state = snapshotImportSheets([row]);
+
+    const result = await importApprovedReviewSnapshots({
+      sheets: state.sheets,
+      spreadsheetId: 'sheet-123',
+      generatedAt: new Date('2026-07-17T02:03:04Z')
+    });
+
+    assert.deepEqual(result, { approved: 1, imported: 0, idempotent: 0, stale: 1 },
+      `${JSON.stringify(broken)} 應視為無效核准`);
+    const ranges = state.getWrite().requestBody.data.map((entry) => entry.range);
+    assert.equal(ranges.some((range) => range.includes('SKU主檔')), false,
+      `${JSON.stringify(broken)} 不該寫入 SKU主檔`);
+  }
+});
+
 test('importApprovedReviewSnapshots performs no writes when nothing is approved', async () => {
   const item = source('SKU-WAIT');
   const finding = buildReviewFindings(emptyDiff({ newItems: [item] }))[0];

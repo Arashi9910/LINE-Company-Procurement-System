@@ -419,13 +419,22 @@ function sameCatalogIdentity(mainRow, source) {
     normalizeText(mainRow[6]) === normalizeText(source.location);
 }
 
+// 負庫存是飛鼠超賣的真實值，要照原值帶進 SKU主檔；但 Number() 會把空白、null、false
+// 都變成 0，而指紋不含庫存，所以一個被清空的庫存欄會冒充成真實的零庫存寫進主檔。
+function approvedStock(value) {
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const stock = Number(value.trim());
+    return Number.isSafeInteger(stock) ? stock : null;
+  }
+  return null;
+}
+
 function sourceFromApprovedReviewRow(row) {
   const partNumber = normalizeText(row[4]);
   const productName = normalizeText(row[5]);
-  const stock = Number(row[8]);
-  // 負庫存是飛鼠超賣的真實值，核准匯入要照原值帶進 SKU主檔。
-  if (!partNumber || !productName || row[0] !== `新增:${partNumber}` ||
-    !Number.isSafeInteger(stock)) {
+  const stock = approvedStock(row[8]);
+  if (!partNumber || !productName || row[0] !== `新增:${partNumber}` || stock === null) {
     return null;
   }
   return Object.freeze({
