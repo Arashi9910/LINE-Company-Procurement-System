@@ -80,8 +80,7 @@ async function dryRunEvent({ client, event, processedAt }) {
 async function liveEvent({ sheets, spreadsheetId, client, event, processedAt }) {
   let prepared = event;
   const attempts = event.attempts + 1;
-  const alreadyPrepared = hasPreparedStock(event);
-  if (!alreadyPrepared) {
+  if (!hasPreparedStock(event)) {
     const target = await prepareFlyingMouseWriteback({ client, event });
     prepared = transitionWritebackEvent(event, {
       status: '已準備',
@@ -92,7 +91,7 @@ async function liveEvent({ sheets, spreadsheetId, client, event, processedAt }) 
       processedAt
     });
   } else {
-    // 沿用保存過的 before／target；快照在第一次 prepare 時就已經刷新過。
+    // 沿用保存過的 before／target，不重算增量。
     prepared = transitionWritebackEvent(event, {
       status: '已準備',
       attempts,
@@ -102,11 +101,10 @@ async function liveEvent({ sheets, spreadsheetId, client, event, processedAt }) 
     });
   }
   try {
-    if (!alreadyPrepared) {
-      await prepareWritebackEvent({ sheets, spreadsheetId, event: prepared });
-    } else {
-      await writeWritebackEventState({ sheets, spreadsheetId, event: prepared });
-    }
+    // 每次送出 PUT 前都要先過 prepareWritebackEvent 的主檔檢查（表頭、SKU 唯一），
+    // 規格第 5 節：主檔缺少該 SKU、重複或表頭不符時不得 PUT。
+    // 快照一律刷成 beforeStock，完成時再由 completeWritebackEvent 寫成 targetStock。
+    await prepareWritebackEvent({ sheets, spreadsheetId, event: prepared });
     const result = await applyPreparedFlyingMouseWriteback({ client, event: prepared, mode: 'live' });
     await completeWritebackEvent({
       sheets,

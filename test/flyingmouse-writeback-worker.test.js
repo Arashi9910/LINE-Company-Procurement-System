@@ -203,6 +203,73 @@ test('a retry whose PUT never landed resends the same target, not a new one', as
   assert.deepEqual(puts, [12]);
 });
 
+test('a retry with a saved target still refuses to PUT when SKU主檔 is broken', async () => {
+  const waiting = transitionWritebackEvent(
+    transitionWritebackEvent(queueEvent(), {
+      status: '已準備',
+      attempts: 1,
+      partId: 933,
+      beforeStock: 10,
+      targetStock: 12,
+      processedAt: '2026-07-16 10:05:00'
+    }),
+    {
+      status: '等待重試',
+      attempts: 1,
+      nextRetryAt: '2026-07-16 10:10:00',
+      lastError: 'NETWORK_ERROR: PUT 失敗',
+      processedAt: '2026-07-16 10:05:00'
+    }
+  );
+
+  // 退避期間主檔被改壞的三種情況。規格第 5 節：這些情況一律不得 PUT。
+  const brokenMains = {
+    缺列: [MAIN_HEADERS.slice(0, 5), ['SKU-B', '商品 B', '', '', 1]],
+    重複: [
+      MAIN_HEADERS.slice(0, 5),
+      ['SKU-A', '商品 A', '', '', 10],
+      ['SKU-A', '商品 A 複製', '', '', 10]
+    ],
+    表頭不符: [['貨號', '商品名稱', '規格 1', '規格 2', '庫存'], ['SKU-A', '商品 A', '', '', 10]]
+  };
+
+  for (const [label, mainValues] of Object.entries(brokenMains)) {
+    let puts = 0;
+    const sheets = {
+      spreadsheets: {
+        values: {
+          async get({ range }) {
+            if (range.includes('飛鼠庫存回寫')) {
+              return { data: { values: [WRITEBACK_HEADERS, writebackEventRow(waiting)] } };
+            }
+            if (range.includes('SKU主檔')) return { data: { values: mainValues } };
+            throw new Error(`unexpected range: ${range}`);
+          },
+          async update() { return { data: {} }; },
+          async batchUpdate() { return { data: {} }; }
+        }
+      }
+    };
+    const client = {
+      async getBySku() { return part(10); },
+      async putPart() { puts += 1; }
+    };
+
+    const result = await processWritebackQueue({
+      sheets,
+      spreadsheetId: 'sheet-123',
+      withClient: async (operation) => operation(client),
+      mode: 'live',
+      now: () => new Date('2026-07-16T02:15:00Z'),
+      logger: silentLogger
+    });
+
+    assert.equal(puts, 0, `${label} 不該送出 PUT`);
+    assert.equal(result.completed, 0, `${label} 不該完成`);
+    assert.equal(result.manualReview, 1, `${label} 應轉人工確認`);
+  }
+});
+
 test('processWritebackQueue dry-run performs no PUT and no Sheet writes', async () => {
   const state = sheetsFor(queueEvent());
   const reads = [part(10), part(10)];
