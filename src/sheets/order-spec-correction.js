@@ -4,6 +4,33 @@ export const ORDER_SPEC_CORRECTION_HEADERS = Object.freeze([
   '原始SKU（系統）'
 ]);
 
+// 補貨追蹤的完整表頭。trackingItem 是用固定欄位序號取值的
+// （G 狀態、H 下單量、J 到貨量…），欄位對調就會把下單量當成到貨量，
+// 未到量算成 0、缺口整個錯，而且回寫佇列的前後指紋偵測不到這種結構錯誤。
+// 最後三欄直接接 ORDER_SPEC_CORRECTION_HEADERS，不另外抄一份。
+export const TRACKING_HEADERS = Object.freeze([
+  '補貨單號',
+  '申請時間',
+  '申請人',
+  '品項',
+  '單位',
+  '申請數量',
+  '狀態',
+  '下單數量',
+  '預計到貨日',
+  '實到數量',
+  '未到數量',
+  '重複警示',
+  '備註',
+  'SKU',
+  'LINE使用者ID',
+  '來源群組ID',
+  '最後操作人ID',
+  '最後更新時間',
+  '操作金鑰',
+  ...ORDER_SPEC_CORRECTION_HEADERS
+]);
+
 export const TRACKING_LAST_COLUMN = 'V';
 export const CORRECTION_SKU_INDEX = 19;
 export const CORRECTION_STATUS_INDEX = 20;

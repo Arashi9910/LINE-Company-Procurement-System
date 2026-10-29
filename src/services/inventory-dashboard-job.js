@@ -8,10 +8,12 @@ import { readWritebackEvents } from '../flyingmouse/sheets-writeback.js';
 import {
   DASHBOARD_SYNC_FAILED,
   DASHBOARD_SYNC_OK,
+  SYNC_STATUS_SHEET_NAME,
   SheetHeaderError,
   readCatalogSnapshots,
   readDashboardSyncStatus,
   readPreorderAllowances,
+  readTrackingRows,
   safeSyncMessage,
   writeDashboardSyncStatus,
   writeInventoryDashboard
@@ -64,7 +66,7 @@ async function readConsistentSnapshot({ sheets, spreadsheetId, listTrackingRows,
     const before = await readWritebackEvents({ sheets, spreadsheetId });
     const [catalog, tracking, preorders] = await Promise.all([
       readCatalogSnapshots({ sheets, spreadsheetId }),
-      listTrackingRows(),
+      readTrackingRows({ sheets, spreadsheetId, listTrackingRows }),
       readPreorderAllowances({ sheets, spreadsheetId })
     ]);
     const after = await readWritebackEvents({ sheets, spreadsheetId });
@@ -155,13 +157,16 @@ export async function runInventoryDashboard({
     // 規格第 5 節：失敗時不覆寫看板，保留上一次的數值與最後成功時間。
     const message = safeSyncMessage(error?.message ?? '未知錯誤');
     let previous = null;
-    // 表頭不符代表分頁結構被改過。這時候再按固定位置寫 A2:D2，只會把錯誤摘要
-    // 塞進別的欄、順手清掉最後成功時間——補救動作本身變成第二次破壞。
-    let structurallyBroken = error instanceof SheetHeaderError;
+    // 只有「看板同步狀態」自己的表頭壞掉時才不可以寫它：按固定位置寫 A2:D2
+    // 會把錯誤摘要塞進別的欄、順手清掉最後成功時間，補救動作變成第二次破壞。
+    // 其他分頁（SKU主檔、預購額度、庫存看板）壞掉時，狀態列照寫——
+    // 不然這一輪會留下「失敗了但狀態還是正常」，後面依狀態停推播的機制就瞎了。
+    let statusSheetBroken = error instanceof SheetHeaderError
+      && error.sheetName === SYNC_STATUS_SHEET_NAME;
     try {
       previous = await readDashboardSyncStatus({ sheets, spreadsheetId });
     } catch (readError) {
-      if (readError instanceof SheetHeaderError) structurallyBroken = true;
+      if (readError instanceof SheetHeaderError) statusSheetBroken = true;
       // 連狀態都讀不到時，寧可讓「最後成功時間」空白，也不要謊報一個時間。
       log(logger, 'warn', {
         component: 'inventory-dashboard',
@@ -169,10 +174,10 @@ export async function runInventoryDashboard({
         error: safeSyncMessage(readError?.message ?? '未知錯誤')
       });
     }
-    if (structurallyBroken) {
+    if (statusSheetBroken) {
       log(logger, 'error', {
         component: 'inventory-dashboard',
-        status: 'sheet-structure-broken',
+        status: 'sync-status-structure-broken',
         error: message
       });
       return Object.freeze({
@@ -180,7 +185,7 @@ export async function runInventoryDashboard({
         error: message,
         lastSuccessAt: previous?.lastSuccessAt ?? '',
         syncStatus: null,
-        structurallyBroken: true
+        statusSheetBroken: true
       });
     }
     let syncStatus = null;
@@ -206,7 +211,7 @@ export async function runInventoryDashboard({
       error: message,
       lastSuccessAt: previous?.lastSuccessAt ?? '',
       syncStatus,
-      structurallyBroken: false
+      statusSheetBroken: false
     });
   }
 }

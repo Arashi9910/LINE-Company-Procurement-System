@@ -13,6 +13,8 @@ import {
 } from '../src/sheets/inventory-dashboard.js';
 import { WRITEBACK_HEADERS, buildWritebackEvent, writebackEventRow } from '../src/flyingmouse/sheets-writeback.js';
 import { MAIN_HEADERS } from '../src/flyingmouse/sheets-review.js';
+import { TRACKING_HEADERS } from '../src/sheets/order-spec-correction.js';
+import { SheetsRepository } from '../src/sheets/repository.js';
 import { pendingWritebackSkus, runInventoryDashboard } from '../src/services/inventory-dashboard-job.js';
 import { runFlyingMouseCombinedJob } from '../scripts/flyingmouse-combined-job.mjs';
 
@@ -37,6 +39,8 @@ function writebackRow(sku, status, overrides = {}) {
 function sheetsFor({
   catalog = [],
   catalogHeaders = MAIN_HEADERS,
+  tracking = [[...TRACKING_HEADERS]],
+  trackingHeaders = null,
   preorder = [[...PREORDER_HEADERS]],
   writeback = [[...WRITEBACK_HEADERS]],
   writebackSequence = null,
@@ -54,6 +58,9 @@ function sheetsFor({
       calls.writebackReads += 1;
       if (!writebackSequence) return writeback;
       return writebackSequence[Math.min(index, writebackSequence.length - 1)];
+    }
+    if (range.includes('補貨追蹤')) {
+      return trackingHeaders ? [[...trackingHeaders], ...tracking.slice(1)] : tracking;
     }
     if (range.includes('庫存看板')) return dashboard;
     if (range.includes('看板同步狀態')) return syncStatus;
@@ -382,16 +389,20 @@ test('a swapped 看板同步狀態 header stops every write, including the failu
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.structurallyBroken, true);
+  assert.equal(result.statusSheetBroken, true);
   assert.match(result.error, /看板同步狀態 表頭不符/);
   // 看板沒寫、狀態列也沒寫：結構壞掉時什麼都不碰，交給人去修。
   assert.deepEqual(state.calls.updates, []);
 });
 
-test('a broken SKU主檔 header also stops the failure note', async () => {
+test('a broken SKU主檔 header still records the failure note', async () => {
   const moved = [...MAIN_HEADERS];
   [moved[4], moved[7]] = [moved[7], moved[4]];
-  const state = sheetsFor({ catalog: [catalogRow('SKU-A', 7)], catalogHeaders: moved });
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-A', 7)],
+    catalogHeaders: moved,
+    syncStatus: [[...SYNC_STATUS_HEADERS], [DASHBOARD_SYNC_OK, '2026-10-29 14:00:00', '2026-10-29 14:00:00', '']]
+  });
 
   const result = await runInventoryDashboard({
     sheets: state.sheets,
@@ -402,9 +413,86 @@ test('a broken SKU主檔 header also stops the failure note', async () => {
     logger: silentLogger
   });
 
+  // 壞的是 SKU主檔，不是狀態分頁。狀態列照寫，否則這一輪會留下
+  // 「失敗了但狀態還是正常」，後面依狀態停推播的機制就瞎了。
   assert.equal(result.ok, false);
-  assert.equal(result.structurallyBroken, true);
-  assert.deepEqual(state.calls.updates, []);
+  assert.equal(result.statusSheetBroken, false);
+  assert.deepEqual(dashboardWrites(state.calls), []);
+  assert.equal(statusWrite(state.calls)[0], DASHBOARD_SYNC_FAILED);
+  assert.equal(statusWrite(state.calls)[1], '2026-10-29 14:00:00');
+  assert.match(statusWrite(state.calls)[3], /SKU主檔 表頭不符/);
+});
+
+test('a swapped 補貨追蹤 column fails the round through the real repository', async () => {
+  // 把「下單數量」與「實到數量」整欄對調：已下單 5、到貨 0 會被解析成
+  // 下單 0、到貨 5，未到量算成 0，缺口從 −2 變成 3 還被標成同步正常。
+  const swapped = [...TRACKING_HEADERS];
+  [swapped[7], swapped[9]] = [swapped[9], swapped[7]];
+  const trackingRow = Array.from({ length: TRACKING_HEADERS.length }, () => '');
+  trackingRow[0] = 'RQ-1';
+  trackingRow[6] = '已下單';
+  trackingRow[7] = 0;
+  trackingRow[9] = 5;
+  trackingRow[13] = 'SKU-A';
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-A', 7)],
+    preorder: [[...PREORDER_HEADERS], ['SKU-A', 10, '', '', '', '']],
+    tracking: [[...TRACKING_HEADERS], trackingRow],
+    trackingHeaders: swapped,
+    syncStatus: [[...SYNC_STATUS_HEADERS], [DASHBOARD_SYNC_OK, '2026-10-29 14:00:00', '2026-10-29 14:00:00', '']]
+  });
+  const repository = new SheetsRepository({ sheets: state.sheets, spreadsheetId: 'sheet-123' });
+
+  const result = await runInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    readOrders: async () => ({ parts: [], orderCounts: { processing: 0, preparing: 0 }, driftedOrderIds: [] }),
+    listTrackingRows: () => repository.listRequestRows(),
+    updatedAt: UPDATED_AT,
+    logger: silentLogger
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /補貨追蹤 表頭不符/);
+  assert.deepEqual(dashboardWrites(state.calls), []);
+  assert.equal(statusWrite(state.calls)[0], DASHBOARD_SYNC_FAILED);
+});
+
+test('the real repository path still works when 補貨追蹤 is intact', async () => {
+  const trackingRow = Array.from({ length: TRACKING_HEADERS.length }, () => '');
+  trackingRow[0] = 'RQ-1';
+  trackingRow[6] = '已下單';
+  trackingRow[7] = 5;
+  trackingRow[9] = 0;
+  trackingRow[10] = 5;
+  trackingRow[13] = 'SKU-A';
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-A', 7)],
+    preorder: [[...PREORDER_HEADERS], ['SKU-A', 10, '', '', '', '']],
+    tracking: [[...TRACKING_HEADERS], trackingRow]
+  });
+  const repository = new SheetsRepository({ sheets: state.sheets, spreadsheetId: 'sheet-123' });
+
+  const result = await runInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    readOrders: async () => ({
+      parts: [{ partNo: 'SKU-A', processing: 3, preparing: 0, total: 3 }],
+      orderCounts: { processing: 1, preparing: 0 },
+      driftedOrderIds: []
+    }),
+    listTrackingRows: () => repository.listRequestRows(),
+    updatedAt: UPDATED_AT,
+    logger: silentLogger
+  });
+
+  // 規格第 3 節商品 A 的「叫 5」那一列：
+  // 推算實際 = 7 + 3 − 10 = 0；缺口 = 10 + 0 − 7 − 5 = −2，正常。
+  assert.equal(result.ok, true);
+  const row = dashboardWrites(state.calls)[0].values[1];
+  assert.equal(row[6], 5);
+  assert.equal(row[10], -2);
+  assert.equal(row[11], '正常');
 });
 
 test('a transient read failure still records the failure note', async () => {
@@ -424,7 +512,7 @@ test('a transient read failure still records the failure note', async () => {
 
   // 表頭沒問題、只是這次失敗 → 照常記錄，並保留最後成功時間。
   assert.equal(result.ok, false);
-  assert.equal(result.structurallyBroken, false);
+  assert.equal(result.statusSheetBroken, false);
   assert.deepEqual(statusWrite(state.calls), [
     DASHBOARD_SYNC_FAILED, '2026-10-29 14:00:00', UPDATED_AT, '飛鼠登入逾時'
   ]);

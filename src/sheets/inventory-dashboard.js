@@ -1,4 +1,5 @@
 import { MAIN_HEADERS } from '../flyingmouse/sheets-review.js';
+import { TRACKING_HEADERS, TRACKING_LAST_COLUMN } from './order-spec-correction.js';
 
 // 庫存看板的 Google Sheets 讀寫：讀「預購額度」、整張覆寫「庫存看板」。
 // 欄位依 docs/inventory-dashboard-spec.md 第 4.1、4.2 節。
@@ -51,6 +52,11 @@ export const DASHBOARD_SYNC_FAILED = '同步失敗';
 // 讀取 SKU主檔 只為了取 SKU、顯示名稱與庫存快照。**絕不寫入**：
 // 目錄同步每次寫入前都會比對 A:N 的欄位名稱，動了就會讓整批同步停止。
 export const CATALOG_SHEET_NAME = 'SKU主檔';
+
+// repository.listRequestRows 不驗表頭，而 trackingItem 是用固定欄位序號取值的。
+// 「下單數量」與「實到數量」整欄對調的話，一筆已下單 5、到貨 0 會被解析成
+// 下單 0、到貨 5，未到量算成 0，缺口從 −2 變成 3，還會被標成同步正常。
+export const TRACKING_SHEET_NAME = '補貨追蹤';
 
 function columnLetter(count) {
   if (count < 1 || count > 26) throw new Error('欄數超出支援範圍');
@@ -336,4 +342,15 @@ export async function writeDashboardSyncStatus({
     requestBody: { values: [syncStatusValues(normalized)] }
   });
   return normalized;
+}
+
+export async function readTrackingRows({ sheets, spreadsheetId, listTrackingRows }) {
+  if (!sheets || !spreadsheetId) throw new Error('補貨追蹤讀取設定不完整');
+  if (typeof listTrackingRows !== 'function') throw new Error('補貨追蹤讀取器未設定');
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${TRACKING_SHEET_NAME}'!A1:${TRACKING_LAST_COLUMN}1`
+  });
+  assertSheetHeaders(response.data.values?.[0] ?? [], TRACKING_HEADERS, TRACKING_SHEET_NAME);
+  return listTrackingRows();
 }
