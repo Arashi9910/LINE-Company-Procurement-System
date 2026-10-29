@@ -8,6 +8,8 @@ import {
   PREORDER_SHEET_NAME,
   SYNC_STATUS_HEADERS,
   SYNC_STATUS_SHEET_NAME,
+  REORDER_ALERT_HEADERS,
+  REORDER_ALERT_SHEET_NAME,
   DASHBOARD_SYNC_OK,
   DASHBOARD_SYNC_FAILED,
   buildDashboardValues,
@@ -384,13 +386,13 @@ test('initializeInventoryDashboard creates both sheets with frozen bold headers'
   const result = await initializeInventoryDashboard({ sheets, spreadsheetId: 'sheet-123' });
 
   assert.deepEqual(result, {
-    created: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME],
+    created: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, REORDER_ALERT_SHEET_NAME],
     checked: [],
-    changes: 6
+    changes: 8
   });
   const added = batch.requestBody.requests.filter((entry) => entry.addSheet);
   assert.deepEqual(added.map((entry) => entry.addSheet.properties.title),
-    [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME]);
+    [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, REORDER_ALERT_SHEET_NAME]);
   assert.equal(added[1].addSheet.properties.gridProperties.frozenRowCount, 1);
   assert.equal(added[1].addSheet.properties.gridProperties.columnCount, DASHBOARD_HEADERS.length);
   const headers = batch.requestBody.requests.filter((entry) => entry.updateCells);
@@ -407,7 +409,7 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
   const batches = [];
   const sheets = {
     spreadsheets: {
-      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME]).spreadsheets,
+      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, REORDER_ALERT_SHEET_NAME]).spreadsheets,
       async batchUpdate(request) {
         batches.push(request);
         return { data: {} };
@@ -416,6 +418,7 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
         async get({ range }) {
           if (range.includes(PREORDER_SHEET_NAME)) return { data: { values: [[...PREORDER_HEADERS]] } };
           if (range.includes(SYNC_STATUS_SHEET_NAME)) return { data: { values: [[...SYNC_STATUS_HEADERS]] } };
+          if (range.includes(REORDER_ALERT_SHEET_NAME)) return { data: { values: [[...REORDER_ALERT_HEADERS]] } };
           return { data: { values: [[...DASHBOARD_HEADERS]] } };
         }
       }
@@ -426,7 +429,7 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
 
   assert.deepEqual(result, {
     created: [],
-    checked: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME],
+    checked: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, REORDER_ALERT_SHEET_NAME],
     changes: 0
   });
   assert.deepEqual(batches, []);
@@ -514,7 +517,10 @@ test('the production entry point actually wires the dashboard reader', async () 
   const source = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
   assert.match(source, /createDashboardReader/);
   assert.match(source, /enabled: config\.inventoryDashboardEnabled/);
-  assert.match(source, /dashboardReader\s*$/m);
+  // createApp 的呼叫裡要真的帶上 dashboardReader 與 sheets（排程端點要用）。
+  const call = source.slice(source.indexOf('createApp({'));
+  assert.match(call, /\bdashboardReader\b/);
+  assert.match(call, /\bsheets\b/);
 });
 
 test('an anomaly survives calc → board → read back → reply, with its reason', async () => {

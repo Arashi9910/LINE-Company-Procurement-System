@@ -49,6 +49,18 @@ export const SYNC_STATUS_ROW_COUNT = 10;
 export const DASHBOARD_SYNC_OK = '正常';
 export const DASHBOARD_SYNC_FAILED = '同步失敗';
 
+// 叫貨提醒的去重基準。規格第 4.4 節是「同一天只提醒一次，除非缺口又變大」，
+// 所以要記的是「今天已經提醒到哪個缺口」，不能把缺口放進去重鍵——
+// 10 → 5 會產生新鍵而再推一次，正好跟規則相反。每個 SKU 一列，跨日覆寫。
+export const REORDER_ALERT_SHEET_NAME = '叫貨提醒紀錄';
+export const REORDER_ALERT_HEADERS = Object.freeze([
+  'SKU',
+  '提醒日期',
+  '已提醒缺口',
+  '最後提醒時間'
+]);
+export const REORDER_ALERT_ROW_COUNT = 2000;
+
 // 讀取 SKU主檔 只為了取 SKU、顯示名稱與庫存快照。**絕不寫入**：
 // 目錄同步每次寫入前都會比對 A:N 的欄位名稱，動了就會讓整批同步停止。
 export const CATALOG_SHEET_NAME = 'SKU主檔';
@@ -412,4 +424,63 @@ export function createDashboardReader({ sheets, spreadsheetId, enabled }) {
   if (!enabled) return null;
   if (!sheets || !spreadsheetId) throw new Error('庫存看板讀取器設定不完整');
   return () => readInventoryDashboard({ sheets, spreadsheetId });
+}
+
+const REORDER_ALERT_LAST_COLUMN = columnLetter(REORDER_ALERT_HEADERS.length);
+
+export function parseReorderAlertRows(values) {
+  assertSheetHeaders(values?.[0] ?? [], REORDER_ALERT_HEADERS, REORDER_ALERT_SHEET_NAME);
+  const bySku = new Map();
+  let lastUsedRow = 1;
+  for (let index = 1; index < (values?.length ?? 0); index += 1) {
+    const row = paddedRow(values[index], REORDER_ALERT_HEADERS.length);
+    if (!hasValues(row)) continue;
+    const rowNumber = index + 1;
+    lastUsedRow = rowNumber;
+    const sku = normalizeText(row[0]);
+    if (!sku) throw new Error(`${REORDER_ALERT_SHEET_NAME} 第 ${rowNumber} 列缺少 SKU`);
+    if (bySku.has(sku)) {
+      throw new Error(`${REORDER_ALERT_SHEET_NAME} SKU ${sku} 在第 ${bySku.get(sku).rowNumber}、${rowNumber} 列重複`);
+    }
+    const gap = Number(row[2]);
+    bySku.set(sku, Object.freeze({
+      rowNumber,
+      sku,
+      date: normalizeText(row[1]),
+      // 壞掉的基準當成「今天還沒提醒過」比較安全：寧可多推一次，不要漏推。
+      gap: Number.isSafeInteger(gap) ? gap : null,
+      at: normalizeText(row[3])
+    }));
+  }
+  return { bySku, nextRow: lastUsedRow + 1 };
+}
+
+export async function readReorderAlerts({ sheets, spreadsheetId }) {
+  if (!sheets || !spreadsheetId) throw new Error('叫貨提醒紀錄讀取設定不完整');
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${REORDER_ALERT_SHEET_NAME}'!A:${REORDER_ALERT_LAST_COLUMN}`,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  return parseReorderAlertRows(response.data.values ?? []);
+}
+
+// 推播成功之後馬上寫這一列。整批寫到最後才存的話，中途掛掉會讓已經推出去的
+// 提醒沒有留下基準，下一輪全部重推。
+export async function writeReorderAlert({ sheets, spreadsheetId, rowNumber, sku, date, gap, at }) {
+  if (!sheets || !spreadsheetId) throw new Error('叫貨提醒紀錄寫入設定不完整');
+  if (!Number.isSafeInteger(rowNumber) || rowNumber < 2) throw new Error('叫貨提醒紀錄的列號不正確');
+  if (rowNumber > REORDER_ALERT_ROW_COUNT) {
+    throw new Error(`${REORDER_ALERT_SHEET_NAME} 已滿（上限 ${REORDER_ALERT_ROW_COUNT} 列）`);
+  }
+  const normalizedSku = normalizeText(sku);
+  if (!normalizedSku) throw new Error('叫貨提醒紀錄缺少 SKU');
+  if (!Number.isSafeInteger(gap)) throw new Error('叫貨提醒紀錄的缺口必須是整數');
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `'${REORDER_ALERT_SHEET_NAME}'!A${rowNumber}:${REORDER_ALERT_LAST_COLUMN}${rowNumber}`,
+    valueInputOption: 'RAW',
+    requestBody: { values: [[normalizedSku, normalizeText(date), gap, normalizeText(at)]] }
+  });
+  return Object.freeze({ rowNumber, sku: normalizedSku, date: normalizeText(date), gap });
 }

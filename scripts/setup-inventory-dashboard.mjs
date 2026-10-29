@@ -10,6 +10,9 @@ import {
   PREORDER_HEADERS,
   PREORDER_ROW_COUNT,
   PREORDER_SHEET_NAME,
+  REORDER_ALERT_HEADERS,
+  REORDER_ALERT_ROW_COUNT,
+  REORDER_ALERT_SHEET_NAME,
   SYNC_STATUS_HEADERS,
   SYNC_STATUS_ROW_COUNT,
   SYNC_STATUS_SHEET_NAME,
@@ -39,6 +42,14 @@ export const DASHBOARD_TABLES = Object.freeze([
     name: SYNC_STATUS_SHEET_NAME,
     headers: SYNC_STATUS_HEADERS,
     rowCount: SYNC_STATUS_ROW_COUNT,
+    manual: false
+  }),
+  // 叫貨提醒的去重基準：記「今天已經提醒到哪個缺口」，缺口變大才會再推。
+  Object.freeze({
+    sheetId: 1720000003,
+    name: REORDER_ALERT_SHEET_NAME,
+    headers: REORDER_ALERT_HEADERS,
+    rowCount: REORDER_ALERT_ROW_COUNT,
     manual: false
   })
 ]);

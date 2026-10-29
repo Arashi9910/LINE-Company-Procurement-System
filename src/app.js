@@ -19,7 +19,10 @@ export function createApp(dependencies = {}) {
   const {
     config, repository, identityVerifier, messenger, catalogSyncRunner, writebackRunner,
     // 讀「庫存看板」分頁給 查缺貨／查庫存 用。沒給就回「尚未啟用」，不影響其他指令。
-    dashboardReader = null
+    dashboardReader = null,
+    // 叫貨提醒的排程端點要直接讀 Sheets；沒給就回 skipped。
+    sheets = null,
+    readRecentlyOrdered = null
   } = dependencies;
   for (const [name, value] of Object.entries({ config, repository, identityVerifier, messenger })) {
     if (!value) throw new Error(`缺少核心相依物件：${name}`);
@@ -66,7 +69,9 @@ export function createApp(dependencies = {}) {
   app.post('/webhook', express.raw({ type: 'application/json', limit: '1mb' }),
     createWebhookHandler({ config, repository, messenger, catalogSyncRunner, dashboardReader }));
   app.use(express.json({ limit: '64kb' }));
-  app.use('/jobs', createJobsRouter({ config, repository, messenger }));
+  app.use('/jobs', createJobsRouter({
+    config, repository, messenger, sheets, readRecentlyOrdered
+  }));
   app.use('/api', createApiRouter({
     config, repository, identityVerifier, messenger, writebackRunner
   }));

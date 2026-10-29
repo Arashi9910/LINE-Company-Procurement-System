@@ -283,6 +283,27 @@ export function createLineMessenger({ channelAccessToken, liffId }, dependencies
       });
     },
 
+    async pushReorderAlert(groupId, alerts, { updatedAt = '', filtered = true } = {}) {
+      const lines = alerts.slice(0, 20).map((alert) => {
+        // 缺口變大才會重推，所以把前一次的數字帶出來，看得出是不是惡化中。
+        const grew = Number.isSafeInteger(alert.previousGap)
+          ? `（上次提醒 ${alert.previousGap}）`
+          : '';
+        return `• ${alert.displayName || alert.sku}\n`
+          + `　${alert.sku}\n`
+          + `　缺口 ${alert.gap}${grew}｜未寄 ${alert.unshipped}｜叫貨中 ${alert.onOrder}`;
+      });
+      if (alerts.length > 20) lines.push(`…另有 ${alerts.length - 20} 項，詳見「庫存看板」分頁`);
+      const footer = filtered ? '' : '（這次查不到近 30 天動銷清單，未篩選）';
+      const text = [
+        `要叫貨 ${alerts.length} 項`,
+        updatedAt ? `資料時間：${updatedAt}` : '',
+        ...lines,
+        footer
+      ].filter(Boolean).join('\n');
+      await client.pushMessage({ to: groupId, messages: [{ type: 'text', text }] });
+    },
+
     async pushReminder(groupId, candidate) {
       const label = candidate.kind === 'pending' ? '待確認已超過 24 小時' : '已逾預計到貨日';
       const lines = candidate.items.slice(0, 10).map((item) => {
