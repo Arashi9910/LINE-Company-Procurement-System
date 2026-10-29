@@ -354,3 +354,53 @@ export async function readTrackingRows({ sheets, spreadsheetId, listTrackingRows
   assertSheetHeaders(response.data.values?.[0] ?? [], TRACKING_HEADERS, TRACKING_SHEET_NAME);
   return listTrackingRows();
 }
+
+// 把寫出去的看板讀回來給 LINE 指令用。指令不重算——重算要登入飛鼠，太慢，
+// 而且看板本來就是每小時的已發布快照，搭配同步狀態才知道資料有多新。
+function optionalNumber(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  return typeof value === 'number' ? value : Number(value);
+}
+
+export function parseDashboardRows(values) {
+  assertSheetHeaders(values?.[0] ?? [], DASHBOARD_HEADERS, DASHBOARD_SHEET_NAME);
+  const rows = [];
+  for (let index = 1; index < (values?.length ?? 0); index += 1) {
+    const row = paddedRow(values[index], DASHBOARD_HEADERS.length);
+    // 整列空白是上一輪留下、被蓋掉的尾巴。
+    if (!hasValues(row)) continue;
+    rows.push(Object.freeze({
+      sku: normalizeText(row[0]),
+      displayName: normalizeText(row[1]),
+      flyingmouseStock: optionalNumber(row[2]),
+      processing: optionalNumber(row[3]),
+      preparing: optionalNumber(row[4]),
+      unshipped: optionalNumber(row[5]),
+      onOrder: optionalNumber(row[6]),
+      preorderAllowance: optionalNumber(row[7]),
+      safetyStock: optionalNumber(row[8]),
+      estimatedStock: optionalNumber(row[9]),
+      gap: optionalNumber(row[10]),
+      status: normalizeText(row[11]),
+      note: normalizeText(row[12]),
+      updatedAt: normalizeText(row[13])
+    }));
+  }
+  return rows;
+}
+
+export async function readInventoryDashboard({ sheets, spreadsheetId }) {
+  if (!sheets || !spreadsheetId) throw new Error('庫存看板讀取設定不完整');
+  const response = await sheets.spreadsheets.values.batchGet({
+    spreadsheetId,
+    ranges: [
+      `'${DASHBOARD_SHEET_NAME}'!A:${DASHBOARD_LAST_COLUMN}`,
+      `'${SYNC_STATUS_SHEET_NAME}'!A1:${SYNC_STATUS_LAST_COLUMN}2`
+    ],
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  return Object.freeze({
+    rows: parseDashboardRows(response.data.valueRanges?.[0]?.values ?? []),
+    syncStatus: parseSyncStatusRows(response.data.valueRanges?.[1]?.values ?? [])
+  });
+}

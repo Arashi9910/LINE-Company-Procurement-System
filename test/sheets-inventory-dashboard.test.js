@@ -13,6 +13,8 @@ import {
   buildDashboardValues,
   dashboardRowValues,
   parsePreorderRows,
+  parseDashboardRows,
+  readInventoryDashboard,
   readPreorderAllowances,
   writeInventoryDashboard
 } from '../src/sheets/inventory-dashboard.js';
@@ -442,4 +444,43 @@ test('initializeInventoryDashboard stops when an existing header was changed', a
 
   await assert.rejects(initializeInventoryDashboard({ sheets, spreadsheetId: 'sheet-123' }),
     /預購額度 表頭不符/);
+});
+
+test('parseDashboardRows reads the board back and skips the blanked tail', () => {
+  const rows = parseDashboardRows([
+    [...DASHBOARD_HEADERS],
+    ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '備註', '2026-10-29 14:00:00'],
+    // 回寫未完成那一列的推算實際與缺口是空白，讀回來要是 null 不是 0。
+    ['SKU-B', '商品 B', 0, 0, 0, 0, 0, 0, 0, '', '', '回寫未完成', '回寫尚未完成', '2026-10-29 14:00:00'],
+    DASHBOARD_HEADERS.map(() => '')
+  ]);
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].gap, 3);
+  assert.equal(rows[1].estimatedStock, null);
+  assert.equal(rows[1].gap, null);
+  assert.equal(rows[1].status, '回寫未完成');
+});
+
+test('parseDashboardRows refuses a changed header', () => {
+  assert.throws(() => parseDashboardRows([[...DASHBOARD_HEADERS.slice(0, 13), '最後更新']]),
+    /庫存看板 表頭不符/);
+});
+
+test('readInventoryDashboard returns the rows and the sync status together', async () => {
+  const state = sheetsFor({
+    dashboard: [
+      [...DASHBOARD_HEADERS],
+      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
+    ],
+    syncStatus: [[...SYNC_STATUS_HEADERS], [DASHBOARD_SYNC_FAILED, '2026-10-29 13:00:00', '2026-10-29 14:00:00', '飛鼠登入逾時']]
+  });
+
+  const result = await readInventoryDashboard({ sheets: state.sheets, spreadsheetId: 'sheet-123' });
+
+  assert.deepEqual(result.rows.map((row) => row.sku), ['SKU-A']);
+  assert.equal(result.syncStatus.status, DASHBOARD_SYNC_FAILED);
+  assert.equal(result.syncStatus.lastSuccessAt, '2026-10-29 13:00:00');
+  // 讀取不可以寫任何東西。
+  assert.deepEqual(state.calls.updates, []);
 });

@@ -6,12 +6,19 @@ import {
   executeAuthorizationCommand,
   executeCancellationCommand,
   executeCatalogSyncCommand,
+  executeInventoryCommand,
   GROUP_COMMAND_HELP,
   parseGroupCommand,
   summarizeRequests
 } from '../services/group-commands.js';
 
-export function createWebhookHandler({ config, repository, messenger, catalogSyncRunner }) {
+export function createWebhookHandler({
+  config,
+  repository,
+  messenger,
+  catalogSyncRunner,
+  dashboardReader = null
+}) {
   const pendingCompletions = new Set();
   return async function webhookHandler(request, response, next) {
     try {
@@ -157,6 +164,22 @@ export function createWebhookHandler({ config, repository, messenger, catalogSyn
           if (event.replyToken) await messenger.replyText(event.replyToken, reply);
           return;
         }
+
+        // 這一段是「其餘指令」的收尾，會直接當成補貨狀態查詢。
+        // 新指令一定要在上面明確分派，否則會掉進這裡回出一張狀態卡片。
+        if (command.type === 'inventory') {
+          let reply;
+          try {
+            reply = await executeInventoryCommand({ command }, { dashboardReader });
+          } catch (error) {
+            if (!(error instanceof AppError) || error.status >= 500) throw error;
+            reply = error.message;
+          }
+          if (event.replyToken) await messenger.replyText(event.replyToken, reply);
+          return;
+        }
+
+        if (command.type !== 'status') return;
 
         const rows = await repository.listRequestRows();
         const result = summarizeRequests(rows, command.status, 10, command.page);

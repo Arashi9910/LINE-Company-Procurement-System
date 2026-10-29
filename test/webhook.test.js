@@ -86,7 +86,8 @@ async function start(t, calls) {
           state: 'accepted', operation: 'operation-123', execution: 'execution-123'
         };
       }
-    }
+    },
+    dashboardReader: calls.dashboardReader
   });
   const server = app.listen(0);
   t.after(() => server.close());
@@ -481,4 +482,120 @@ test('webhook returns a safe reply when the FlyingMouse catalog job API fails', 
   assert.equal(response.status, 200);
   assert.match(calls.texts[0].text, /同步服務暫時無法使用/);
   assert.doesNotMatch(calls.texts[0].text, /private project id/);
+});
+
+function dashboardFixture(overrides = {}) {
+  return {
+    syncStatus: { status: '正常', lastSuccessAt: '2026-10-29 17:00:00', lastAttemptAt: '2026-10-29 17:00:00', message: '' },
+    rows: [
+      {
+        sku: 'SKU-A', displayName: '雨傘 大', flyingmouseStock: 7, processing: 3, preparing: 0,
+        unshipped: 3, onOrder: 0, preorderAllowance: 10, safetyStock: 0,
+        estimatedStock: 0, gap: 3, status: '要叫貨', note: '', updatedAt: '2026-10-29 17:00:00'
+      },
+      {
+        sku: 'SKU-B', displayName: '雨衣', flyingmouseStock: 20, processing: 0, preparing: 0,
+        unshipped: 0, onOrder: 0, preorderAllowance: 0, safetyStock: 0,
+        estimatedStock: 20, gap: -20, status: '正常', note: '', updatedAt: '2026-10-29 17:00:00'
+      }
+    ],
+    ...overrides
+  };
+}
+
+async function sendText(baseUrl, text) {
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: `event-${encodeURIComponent(text)}`,
+    replyToken: `reply-${encodeURIComponent(text)}`,
+    source: { type: 'group', groupId: 'COMPANY', userId: 'U1' },
+    message: { type: 'text', text }
+  }] });
+  return fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+}
+
+test('webhook answers 查缺貨 from the dashboard, not the status cards', async (t) => {
+  const calls = { groups: [], links: [], texts: [], dashboardReader: async () => dashboardFixture() };
+  const baseUrl = await start(t, calls);
+
+  const response = await sendText(baseUrl, '查缺貨');
+
+  assert.equal(response.status, 200);
+  // 計畫步驟 6 的重點：沒有明確分派的話會掉進 listRequestRows → 回出補貨狀態卡片。
+  assert.equal(calls.statusReads, undefined, '不該去讀補貨追蹤');
+  assert.equal(calls.statusCards, undefined, '不該回狀態卡片');
+  assert.match(calls.texts[0].text, /要叫貨 1 個/);
+  assert.match(calls.texts[0].text, /雨傘 大/);
+  assert.match(calls.texts[0].text, /缺口 3/);
+});
+
+test('webhook answers 查庫存 with the four numbers for a keyword', async (t) => {
+  const calls = { groups: [], links: [], texts: [], dashboardReader: async () => dashboardFixture() };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查庫存 雨衣');
+
+  assert.equal(calls.statusCards, undefined);
+  const reply = calls.texts[0].text;
+  assert.match(reply, /SKU SKU-B/);
+  assert.match(reply, /飛鼠 20/);
+  assert.equal(reply.includes('雨傘'), false, '關鍵字不符的不該出現');
+});
+
+test('webhook marks the reply as stale while the dashboard sync is failing', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => dashboardFixture({
+      syncStatus: {
+        status: '同步失敗',
+        lastSuccessAt: '2026-10-29 16:00:00',
+        lastAttemptAt: '2026-10-29 17:00:00',
+        message: '飛鼠登入逾時'
+      }
+    })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  // 規格第 5 節：同步失敗期間要標明資料是上一次成功的結果與時間。
+  assert.match(calls.texts[0].text, /同步失敗/);
+  assert.match(calls.texts[0].text, /2026-10-29 16:00:00/);
+});
+
+test('webhook explains itself when the dashboard cannot be read', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => { throw new Error('Unable to parse range: 庫存看板'); }
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  // 不可以把原始錯誤丟給群組。
+  assert.match(calls.texts[0].text, /讀不到庫存看板/);
+  assert.equal(calls.texts[0].text.includes('Unable to parse range'), false);
+});
+
+test('webhook says the dashboard is off when no reader is wired', async (t) => {
+  const calls = { groups: [], links: [], texts: [] };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  assert.match(calls.texts[0].text, /尚未啟用/);
+  assert.equal(calls.statusCards, undefined);
+});
+
+test('查庫存 without a keyword asks for one instead of listing everything', async (t) => {
+  const calls = { groups: [], links: [], texts: [], dashboardReader: async () => dashboardFixture() };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查庫存');
+
+  assert.match(calls.texts[0].text, /請輸入要查的 SKU 或關鍵字/);
 });

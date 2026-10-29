@@ -1,3 +1,4 @@
+import { DASHBOARD_SYNC_FAILED } from '../sheets/inventory-dashboard.js';
 import {
   AppError,
   AuthenticationError,
@@ -24,6 +25,7 @@ export const GROUP_COMMAND_HELP = [
   '每日工作：今日待辦｜固定待辦｜待辦指令',
   '查未結案｜查待確認｜查已下單',
   '查部分到貨｜查已完成｜查取消｜查已轉單',
+  '查缺貨｜查庫存 <SKU 或關鍵字>',
   '查詢卡片下方可切換上一頁／下一頁',
   '取消補貨 <補貨單號>',
   '取消採購 <補貨單號>',
@@ -48,6 +50,15 @@ export function parseGroupCommand(message) {
     }
   }
   if (text === '補貨指令') return { type: 'help' };
+  if (text === '查缺貨') return { type: 'inventory', action: 'shortage' };
+  const stockMatch = /^查庫存\s+(.+)$/.exec(text);
+  if (stockMatch) {
+    const keyword = stockMatch[1].trim();
+    if (keyword) return { type: 'inventory', action: 'stock', keyword };
+  }
+  if (/^查庫存(?:\s|$)/.test(text)) {
+    return { type: 'inventory', action: 'stock-error' };
+  }
   if (text === '同步飛鼠商品') return { type: 'catalog-sync', action: 'start' };
   if (text === '查飛鼠同步') return { type: 'catalog-sync', action: 'status' };
 
@@ -352,6 +363,10 @@ export function summarizeRequests(rows, filter, limit = 10, requestedPage = 1) {
   };
 }
 
+function normalizeText(value) {
+  return String(value ?? '').trim();
+}
+
 function compactName(value, maxLength = 18) {
   const name = String(value || '未命名商品');
   return name.length > maxLength ? `${name.slice(0, maxLength)}…` : name;
@@ -371,4 +386,84 @@ export function formatStatusReply(filter, result) {
     `   ${compactName(item.firstItem)}${item.itemCount > 1 ? '等' : ''}`
   ]);
   return [header, ...lines].join('\n');
+}
+
+// ---- 庫存看板指令（查缺貨／查庫存）----
+
+const INVENTORY_REPLY_LIMIT = 10;
+
+function inventoryFreshness(syncStatus) {
+  // 規格第 5 節：同步失敗期間，回覆開頭要標明資料是上一次成功的結果與時間。
+  if (syncStatus?.status !== DASHBOARD_SYNC_FAILED) return '';
+  const at = normalizeText(syncStatus?.lastSuccessAt);
+  return at
+    ? `⚠️ 同步失敗，以下是上一次成功的資料（${at}）\n`
+    : `⚠️ 同步失敗，而且查不到上一次成功的時間，以下數字不可信\n`;
+}
+
+function inventoryLine(row) {
+  const gap = row.gap === null ? '—' : row.gap;
+  return `${compactName(row.displayName || row.sku, 24)}\n`
+    + `　缺口 ${gap}｜未寄 ${row.unshipped}｜叫貨中 ${row.onOrder}｜飛鼠 ${row.flyingmouseStock}`;
+}
+
+export function formatShortageReply(dashboard) {
+  const prefix = inventoryFreshness(dashboard?.syncStatus);
+  const rows = (dashboard?.rows ?? []).filter((row) => typeof row.gap === 'number' && row.gap > 0);
+  if (rows.length === 0) {
+    const blocked = (dashboard?.rows ?? []).filter((row) => row.status === '回寫未完成').length;
+    const tail = blocked > 0 ? `\n（另有 ${blocked} 個貨號因回寫未完成暫不計算）` : '';
+    return `${prefix}目前沒有要叫貨的品項。${tail}`;
+  }
+  const sorted = [...rows].sort((left, right) => right.gap - left.gap);
+  const shown = sorted.slice(0, INVENTORY_REPLY_LIMIT);
+  const more = sorted.length > shown.length
+    ? `\n…還有 ${sorted.length - shown.length} 個，詳見「庫存看板」分頁`
+    : '';
+  return `${prefix}要叫貨 ${sorted.length} 個：\n${shown.map(inventoryLine).join('\n')}${more}`;
+}
+
+export function formatStockReply(dashboard, keyword) {
+  const prefix = inventoryFreshness(dashboard?.syncStatus);
+  const needle = normalizeText(keyword).toLowerCase();
+  if (!needle) return `${prefix}請輸入要查的 SKU 或關鍵字，例如「查庫存 雨傘」。`;
+  const matched = (dashboard?.rows ?? []).filter((row) =>
+    row.sku.toLowerCase().includes(needle) || row.displayName.toLowerCase().includes(needle));
+  if (matched.length === 0) return `${prefix}找不到符合「${keyword}」的商品。`;
+  const shown = matched.slice(0, INVENTORY_REPLY_LIMIT);
+  const more = matched.length > shown.length
+    ? `\n…共 ${matched.length} 筆，只顯示前 ${shown.length} 筆，請縮小關鍵字`
+    : '';
+  const body = shown.map((row) => {
+    const estimated = row.estimatedStock === null ? '—' : row.estimatedStock;
+    const note = row.note ? `\n　${row.note}` : '';
+    return `${compactName(row.displayName || row.sku, 24)}\n`
+      + `　SKU ${row.sku}\n`
+      + `　飛鼠 ${row.flyingmouseStock}｜未寄 ${row.unshipped}｜叫貨中 ${row.onOrder}｜預購額度 ${row.preorderAllowance}\n`
+      + `　推算實際 ${estimated}｜缺口 ${row.gap === null ? '—' : row.gap}｜${row.status}${note}`;
+  }).join('\n\n');
+  return `${prefix}${body}${more}`;
+}
+
+export async function executeInventoryCommand({ command }, { dashboardReader }) {
+  if (typeof dashboardReader !== 'function') {
+    throw new ValidationError('庫存看板尚未啟用，請聯絡管理員。');
+  }
+  if (command.action === 'stock-error') {
+    return '請輸入要查的 SKU 或關鍵字，例如「查庫存 雨傘」。';
+  }
+  let dashboard;
+  try {
+    dashboard = await dashboardReader();
+  } catch (error) {
+    // 看板分頁還沒建立或表頭被改過都會走到這裡。不要把原始錯誤丟給群組。
+    console.error('inventory dashboard read failed', { name: error?.name ?? 'Error' });
+    throw new ValidationError('讀不到庫存看板，請聯絡管理員確認分頁狀態。');
+  }
+  if (!dashboard.syncStatus?.lastSuccessAt && dashboard.rows.length === 0) {
+    return '庫存看板還沒有資料，請等下一次同步完成。';
+  }
+  return command.action === 'shortage'
+    ? formatShortageReply(dashboard)
+    : formatStockReply(dashboard, command.keyword);
 }

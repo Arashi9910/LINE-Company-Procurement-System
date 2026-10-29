@@ -7,6 +7,11 @@ export const ORDER_PAGE_SIZE = 200;
 export const MAX_REREADS = 2;
 export const ORDER_REQUEST_TIMEOUT_MS = 60_000;
 
+// 動銷判定用：近 N 天內有訂單就算，不看件數（規格第 4.4 節，使用者決定）。
+export const RECENT_ORDER_DAYS = 30;
+// 取消與棄單不算「動過」。其餘（含待取消/退貨）都代表有人下過單。
+const INACTIVE_ORDER_STATUSES = Object.freeze(new Set([4, 6]));
+
 // 只取算量與查核需要的欄位；products / part_list 由 detail=1 帶出，不受 columns[] 影響。
 const ORDER_COLUMNS = Object.freeze(['id', 'no', 'status']);
 
@@ -72,6 +77,64 @@ export function buildOrderQueryPath({ status, offset, size }) {
   ];
   // 不送 pageCode（實測不生效），也不送 create_time 區間（會漏掉兩個月前的預購單）。
   return `/api/admin/order?${parameters.join('&')}`;
+}
+
+// 動銷查詢要帶日期、不帶狀態；跟上面那支「賣掉還沒寄」剛好相反，
+// 理由見規格第 7.5 節：未寄訂單裡有舊預購單，帶日期會漏掉。
+export function buildRecentOrderQueryPath({ since, offset, size }) {
+  const sinceText = String(since ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}(:\d{2})?)?$/.test(sinceText)) {
+    throw new FlyingMouseOrderError('動銷查詢的起始時間格式不正確', { code: 'INVALID_RANGE' });
+  }
+  const parameters = [
+    'detail=1',
+    'equals[deleted]=0',
+    `gtes[create_time]=${encodeURIComponent(sinceText)}`,
+    ...ORDER_COLUMNS.map((column) => `columns[]=${encodeURIComponent(column)}`),
+    'columns[]=create_time',
+    `offset=${encodeURIComponent(offset)}`,
+    `size=${encodeURIComponent(size)}`
+  ];
+  return `/api/admin/order?${parameters.join('&')}`;
+}
+
+export function recentOrderSince(now = new Date(), days = RECENT_ORDER_DAYS) {
+  if (!Number.isSafeInteger(days) || days < 1) throw new Error('動銷天數必須是正整數');
+  const date = new Date(now.getTime() - days * 86_400_000);
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} 00:00:00`;
+}
+
+// 只收貨號，不算數量——判定是「有沒有訂單」，不是「賣了幾件」。
+export function collectOrderedSkus(orders) {
+  const skus = new Set();
+  for (const order of orders) {
+    const orderNo = normalizeText(order?.no) || String(order?.id ?? '');
+    const status = strictInteger(order?.status, `訂單 ${orderNo} 的狀態`);
+    if (INACTIVE_ORDER_STATUSES.has(status)) continue;
+    if (!Array.isArray(order?.products)) {
+      throw new FlyingMouseOrderError(`訂單 ${orderNo} 缺少 products 明細`, { code: 'INVALID_ORDER' });
+    }
+    for (const product of order.products) {
+      if (!isPlainObject(product)) {
+        throw new FlyingMouseOrderError(`訂單 ${orderNo} 的商品列格式不正確`, { code: 'INVALID_ORDER' });
+      }
+      const partList = product.part_list;
+      if (partList === undefined || partList === null) continue;
+      if (!Array.isArray(partList)) {
+        throw new FlyingMouseOrderError(`訂單 ${orderNo} 的 part_list 型別不正確`, { code: 'INVALID_ORDER' });
+      }
+      for (const part of partList) {
+        if (!isPlainObject(part)) {
+          throw new FlyingMouseOrderError(`訂單 ${orderNo} 的 part_list 元素格式不正確`, {
+            code: 'INVALID_ORDER'
+          });
+        }
+        skus.add(partNumber(part.no, `訂單 ${orderNo} 的 part_list `));
+      }
+    }
+  }
+  return skus;
 }
 
 function accumulate(target, orders, key) {
@@ -184,56 +247,70 @@ async function requestOrders(page, path) {
   return { total, list: data.list };
 }
 
+// 翻頁與完整性檢查兩支查詢共用：每頁 total 要一致、訂單 id 不可重複、
+// 去重後筆數要等於 total（光比對累計列數擋不掉重複頁），還要有迴圈上限。
+async function paginateOrders(page, { buildPath, checkOrder, label }) {
+  const byId = new Map();
+  let expectedTotal = null;
+  let offset = 0;
+  for (let round = 0; ; round += 1) {
+    const { total, list } = await requestOrders(page, buildPath(offset));
+    if (expectedTotal === null) expectedTotal = total;
+    else if (total !== expectedTotal) {
+      throw new FlyingMouseOrderError(
+        `${label}筆數在翻頁途中變動（${expectedTotal} → ${total}）`,
+        { code: 'TOTAL_DRIFT', retryable: true }
+      );
+    }
+    for (const order of list) {
+      const id = positiveInteger(order?.id, '訂單 id 的');
+      checkOrder?.(order, id);
+      if (byId.has(id)) {
+        throw new FlyingMouseOrderError(`飛鼠訂單 ${id} 在翻頁中重複出現`, {
+          code: 'DUPLICATE_ORDER',
+          retryable: true
+        });
+      }
+      byId.set(id, order);
+    }
+    if (byId.size >= expectedTotal || list.length === 0) break;
+    if (round > Math.ceil(expectedTotal / ORDER_PAGE_SIZE) + 2) {
+      throw new FlyingMouseOrderError(`${label}翻頁次數異常，已中止`, { code: 'PAGINATION_STUCK' });
+    }
+    offset += ORDER_PAGE_SIZE;
+  }
+  if (byId.size !== expectedTotal) {
+    throw new FlyingMouseOrderError(
+      `${label}筆數不符：去重後 ${byId.size}，API total ${expectedTotal}`,
+      { code: 'COUNT_MISMATCH', retryable: true }
+    );
+  }
+  return [...byId.values()];
+}
+
 export function createFlyingMouseOrderClient(page) {
   if (!page || typeof page.evaluate !== 'function') throw new Error('飛鼠頁面 session 不完整');
   return Object.freeze({
     async fetchOrdersByStatus(status) {
       const wanted = Number(status);
-      const byId = new Map();
-      let expectedTotal = null;
-      let offset = 0;
-      // 每頁至少要收下 1 筆才算有進展，再加上 2 次寬限，避免 offset 不前進時無限打 API。
-      for (let round = 0; ; round += 1) {
-        const { total, list } = await requestOrders(page, buildOrderQueryPath({
-          status: wanted, offset, size: ORDER_PAGE_SIZE
-        }));
-        if (expectedTotal === null) expectedTotal = total;
-        else if (total !== expectedTotal) {
-          throw new FlyingMouseOrderError(
-            `飛鼠訂單筆數在翻頁途中變動（${expectedTotal} → ${total}）`,
-            { code: 'TOTAL_DRIFT', retryable: true }
-          );
-        }
-        for (const order of list) {
-          const id = positiveInteger(order?.id, '訂單 id 的');
+      return paginateOrders(page, {
+        label: '飛鼠訂單',
+        buildPath: (offset) => buildOrderQueryPath({ status: wanted, offset, size: ORDER_PAGE_SIZE }),
+        checkOrder: (order, id) => {
           if (strictInteger(order?.status, `訂單 ${normalizeText(order?.no) || id} 的狀態`) !== wanted) {
             throw new FlyingMouseOrderError(
               `訂單 ${normalizeText(order?.no) || id} 的狀態與查詢不符`,
               { code: 'STATUS_MISMATCH', retryable: true }
             );
           }
-          if (byId.has(id)) {
-            throw new FlyingMouseOrderError(`飛鼠訂單 ${id} 在翻頁中重複出現`, {
-              code: 'DUPLICATE_ORDER',
-              retryable: true
-            });
-          }
-          byId.set(id, order);
         }
-        if (byId.size >= expectedTotal || list.length === 0) break;
-        if (round > Math.ceil(expectedTotal / ORDER_PAGE_SIZE) + 2) {
-          throw new FlyingMouseOrderError('飛鼠訂單翻頁次數異常，已中止', { code: 'PAGINATION_STUCK' });
-        }
-        offset += ORDER_PAGE_SIZE;
-      }
-      // 以去重後的訂單數核對 total，光比對累計列數擋不掉重複頁。
-      if (byId.size !== expectedTotal) {
-        throw new FlyingMouseOrderError(
-          `飛鼠訂單筆數不符：去重後 ${byId.size}，API total ${expectedTotal}`,
-          { code: 'COUNT_MISMATCH', retryable: true }
-        );
-      }
-      return [...byId.values()];
+      });
+    },
+    async fetchOrdersSince(since) {
+      return paginateOrders(page, {
+        label: '飛鼠近期訂單',
+        buildPath: (offset) => buildRecentOrderQueryPath({ since, offset, size: ORDER_PAGE_SIZE })
+      });
     }
   });
 }
@@ -268,6 +345,40 @@ export async function readOpenOrderQuantities(client, { maxRereads = MAX_REREADS
       };
     } catch (error) {
       // 資料在動造成的不一致才重讀；資料本身壞掉（例如貨號空白）重讀也沒用。
+      if (!error?.retryable || attempt === maxRereads) throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+// 回傳近 N 天內有訂單的貨號集合。判定只看「有沒有」，不看件數（規格第 4.4 節）。
+export async function readRecentlyOrderedSkus(client, {
+  now = new Date(),
+  days = RECENT_ORDER_DAYS,
+  maxRereads = MAX_REREADS,
+  logger = null
+} = {}) {
+  if (!client || typeof client.fetchOrdersSince !== 'function') {
+    throw new Error('飛鼠訂單客戶端不完整');
+  }
+  const since = recentOrderSince(now, days);
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRereads; attempt += 1) {
+    try {
+      const orders = await client.fetchOrdersSince(since);
+      const skus = collectOrderedSkus(orders);
+      if (typeof logger?.info === 'function') {
+        logger.info({
+          component: 'inventory-dashboard',
+          status: 'recent-orders',
+          since,
+          orders: orders.length,
+          skus: skus.size
+        });
+      }
+      return { since, skus, orderCount: orders.length };
+    } catch (error) {
       if (!error?.retryable || attempt === maxRereads) throw error;
       lastError = error;
     }

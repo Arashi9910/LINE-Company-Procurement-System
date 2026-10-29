@@ -7,7 +7,12 @@ import {
   buildOrderQueryPath,
   aggregateOrderQuantities,
   createFlyingMouseOrderClient,
-  readOpenOrderQuantities
+  readOpenOrderQuantities,
+  buildRecentOrderQueryPath,
+  collectOrderedSkus,
+  recentOrderSince,
+  readRecentlyOrderedSkus,
+  RECENT_ORDER_DAYS
 } from '../src/flyingmouse/order-reader.js';
 
 function order(id, no, status, products) {
@@ -443,4 +448,125 @@ test('fetchOrdersByStatus 把瀏覽器端的逾時轉成可重試的錯誤', asy
     client.fetchOrdersByStatus(ORDER_STATUS_PROCESSING),
     (error) => error.code === 'TIMEOUT' && error.retryable === true
   );
+});
+
+// ---- 動銷（近 30 天有訂單就算，不看件數）----
+
+test('buildRecentOrderQueryPath 帶日期、不帶狀態', () => {
+  const path = buildRecentOrderQueryPath({ since: '2026-09-29 00:00:00', offset: 200, size: 200 });
+  assert.ok(path.includes('detail=1'));
+  assert.ok(path.includes('equals[deleted]=0'));
+  // 規格第 7.5 節：查動銷「要」帶日期，跟查未寄訂單剛好相反。
+  assert.ok(path.includes(`gtes[create_time]=${encodeURIComponent('2026-09-29 00:00:00')}`));
+  assert.ok(path.includes('columns[]=create_time'));
+  assert.equal(path.includes('equals[status]'), false, '動銷不限狀態，要在本地篩');
+  assert.equal(path.includes('pageCode'), false);
+  assert.ok(path.includes('offset=200'));
+});
+
+test('buildRecentOrderQueryPath 擋掉壞掉的起始時間', () => {
+  for (const since of ['', '2026/09/29', '上個月', null, '2026-09-29T00:00:00Z']) {
+    assert.throws(() => buildRecentOrderQueryPath({ since, offset: 0, size: 200 }), /起始時間格式/);
+  }
+  assert.ok(buildRecentOrderQueryPath({ since: '2026-09-29', offset: 0, size: 200 }));
+  assert.ok(buildRecentOrderQueryPath({ since: '2026-09-29 00:00', offset: 0, size: 200 }));
+});
+
+test('recentOrderSince 回推 N 天的當天零時', () => {
+  assert.equal(recentOrderSince(new Date('2026-10-29T12:00:00'), 30), '2026-09-29 00:00:00');
+  assert.equal(recentOrderSince(new Date('2026-03-05T12:00:00'), 7), '2026-02-26 00:00:00');
+  assert.equal(RECENT_ORDER_DAYS, 30);
+  assert.throws(() => recentOrderSince(new Date(), 0), /正整數/);
+});
+
+test('collectOrderedSkus 只看有沒有訂單，取消與棄單不算', () => {
+  const skus = collectOrderedSkus([
+    order(1, 'A1', 5, [product(3, [{ no: 'SKU-A', qty: 1 }])]),
+    order(2, 'A2', 0, [product(1, [{ no: 'SKU-A', qty: 1 }, { no: 'SKU-B', qty: 2 }])]),
+    order(3, 'A3', 9, [product(1, [{ no: 'SKU-C', qty: 1 }])]),
+    // 取消與棄單不算「動過」。
+    order(4, 'A4', 4, [product(1, [{ no: 'SKU-CANCELLED', qty: 1 }])]),
+    order(5, 'A5', 6, [product(1, [{ no: 'SKU-ABANDONED', qty: 1 }])]),
+    // 折價列沒有 part_list，跳過不算錯。
+    order(6, 'A6', 5, [{ qty: 1 }, product(1, [{ no: 'SKU-D', qty: 1 }])])
+  ]);
+
+  assert.deepEqual([...skus].sort(), ['SKU-A', 'SKU-B', 'SKU-C', 'SKU-D']);
+});
+
+test('collectOrderedSkus 對壞掉的明細一樣丟錯', () => {
+  assert.throws(() => collectOrderedSkus([order(1, 'A1', 5, null)]), /缺少 products 明細/);
+  assert.throws(() => collectOrderedSkus([order(1, 'A1', 5, [null])]), /商品列格式不正確/);
+  assert.throws(() => collectOrderedSkus([order(1, 'A1', 5, [product(1, [{ no: {}, qty: 1 }])])]),
+    /貨號型別不正確/);
+  assert.throws(() => collectOrderedSkus([order(1, 'A1', null, [])]), /狀態必須是整數/);
+});
+
+test('readRecentlyOrderedSkus 回傳貨號集合與查詢起點', async () => {
+  const calls = [];
+  const client = {
+    async fetchOrdersSince(since) {
+      calls.push(since);
+      return [order(1, 'A1', 5, [product(2, [{ no: 'SKU-A', qty: 3 }])])];
+    }
+  };
+
+  const result = await readRecentlyOrderedSkus(client, { now: new Date('2026-10-29T12:00:00') });
+
+  assert.deepEqual(calls, ['2026-09-29 00:00:00']);
+  assert.deepEqual([...result.skus], ['SKU-A']);
+  assert.equal(result.orderCount, 1);
+  assert.equal(result.since, '2026-09-29 00:00:00');
+});
+
+test('readRecentlyOrderedSkus 只重讀可重試的錯誤', async () => {
+  let attempts = 0;
+  const drifting = {
+    async fetchOrdersSince() {
+      attempts += 1;
+      if (attempts < 2) {
+        const error = new Error('筆數在翻頁途中變動');
+        error.retryable = true;
+        throw error;
+      }
+      return [order(1, 'A1', 5, [product(1, [{ no: 'SKU-A', qty: 1 }])])];
+    }
+  };
+  assert.deepEqual([...(await readRecentlyOrderedSkus(drifting, {})).skus], ['SKU-A']);
+  assert.equal(attempts, 2);
+
+  let fatal = 0;
+  const broken = {
+    async fetchOrdersSince() {
+      fatal += 1;
+      throw new Error('貨號型別不正確');
+    }
+  };
+  await assert.rejects(readRecentlyOrderedSkus(broken, {}), /貨號型別不正確/);
+  assert.equal(fatal, 1, '資料本身壞掉重讀也沒用');
+});
+
+test('fetchOrdersSince 會翻頁並套用同一組完整性檢查', async () => {
+  const queries = [];
+  const orders = Array.from({ length: 250 }, (_, index) =>
+    order(index + 1, `A${index + 1}`, 5, [product(1, [{ no: `SKU-${index % 3}`, qty: 1 }])]));
+  const page = {
+    async evaluate(_fn, input) {
+      queries.push(input.path);
+      const url = new URL(input.path, 'https://example.test');
+      const offset = Number(url.searchParams.get('offset'));
+      const size = Number(url.searchParams.get('size'));
+      return {
+        status: 200,
+        body: { code: 0, data: { total: orders.length, list: orders.slice(offset, offset + size) } }
+      };
+    }
+  };
+
+  const result = await createFlyingMouseOrderClient(page).fetchOrdersSince('2026-09-29 00:00:00');
+
+  assert.equal(result.length, 250);
+  assert.equal(queries.length, 2);
+  assert.ok(queries[1].includes(`offset=${ORDER_PAGE_SIZE}`));
+  assert.deepEqual([...collectOrderedSkus(result)].sort(), ['SKU-0', 'SKU-1', 'SKU-2']);
 });
