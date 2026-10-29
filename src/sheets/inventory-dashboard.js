@@ -94,7 +94,9 @@ export async function readPreorderAllowances({ sheets, spreadsheetId }) {
   if (!sheets || !spreadsheetId) throw new Error('預購額度讀取設定不完整');
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `'${PREORDER_SHEET_NAME}'!A1:${PREORDER_LAST_COLUMN}${PREORDER_ROW_COUNT}`,
+    // 不綁列數上限：人工可以把分頁加長，寫在上限外的那一列會被無聲漏掉，
+    // 計算層只會看到「沒填預購額度」，缺口直接少算整個額度。
+    range: `'${PREORDER_SHEET_NAME}'!A:${PREORDER_LAST_COLUMN}`,
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
   return parsePreorderRows(response.data.values ?? []);
@@ -131,44 +133,43 @@ export function buildDashboardValues({ rows = [], updatedAt = '' } = {}) {
   return [[...DASHBOARD_HEADERS], ...rows.map((row) => dashboardRowValues(row, timestamp))];
 }
 
-// 整張覆寫：先寫新的表格，再清掉上一輪留下來的多餘列。
-// 順序不可顛倒——先清再寫的話，中途失敗會留下一張空看板。
+// 整張覆寫，只送一次 values.update：新表格 + 把上一輪多出來的列補成空白。
+// 分成「寫入」與「清除」兩次請求的話，中間失敗會留下新舊混在一起的看板
+// （舊的 A、B、C 換成只剩 C 時，會變成 C、B、C），而且上一次的完整看板已經沒了。
 export async function writeInventoryDashboard({ sheets, spreadsheetId, dashboard }) {
   if (!sheets || !spreadsheetId) throw new Error('庫存看板寫入設定不完整');
   const values = buildDashboardValues(dashboard);
-  if (values.length > DASHBOARD_ROW_COUNT) {
-    throw new Error(`${DASHBOARD_SHEET_NAME} 需要 ${values.length} 列，超過上限 ${DASHBOARD_ROW_COUNT}`);
-  }
 
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `'${DASHBOARD_SHEET_NAME}'!A1:${DASHBOARD_LAST_COLUMN}${DASHBOARD_ROW_COUNT}`,
+    range: `'${DASHBOARD_SHEET_NAME}'!A:${DASHBOARD_LAST_COLUMN}`,
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
   const existing = response.data.values ?? [];
   // 分頁還沒建立或表頭被改過就停手，不要把資料寫進位置不對的欄。
   assertSheetHeaders(existing[0] ?? [], DASHBOARD_HEADERS, DASHBOARD_SHEET_NAME);
 
+  // existing 的尾端空白列不會回傳，所以 existing.length 就是上一輪的實際高度。
+  const blankRows = Math.max(0, existing.length - values.length);
+  const payload = [
+    ...values,
+    ...Array.from({ length: blankRows }, () => DASHBOARD_HEADERS.map(() => ''))
+  ];
+  if (payload.length > DASHBOARD_ROW_COUNT) {
+    throw new Error(`${DASHBOARD_SHEET_NAME} 需要 ${payload.length} 列，超過上限 ${DASHBOARD_ROW_COUNT}`);
+  }
+
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `'${DASHBOARD_SHEET_NAME}'!A1:${DASHBOARD_LAST_COLUMN}${values.length}`,
+    range: `'${DASHBOARD_SHEET_NAME}'!A1:${DASHBOARD_LAST_COLUMN}${payload.length}`,
     valueInputOption: 'RAW',
-    requestBody: { values }
+    requestBody: { values: payload }
   });
-
-  // existing 的尾端空白列不會回傳，所以 existing.length 就是上一輪的實際高度。
-  const staleRows = Math.max(0, Math.min(existing.length, DASHBOARD_ROW_COUNT) - values.length);
-  if (staleRows > 0) {
-    await sheets.spreadsheets.values.clear({
-      spreadsheetId,
-      range: `'${DASHBOARD_SHEET_NAME}'!A${values.length + 1}:${DASHBOARD_LAST_COLUMN}${values.length + staleRows}`
-    });
-  }
 
   return Object.freeze({
     sheet: DASHBOARD_SHEET_NAME,
     rows: values.length - 1,
-    clearedRows: staleRows,
+    clearedRows: blankRows,
     updatedAt: normalizeText(dashboard?.updatedAt)
   });
 }

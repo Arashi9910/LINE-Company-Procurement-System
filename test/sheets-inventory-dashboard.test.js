@@ -37,7 +37,7 @@ function row(overrides = {}) {
   };
 }
 
-function sheetsFor({ dashboard = null, preorder = null, onUpdate, onClear } = {}) {
+function sheetsFor({ dashboard = null, preorder = null } = {}) {
   const calls = { updates: [], clears: [], reads: [] };
   const sheets = {
     spreadsheets: {
@@ -50,12 +50,11 @@ function sheetsFor({ dashboard = null, preorder = null, onUpdate, onClear } = {}
         },
         async update(request) {
           calls.updates.push(request);
-          onUpdate?.(request);
           return { data: {} };
         },
+        // clear 只留著當警報器：整張覆寫是一次寫入，不該再有人呼叫它。
         async clear(request) {
           calls.clears.push(request);
-          onClear?.(request);
           return { data: {} };
         }
       }
@@ -102,13 +101,26 @@ test('parsePreorderRows rejects a changed header, a blank SKU and duplicates', (
   ]), /SKU SKU-A 在第 2、3 列重複/);
 });
 
-test('readPreorderAllowances asks for unformatted values within the row budget', async () => {
-  const state = sheetsFor({ preorder: [[...PREORDER_HEADERS], ['SKU-A', 10, 0, '', '', '']] });
+test('readPreorderAllowances reads the whole sheet, not a fixed row budget', async () => {
+  // 人工把分頁加長、把額度填在上限外的那一列時，綁死列數會讓那筆無聲消失，
+  // 計算層只會看到「沒填預購額度」，缺口就少算整個額度。
+  const preorder = [[...PREORDER_HEADERS]];
+  while (preorder.length < 2000) preorder.push([]);
+  preorder.push(['SKU-FAR', 10, 0, '加在上限外', '', '']);
+  const state = sheetsFor({ preorder });
 
   const rows = await readPreorderAllowances({ sheets: state.sheets, spreadsheetId: 'sheet-123' });
 
-  assert.deepEqual(state.calls.reads, ["'預購額度'!A1:F2000"]);
-  assert.deepEqual(rows.map((item) => item.sku), ['SKU-A']);
+  assert.deepEqual(state.calls.reads, ["'預購額度'!A:F"]);
+  assert.deepEqual(rows.map((item) => [item.rowNumber, item.sku]), [[2001, 'SKU-FAR']]);
+});
+
+test('parsePreorderRows still catches a duplicate beyond the old row budget', () => {
+  const values = [[...PREORDER_HEADERS], ['SKU-A', 10, 0, '', '', '']];
+  while (values.length < 2000) values.push([]);
+  values.push(['SKU-A', 4, 0, '', '', '']);
+
+  assert.throws(() => parsePreorderRows(values), /SKU SKU-A 在第 2、2001 列重複/);
 });
 
 test('dashboardRowValues writes suppressed numbers as blank, never zero', () => {
@@ -141,14 +153,11 @@ test('buildDashboardValues puts the header first and refuses a missing timestamp
   assert.throws(() => buildDashboardValues({ rows: [row()], updatedAt: '  ' }), /缺少更新時間/);
 });
 
-test('writeInventoryDashboard overwrites the table and clears the previous tail', async () => {
-  const previous = [
-    [...DASHBOARD_HEADERS],
-    ['SKU-OLD-1', '舊商品 1', 1, 0, 0, 0, 0, 0, 0, 1, 0, '正常', '', '2026-10-29 13:00:00'],
-    ['SKU-OLD-2', '舊商品 2', 1, 0, 0, 0, 0, 0, 0, 1, 0, '正常', '', '2026-10-29 13:00:00'],
-    ['SKU-OLD-3', '舊商品 3', 1, 0, 0, 0, 0, 0, 0, 1, 0, '正常', '', '2026-10-29 13:00:00']
-  ];
-  const state = sheetsFor({ dashboard: previous });
+test('writeInventoryDashboard replaces a shrinking table in one request', async () => {
+  const stale = (sku) => [sku, `舊商品 ${sku}`, 1, 0, 0, 0, 0, 0, 0, 1, 0, '正常', '', '2026-10-29 13:00:00'];
+  const state = sheetsFor({
+    dashboard: [[...DASHBOARD_HEADERS], stale('SKU-OLD-1'), stale('SKU-OLD-2'), stale('SKU-OLD-3')]
+  });
 
   const result = await writeInventoryDashboard({
     sheets: state.sheets,
@@ -162,30 +171,21 @@ test('writeInventoryDashboard overwrites the table and clears the previous tail'
     clearedRows: 2,
     updatedAt: '2026-10-29 14:00:00'
   });
-  assert.equal(state.calls.updates[0].range, "'庫存看板'!A1:N2");
-  assert.deepEqual(state.calls.updates[0].requestBody.values[0], [...DASHBOARD_HEADERS]);
-  assert.deepEqual(state.calls.clears.map((entry) => entry.range), ["'庫存看板'!A3:N4"]);
+  // 分成寫入與清除兩次請求的話，中間失敗會留下 C、B、C 這種新舊混合的看板。
+  assert.equal(state.calls.updates.length, 1);
+  assert.deepEqual(state.calls.clears, []);
+  const sent = state.calls.updates[0];
+  assert.equal(sent.range, "'庫存看板'!A1:N4");
+  assert.deepEqual(sent.requestBody.values[0], [...DASHBOARD_HEADERS]);
+  assert.equal(sent.requestBody.values[1][0], 'SKU-A');
+  // 多出來的兩列在同一次寫入裡被蓋成整列空白，不是留著舊值。
+  assert.deepEqual(sent.requestBody.values.slice(2), [
+    DASHBOARD_HEADERS.map(() => ''),
+    DASHBOARD_HEADERS.map(() => '')
+  ]);
 });
 
-test('writeInventoryDashboard writes before it clears', async () => {
-  const order = [];
-  const state = sheetsFor({
-    dashboard: [[...DASHBOARD_HEADERS], ['SKU-OLD', '', 0, 0, 0, 0, 0, 0, 0, 0, 0, '正常', '', '']],
-    onUpdate: () => order.push('update'),
-    onClear: () => order.push('clear')
-  });
-
-  await writeInventoryDashboard({
-    sheets: state.sheets,
-    spreadsheetId: 'sheet-123',
-    dashboard: { rows: [], updatedAt: '2026-10-29 14:00:00' }
-  });
-
-  // 先清再寫的話，中途失敗會留下一張空看板。
-  assert.deepEqual(order, ['update', 'clear']);
-});
-
-test('writeInventoryDashboard clears nothing when the table grew', async () => {
+test('writeInventoryDashboard pads nothing when the table grew', async () => {
   const state = sheetsFor({ dashboard: [[...DASHBOARD_HEADERS]] });
 
   const result = await writeInventoryDashboard({
@@ -195,6 +195,27 @@ test('writeInventoryDashboard clears nothing when the table grew', async () => {
   });
 
   assert.equal(result.clearedRows, 0);
+  assert.deepEqual(state.calls.clears, []);
+  assert.equal(state.calls.updates[0].requestBody.values.length, 3);
+  assert.equal(state.calls.updates[0].range, "'庫存看板'!A1:N3");
+});
+
+test('writeInventoryDashboard empties every old row when nothing qualifies', async () => {
+  const state = sheetsFor({
+    dashboard: [[...DASHBOARD_HEADERS], ['SKU-OLD', '', 0, 0, 0, 0, 0, 0, 0, 0, 0, '正常', '', '']]
+  });
+
+  const result = await writeInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    dashboard: { rows: [], updatedAt: '2026-10-29 14:00:00' }
+  });
+
+  assert.equal(result.rows, 0);
+  assert.deepEqual(state.calls.updates[0].requestBody.values, [
+    [...DASHBOARD_HEADERS],
+    DASHBOARD_HEADERS.map(() => '')
+  ]);
   assert.deepEqual(state.calls.clears, []);
 });
 
