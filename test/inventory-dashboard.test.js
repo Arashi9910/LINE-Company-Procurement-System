@@ -220,23 +220,29 @@ test('到貨量大於下單量時以 0 計，不產生負的已叫貨未到', ()
   assert.equal(rowFor(result, 'A').onOrder, 0);
 });
 
-test('resolveTrackingSku 在修正生效時優先用修正後規格，沒有才用原 SKU', () => {
-  const pending = { status: '已下單', receivedQuantity: 0 };
-  assert.equal(resolveTrackingSku({ ...pending, sku: 'OLD', correctionSku: 'NEW' }), 'NEW');
-  assert.equal(resolveTrackingSku({ ...pending, sku: 'OLD', correctionSku: '' }), 'OLD');
-  assert.equal(resolveTrackingSku({ ...pending, sku: 'OLD' }), 'OLD');
-  assert.equal(resolveTrackingSku({ ...pending, sku: ' OLD ', correctionSku: '  ' }), 'OLD');
+test('resolveTrackingSku 以上游解析後的 item.sku 為準', () => {
+  // resolveOrderSpecCorrection 對合法修正會直接把 sku 換成修正後 SKU。
+  assert.equal(resolveTrackingSku({ sku: 'NEW', skuCorrectionPending: true, skuCorrectionOriginalSku: 'OLD' }), 'NEW');
+  assert.equal(resolveTrackingSku({ sku: 'OLD' }), 'OLD');
+  assert.equal(resolveTrackingSku({ sku: ' OLD ' }), 'OLD');
+  // 錯誤時上游保留原 SKU。
+  assert.equal(resolveTrackingSku({ sku: 'OLD', skuCorrectionError: '不可補貨' }), 'OLD');
 });
 
 test('已叫貨未到算進修正後規格，不算進原 SKU', () => {
+  // 上游解析後的形狀：合法的修正已經把 sku 換成 NEW。
   const result = dashboard({
     catalog: [
       { sku: 'OLD', displayName: '原規格', stock: 1 },
       { sku: 'NEW', displayName: '修正後規格', stock: 1 }
     ],
-    tracking: [{ sku: 'OLD', correctionSku: 'NEW', status: '已下單', orderedQuantity: 4, receivedQuantity: 0 }]
+    tracking: [{
+      sku: 'NEW', skuCorrectionPending: true, skuCorrectionOriginalSku: 'OLD',
+      status: '已下單', orderedQuantity: 4, receivedQuantity: 0
+    }]
   });
   assert.equal(rowFor(result, 'NEW').onOrder, 4);
+  assert.equal(rowFor(result, 'NEW').status, DASHBOARD_STATUS.NORMAL);
   assert.equal(rowFor(result, 'OLD').onOrder, 0);
 });
 
@@ -447,25 +453,8 @@ test('回寫未完成時，備註不可洩漏被壓下來的缺貨數字', () =>
   assert.ok(!/\d/.test(row.note), `備註不該出現任何數字：${row.note}`);
 });
 
-test('規格修正已有到貨時不生效，未到量算回原 SKU 並標異常', () => {
-  // order-spec-correction.js 明確拒絕「已有到貨」的規格修改，貨不會以 NEW 進來。
-  const result = dashboard({
-    catalog: [
-      { sku: 'OLD', displayName: '原規格', stock: 0 },
-      { sku: 'NEW', displayName: '修正後規格', stock: 0 }
-    ],
-    tracking: [{
-      sku: 'OLD', correctionSku: 'NEW', status: '部分到貨',
-      orderedQuantity: 10, receivedQuantity: 2
-    }]
-  });
-  assert.equal(rowFor(result, 'OLD').onOrder, 8, '算回原 SKU');
-  assert.equal(rowFor(result, 'OLD').status, DASHBOARD_STATUS.ANOMALY);
-  assert.match(rowFor(result, 'OLD').note, /規格修正/);
-  assert.equal(rowFor(result, 'OLD').reorderable, false);
-});
-
-test('規格修正只在已下單且尚未到貨時生效', () => {
+test('看到尚未驗證的 correctionSku 時不猜合法性，算回原 SKU 並標異常', () => {
+  // 可不可補貨、是否同一商品要靠 SKU主檔才判斷得出來，本模組沒有那些欄位。
   const result = dashboard({
     catalog: [
       { sku: 'OLD', displayName: '原規格', stock: 0 },
@@ -473,11 +462,15 @@ test('規格修正只在已下單且尚未到貨時生效', () => {
     ],
     tracking: [{
       sku: 'OLD', correctionSku: 'NEW', status: '已下單',
-      orderedQuantity: 4, receivedQuantity: 0
+      orderedQuantity: 10, receivedQuantity: 0
     }]
   });
-  assert.equal(rowFor(result, 'NEW').onOrder, 4);
-  assert.equal(rowFor(result, 'NEW').status, DASHBOARD_STATUS.NORMAL);
+  assert.equal(rowFor(result, 'OLD').onOrder, 10, '算回原 SKU');
+  assert.equal(rowFor(result, 'OLD').status, DASHBOARD_STATUS.ANOMALY);
+  assert.match(rowFor(result, 'OLD').note, /尚未驗證/);
+  assert.equal(rowFor(result, 'OLD').reorderable, false);
+  assert.equal(result.rows.find((row) => row.sku === 'NEW'), undefined,
+    '不可把無法到貨的數量當成 NEW 的供貨');
 });
 
 test('已套用的規格修正（originalSku 已填）照常採用', () => {
@@ -493,28 +486,24 @@ test('已套用的規格修正（originalSku 已填）照常採用', () => {
 });
 
 test('上游已解析出 skuCorrectionError 時，一律算回原 SKU 並標異常', () => {
-  const result = dashboard({
-    catalog: [
-      { sku: 'OLD', displayName: '原規格', stock: 0 },
-      { sku: 'NEW', displayName: '修正後規格', stock: 0 }
-    ],
-    tracking: [{
-      sku: 'OLD', correctionSku: 'NEW', status: '已下單',
-      orderedQuantity: 3, receivedQuantity: 0,
-      skuCorrectionError: '修正後 SKU NEW 目前不可補貨'
-    }]
-  });
-  assert.equal(rowFor(result, 'OLD').onOrder, 3);
-  assert.equal(rowFor(result, 'OLD').status, DASHBOARD_STATUS.ANOMALY);
-  assert.match(rowFor(result, 'OLD').note, /不可補貨|規格修正/);
-});
-
-test('resolveTrackingSku 在規格修正不生效時回傳原 SKU', () => {
-  assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW', status: '已下單', receivedQuantity: 0 }), 'NEW');
-  assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW', status: '已下單', receivedQuantity: 2 }), 'OLD');
-  assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW', status: '部分到貨' }), 'OLD');
-  assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW', skuCorrectionError: 'x' }), 'OLD');
-  assert.equal(resolveTrackingSku({ sku: 'NEW', correctionSku: 'NEW', originalSku: 'OLD', status: '部分到貨' }), 'NEW');
+  // 涵蓋 order-spec-correction 那些需要 SKU主檔才能判斷的情況：
+  // 修正後 SKU 不可補貨、不是同一商品、不存在於主檔。
+  for (const reason of [
+    '修正後 SKU NEW 目前不可補貨',
+    '只能修改為同一商品的其他規格',
+    '修正後 SKU NEW 不存在於 SKU主檔'
+  ]) {
+    const result = dashboard({
+      catalog: [{ sku: 'OLD', displayName: '原規格', stock: 0 }],
+      tracking: [{
+        sku: 'OLD', status: '已下單', orderedQuantity: 3, receivedQuantity: 0,
+        skuCorrectionError: reason
+      }]
+    });
+    assert.equal(rowFor(result, 'OLD').onOrder, 3, reason);
+    assert.equal(rowFor(result, 'OLD').status, DASHBOARD_STATUS.ANOMALY, reason);
+    assert.equal(rowFor(result, 'OLD').reorderable, false, reason);
+  }
 });
 
 test('repository 的實際輸出形狀：有 skuCorrectionError 但沒有 correctionSku 也要標異常', () => {
@@ -536,6 +525,12 @@ test('repository 的實際輸出形狀：有 skuCorrectionError 但沒有 correc
 test('describeCorrectionIssue 先看 skuCorrectionError，不因 correctionSku 空白就放行', () => {
   assert.equal(describeCorrectionIssue({ sku: 'OLD', skuCorrectionError: '壞掉了' }), '壞掉了');
   assert.equal(describeCorrectionIssue({ sku: 'OLD' }), '');
+  // 已解析過的合法修正：sku 已換成 NEW，沒有殘留的 correctionSku。
+  assert.equal(describeCorrectionIssue({ sku: 'NEW', skuCorrectionPending: true }), '');
+  // 已套用：correctionSku 等於現行 sku。
+  assert.equal(describeCorrectionIssue({ sku: 'NEW', correctionSku: 'NEW', originalSku: 'OLD' }), '');
+  // 未解析的生料：不猜，直接標異常。
+  assert.match(describeCorrectionIssue({ sku: 'OLD', correctionSku: 'NEW' }), /尚未驗證/);
 });
 
 test('補貨已全數到貨、只剩回寫未完成的 SKU 仍要出現在看板', () => {

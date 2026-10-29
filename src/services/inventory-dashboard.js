@@ -57,33 +57,26 @@ function requireSku(value, label) {
   return sku;
 }
 
-// 規格修正不生效的原因；回空字串代表這筆修正可以採用。
-// 判斷依據與 src/sheets/order-spec-correction.js 一致（不需要 SKU主檔的那幾項）。
+// 規格修正的驗證歸 src/sheets/order-spec-correction.js，不在這裡重做。
+// 那邊的 resolveOrderSpecCorrection 對「合法且已生效」的修正，會直接把 item.sku
+// 換成修正後 SKU（order-spec-correction.js:112），錯誤時則保留原 SKU 並填
+// skuCorrectionError。所以這裡一律以 item.sku 為準。
+//
+// 完整驗證需要 SKU主檔的「是否可補貨」與商品名稱（判斷是否同一商品），
+// 本模組的 catalog 只有庫存與顯示名稱，無法自行判定。因此看到還沒被解析掉的
+// correctionSku 時，不猜它合不合法，直接當成未驗證並標異常。
 export function describeCorrectionIssue(item) {
-  const sku = text(item?.sku);
-  const correctionSku = text(item?.correctionSku);
-  const originalSku = text(item?.originalSku);
-  // 上游已經解析過就直接採信。repository 的 listRequestRows 只輸出 sku 與
-  // skuCorrectionError，不輸出 correctionSku，所以這個檢查必須排在最前面。
   const upstream = text(item?.skuCorrectionError);
   if (upstream) return upstream;
-  if (!correctionSku) return '';
-  // originalSku 已填代表修正早就套用完成，此時 correctionSku 就等於現行 SKU。
-  if (originalSku) {
-    return correctionSku === sku ? '' : '規格修正已套用，不可再改成別的 SKU';
-  }
-  if (correctionSku === sku) return '';
-  // 尚未套用的修正：已有到貨或不在已下單狀態時，到貨流程會擋下來，貨不會以修正後 SKU 進來。
-  if (Number(item?.receivedQuantity ?? 0) > 0) return '此品項已有到貨，規格修正不會生效';
-  if (text(item?.status) !== '已下單') return '只有已下單且尚未到貨的品項，規格修正才會生效';
-  return '';
+  const sku = text(item?.sku);
+  const correctionSku = text(item?.correctionSku);
+  if (!correctionSku || correctionSku === sku) return '';
+  return '補貨追蹤帶有尚未驗證的規格修正，請改用 repository 解析後的資料';
 }
 
 export function resolveTrackingSku(item) {
-  // 規格第 2 節：貨號優先用「修正後規格」，沒有才用原 SKU。
-  // 但修正不生效時貨還是會以原 SKU 進來，硬算給修正後 SKU 會把缺口壓低。
-  if (describeCorrectionIssue(item)) return text(item?.sku);
-  return text(item?.correctionSku) || text(item?.sku);
+  // 規格第 2 節的「貨號優先用修正後規格」已由上游解析完成，item.sku 就是生效的貨號。
+  return text(item?.sku);
 }
 
 export function collectCorrectionIssues(tracking = []) {
