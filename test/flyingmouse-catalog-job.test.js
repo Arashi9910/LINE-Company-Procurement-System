@@ -9,6 +9,36 @@ import {
 const JOB = 'projects/project-1/locations/asia-east1/jobs/flyingmouse-catalog-sync';
 const WRITEBACK_JOB = 'projects/project-1/locations/asia-east1/jobs/flyingmouse-inventory-writeback';
 
+for (const condition of [
+  { state: 'CONDITION_PENDING' },
+  { state: 'CONDITION_RECONCILING' },
+  { status: 'Unknown' }
+]) {
+  test(`active Completed condition ${JSON.stringify(condition)} stays running and blocks duplicate starts`, async () => {
+    const execution = {
+      name: `${JOB}/executions/active-run`,
+      conditions: [{ type: 'Completed', ...condition }]
+    };
+    assert.equal(normalizeCatalogExecution(execution).state, 'running');
+    const fixture = runClient({ executions: [execution] });
+    const runner = new FlyingmouseCatalogJobRunner({ runClient: fixture.client, projectId: 'project-1' });
+    assert.equal((await runner.status()).state, 'running');
+    await assert.rejects(runner.start(), /已有飛鼠商品同步正在執行/);
+    assert.equal(fixture.calls.run.length, 0);
+  });
+}
+
+for (const [condition, expected] of [
+  [{ state: 'CONDITION_SUCCEEDED' }, 'succeeded'],
+  [{ state: 'CONDITION_FAILED' }, 'failed'],
+  [{ status: 'True' }, 'succeeded'],
+  [{ status: 'False' }, 'failed']
+]) {
+  test(`terminal Completed condition ${JSON.stringify(condition)} maps to ${expected}`, () => {
+    assert.equal(normalizeCatalogExecution({ conditions: [{ type: 'Completed', ...condition }] }).state, expected);
+  });
+}
+
 function runClient({ executions = [], operation = {} } = {}) {
   const calls = { list: [], run: [] };
   return {

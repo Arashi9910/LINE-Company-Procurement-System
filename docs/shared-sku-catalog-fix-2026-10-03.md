@@ -21,3 +21,14 @@
 4. 驗證透明版出現三入裝、購物清單共用數量。既有訂單及庫存回寫規則未修改。
 
 工作區原有 flyingmouse-catalog-job.js 與其測試的未提交變更不納入本次發布。
+
+## 正式上線完成
+
+- 使用者於本輪授權部署；2026-10-03 14:08（Asia/Taipei）完成。
+- 提交：1dcb4c2d6eeb0ba6c5f812e6178a734747998b83；乾淨部署包 276 項測試通過（排除工作區既有 7 項未提交測試）。
+- 網站 revision：line-replenishment-shared-sku-1dcb4c2，100% 流量。health / ready 成功，app.js、catalog.js 雜湊符合部署包。
+- 同步映像：asia-east1-docker.pkg.dev/line-restock-20260714/line-automation/flyingmouse-sync:shared-sku-1dcb4c2。
+- 同步執行：flyingmouse-catalog-sync-r27p7，成功完成。原有工作環境設定保持一致。
+- 商品圖片對照已新增 P 欄，899 列的 HA-GD-068 包含商品 6 及商品 41；商品 41 規格為「三入裝（不含鑰匙圈」，擷取時間 2026-10-03 14:08:26。
+- SKU 主檔搜尋僅 1 筆（850 列）；可補貨狀態為是。未冒用 LINE 身分建立測試訂單。
+- 舊網站 SIGTERM 於 06:06:57 UTC，超過關閉緩衝後切換新版。各功能開關均保留，維護模式為 false。

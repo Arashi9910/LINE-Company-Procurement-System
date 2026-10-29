@@ -25,7 +25,12 @@ export function normalizeCatalogExecution(execution) {
   const succeeded = Number(execution.succeededCount ?? 0) > 0
     || completed?.state === 'CONDITION_SUCCEEDED'
     || completed?.status === 'True';
-  const hasCompleted = Boolean(execution.completionTime || completed);
+  // A Completed condition also exists while Cloud Run is still processing.
+  const hasCompleted = Boolean(execution.completionTime
+    || completed?.state === 'CONDITION_FAILED'
+    || completed?.state === 'CONDITION_SUCCEEDED'
+    || completed?.status === 'False'
+    || completed?.status === 'True');
 
   return {
     state: hasCompleted ? (failed || !succeeded ? 'failed' : 'succeeded') : 'running',
