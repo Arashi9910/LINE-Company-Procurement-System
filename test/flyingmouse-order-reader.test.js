@@ -385,3 +385,62 @@ test('readOpenOrderQuantities 沒有漂移時不記警告', async () => {
   await readOpenOrderQuantities(client, { logger: { warn: (m) => warnings.push(m) } });
   assert.equal(warnings.length, 0);
 });
+
+// ── Codex 檢查第 2 輪發現 ────────────────────────────────────
+
+test('aggregateOrderQuantities 拒絕 null 或非物件的商品列，不可默默跳過', () => {
+  const bad = (products) => () => aggregateOrderQuantities({
+    processing: [{ id: 1, no: 'A1', status: 0, products }], preparing: []
+  });
+  assert.throws(bad([null]), /商品列/, 'products: [null] 是損壞明細，不是沒有商品');
+  assert.throws(bad([undefined]), /商品列/);
+  assert.throws(bad(['x']), /商品列/);
+  assert.throws(bad([[]]), /商品列/);
+});
+
+test('aggregateOrderQuantities 拒絕 null 或非物件的 part_list 元素', () => {
+  const bad = (parts) => () => aggregateOrderQuantities({
+    processing: [{ id: 1, no: 'A1', status: 0, products: [{ qty: 1, part_list: parts }] }],
+    preparing: []
+  });
+  assert.throws(bad([null]), /貨號/);
+  assert.throws(bad(['S1']), /貨號/);
+  assert.throws(bad([[]]), /貨號/);
+});
+
+test('aggregateOrderQuantities 拒絕物件或布林當貨號，不可變成 [object Object]', () => {
+  const bad = (no) => () => aggregateOrderQuantities({
+    processing: [{ id: 1, no: 'A1', status: 0, products: [{ qty: 1, part_list: [{ no, qty: 1 }] }] }],
+    preparing: []
+  });
+  for (const value of [{}, [], true, null, undefined, '', '   ']) {
+    assert.throws(bad(value), /貨號/, `${JSON.stringify(value)} 不是合法貨號`);
+  }
+  assert.equal(aggregateOrderQuantities({
+    processing: [{ id: 1, no: 'A1', status: 0, products: [{ qty: 1, part_list: [{ no: 12345, qty: 1 }] }] }],
+    preparing: []
+  })[0].partNo, '12345', '數字型貨號仍要接受');
+});
+
+test('fetchOrdersByStatus 送出的請求帶有逾時設定', async () => {
+  let received = null;
+  const client = createFlyingMouseOrderClient({
+    async evaluate(_fn, input) {
+      received = input;
+      return { status: 200, body: { data: { total: 0, list: [] } } };
+    }
+  });
+  await client.fetchOrdersByStatus(ORDER_STATUS_PROCESSING);
+  assert.ok(Number.isSafeInteger(received.timeoutMs) && received.timeoutMs > 0,
+    '必須把逾時毫秒數傳進瀏覽器端，否則回應不結束時會永遠卡住');
+});
+
+test('fetchOrdersByStatus 把瀏覽器端的逾時轉成可重試的錯誤', async () => {
+  const client = createFlyingMouseOrderClient({
+    async evaluate() { return { aborted: true }; }
+  });
+  await assert.rejects(
+    client.fetchOrdersByStatus(ORDER_STATUS_PROCESSING),
+    (error) => error.code === 'TIMEOUT' && error.retryable === true
+  );
+});

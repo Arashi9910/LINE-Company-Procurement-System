@@ -5,6 +5,7 @@ export const ORDER_STATUS_PROCESSING = 0;
 export const ORDER_STATUS_PREPARING = 2;
 export const ORDER_PAGE_SIZE = 200;
 export const MAX_REREADS = 2;
+export const ORDER_REQUEST_TIMEOUT_MS = 60_000;
 
 // 只取算量與查核需要的欄位；products / part_list 由 detail=1 帶出，不受 columns[] 影響。
 const ORDER_COLUMNS = Object.freeze(['id', 'no', 'status']);
@@ -20,6 +21,20 @@ export class FlyingMouseOrderError extends Error {
 
 function normalizeText(value) {
   return String(value ?? '').trim();
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// 貨號只接受字串或數字。物件經 String() 會變成 '[object Object]'，看起來像合法貨號。
+function partNumber(value, label) {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw new FlyingMouseOrderError(`${label}貨號型別不正確`, { code: 'INVALID_ORDER' });
+  }
+  const text = String(value).trim();
+  if (!text) throw new FlyingMouseOrderError(`${label}缺少貨號`, { code: 'INVALID_ORDER' });
+  return text;
 }
 
 // Number() 會把 null、''、false、[] 都變成 0，拿來驗證等於放行壞資料。
@@ -67,20 +82,25 @@ function accumulate(target, orders, key) {
       throw new FlyingMouseOrderError(`訂單 ${orderNo} 缺少 products 明細`, { code: 'INVALID_ORDER' });
     }
     for (const product of order.products) {
-      const partList = product?.part_list;
+      if (!isPlainObject(product)) {
+        throw new FlyingMouseOrderError(`訂單 ${orderNo} 的商品列格式不正確`, { code: 'INVALID_ORDER' });
+      }
+      const partList = product.part_list;
       // 折價列與沒有對應貨號的列不扣庫存。判斷依據是 part_list，不是 product_type。
       if (partList === undefined || partList === null) continue;
       if (!Array.isArray(partList)) {
         throw new FlyingMouseOrderError(`訂單 ${orderNo} 的 part_list 型別不正確`, { code: 'INVALID_ORDER' });
       }
       if (partList.length === 0) continue;
-      const productQty = positiveInteger(product?.qty, `訂單 ${orderNo} 的購買`);
+      const productQty = positiveInteger(product.qty, `訂單 ${orderNo} 的購買`);
       for (const part of partList) {
-        const partNo = normalizeText(part?.no);
-        if (!partNo) {
-          throw new FlyingMouseOrderError(`訂單 ${orderNo} 的 part_list 缺少貨號`, { code: 'INVALID_ORDER' });
+        if (!isPlainObject(part)) {
+          throw new FlyingMouseOrderError(`訂單 ${orderNo} 的 part_list 元素格式不正確，無法取得貨號`, {
+            code: 'INVALID_ORDER'
+          });
         }
-        const partQty = positiveInteger(part?.qty, `訂單 ${orderNo} 貨號 ${partNo} 的`);
+        const partNo = partNumber(part.no, `訂單 ${orderNo} 的 part_list `);
+        const partQty = positiveInteger(part.qty, `訂單 ${orderNo} 貨號 ${partNo} 的`);
         if (!target.has(partNo)) target.set(partNo, { processing: 0, preparing: 0 });
         // part_list[].qty 是每 1 件的用量，要乘上購買數量。
         target.get(partNo)[key] += productQty * partQty;
@@ -107,26 +127,46 @@ async function requestOrders(page, path) {
   let response;
   try {
     response = await page.evaluate(async (input) => {
-      const result = await fetch(input.path, {
-        method: input.method,
-        credentials: 'same-origin',
-        cache: 'no-store'
-      });
-      const text = await result.text();
-      let body = null;
+      // page.evaluate 本身沒有逾時，回應遲遲不結束的話會永遠卡住整個排程。
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), input.timeoutMs);
       try {
-        body = text ? JSON.parse(text) : null;
-      } catch {
-        body = null;
+        const result = await fetch(input.path, {
+          method: input.method,
+          credentials: 'same-origin',
+          cache: 'no-store',
+          signal: controller.signal
+        });
+        // signal 也涵蓋讀取 body，所以慢速回應一樣會被中止。
+        const text = await result.text();
+        let body = null;
+        try {
+          body = text ? JSON.parse(text) : null;
+        } catch {
+          body = null;
+        }
+        return { status: result.status, body };
+      } catch (error) {
+        return { aborted: error?.name === 'AbortError' };
+      } finally {
+        clearTimeout(timer);
       }
-      return { status: result.status, body };
-    }, { method: 'GET', path });
+    }, { method: 'GET', path, timeoutMs: ORDER_REQUEST_TIMEOUT_MS });
   } catch (error) {
     throw new FlyingMouseOrderError('飛鼠訂單 API 網路請求失敗', {
       code: 'NETWORK_ERROR',
       retryable: true,
       cause: error
     });
+  }
+  if (response?.aborted) {
+    throw new FlyingMouseOrderError(`飛鼠訂單查詢超過 ${ORDER_REQUEST_TIMEOUT_MS} 毫秒未完成`, {
+      code: 'TIMEOUT',
+      retryable: true
+    });
+  }
+  if (!Number.isSafeInteger(response?.status)) {
+    throw new FlyingMouseOrderError('飛鼠訂單請求未回傳狀態碼', { code: 'NETWORK_ERROR', retryable: true });
   }
   if (response.status < 200 || response.status >= 300) {
     // 不帶回應內容，避免把訂單或錯誤細節寫進日誌。
