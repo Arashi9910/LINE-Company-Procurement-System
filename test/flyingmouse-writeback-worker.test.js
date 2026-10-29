@@ -336,6 +336,51 @@ test('a failing retry never rolls SKU主檔 back to the saved beforeStock', asyn
   assert.deepEqual(mainWrites, []);
 });
 
+test('a retry whose prepared columns were partly cleared never recomputes', async () => {
+  // I/J/K 是同一次 batch 寫進去的，程式不會產生只有一半的列；但人改得到那張表。
+  // 少一欄就不能當成「還沒準備」去重算——PUT 已經把 10 加到 12，重算會再 PUT 14。
+  const prepared = transitionWritebackEvent(queueEvent(), {
+    status: '已準備',
+    attempts: 1,
+    partId: 933,
+    beforeStock: 10,
+    targetStock: 12,
+    processedAt: '2026-07-16 10:05:00'
+  });
+
+  for (const missing of ['partId', 'beforeStock', 'targetStock']) {
+    const waiting = {
+      ...transitionWritebackEvent(prepared, {
+        status: '等待重試',
+        attempts: 1,
+        nextRetryAt: '2026-07-16 10:10:00',
+        lastError: 'NETWORK_ERROR: 驗證 GET 失敗',
+        processedAt: '2026-07-16 10:05:00'
+      }),
+      [missing]: ''
+    };
+    const state = sheetsFor(waiting);
+    let puts = 0;
+    const client = {
+      async getBySku() { return part(12); },
+      async putPart() { puts += 1; }
+    };
+
+    const result = await processWritebackQueue({
+      sheets: state.sheets,
+      spreadsheetId: 'sheet-123',
+      withClient: async (operation) => operation(client),
+      mode: 'live',
+      now: () => new Date('2026-07-16T02:15:00Z'),
+      logger: silentLogger
+    });
+
+    assert.equal(puts, 0, `缺少 ${missing} 時不該送出 PUT`);
+    assert.equal(result.manualReview, 1, `缺少 ${missing} 時應轉人工確認`);
+    assert.equal(result.retryScheduled, 0, `缺少 ${missing} 時不該再排重試`);
+  }
+});
+
 test('processWritebackQueue dry-run performs no PUT and no Sheet writes', async () => {
   const state = sheetsFor(queueEvent());
   const reads = [part(10), part(10)];

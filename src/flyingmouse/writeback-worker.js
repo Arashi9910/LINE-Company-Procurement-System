@@ -54,17 +54,36 @@ function log(logger, level, data) {
   if (typeof writer === 'function') writer.call(logger, data);
 }
 
+const PREPARED_FIELDS = Object.freeze(['partId', 'beforeStock', 'targetStock']);
+
 // 只要事件已經保存 partId／更新前／目標庫存，就不可以重算增量。
 // PUT 成功但驗證 GET 失敗時 recordFailure 會把狀態打回「等待重試」，若下一輪用狀態
 // 判斷而重新 prepare，就會從已經加過的庫存再加一次到貨量，等於重複入庫。
 // 規格第 5 節要求這種情況下一輪仍依「已準備」的規則判斷。
-function hasPreparedStock(event) {
-  return event.partId !== '' && event.beforeStock !== '' && event.targetStock !== '';
+//
+// 三個欄位是同一次 batch 寫進去的，程式本身不會產生只有一半的列；但那是人改得到的
+// Google Sheet，少一欄就不能當成「還沒準備」去重算——同樣會重複入庫。
+function preparedStockState(event) {
+  const filled = PREPARED_FIELDS.filter((field) => event[field] !== '');
+  if (filled.length === 0) return 'none';
+  if (filled.length === PREPARED_FIELDS.length) return 'complete';
+  return 'partial';
+}
+
+function assertNotPartiallyPrepared(event, state) {
+  if (state !== 'partial') return;
+  const missing = PREPARED_FIELDS.filter((field) => event[field] === '');
+  throw new FlyingMouseWritebackError(
+    `回寫事件的準備資訊殘缺（缺少 ${missing.join('、')}），無法判斷是否已經 PUT 過`,
+    { code: 'INCOMPLETE_PREPARED_EVENT', manualReview: true }
+  );
 }
 
 async function dryRunEvent({ client, event, processedAt }) {
   let prepared = event;
-  if (!hasPreparedStock(event)) {
+  const state = preparedStockState(event);
+  assertNotPartiallyPrepared(event, state);
+  if (state === 'none') {
     const target = await prepareFlyingMouseWriteback({ client, event });
     prepared = transitionWritebackEvent(event, {
       status: '已準備',
@@ -81,7 +100,9 @@ async function dryRunEvent({ client, event, processedAt }) {
 async function liveEvent({ sheets, spreadsheetId, client, event, processedAt }) {
   let prepared = event;
   const attempts = event.attempts + 1;
-  const alreadyPrepared = hasPreparedStock(event);
+  const state = preparedStockState(event);
+  assertNotPartiallyPrepared(event, state);
+  const alreadyPrepared = state === 'complete';
   if (!alreadyPrepared) {
     const target = await prepareFlyingMouseWriteback({ client, event });
     prepared = transitionWritebackEvent(event, {

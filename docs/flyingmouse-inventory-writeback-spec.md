@@ -125,6 +125,9 @@ export function expectedStock(currentStock, receivedQuantity) {
   - 其他數量：狀態改為 `需人工確認`，不再自動修改。
 - PUT 成功但驗證 GET 失敗時不得重算增量。事件只要已保存 `partId`／`before`／`target`，
   下一輪一律沿用該 `target` 依上述規則判斷，即使狀態因退避而是 `等待重試`。
+- `partId`／`before`／`target` 三欄只接受「全空」或「全滿」。全空才可以重新計算；
+  殘缺（人工誤刪其中一欄）一律 `需人工確認` 且不得 PUT——無法判斷是否已經 PUT 過，
+  當成未準備去重算就會重複入庫。
 - 重送仍要檢查主檔表頭與 SKU 唯一性（不過就不得 PUT），但**不重寫快照**：
   退避期間目錄同步可能已經把快照更新成較新的值，倒寫回歷史 `before` 之後，
   若這一輪又失敗，主檔會一直停在舊值。快照只在第一次準備時寫 `before`、完成時寫 `target`。
