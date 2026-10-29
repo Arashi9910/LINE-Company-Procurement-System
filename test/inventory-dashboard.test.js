@@ -472,6 +472,7 @@ test('看到尚未驗證的 correctionSku 時不猜合法性，算回原 SKU 並
   assert.equal(rowFor(result, 'OLD').onOrder, 10, '算回原 SKU');
   assert.equal(rowFor(result, 'OLD').status, DASHBOARD_STATUS.ANOMALY);
   assert.match(rowFor(result, 'OLD').note, /尚未驗證/);
+  assert.match(rowFor(result, 'OLD').note, /未到量算在 OLD/);
   assert.equal(rowFor(result, 'OLD').reorderable, false);
   assert.equal(result.rows.find((row) => row.sku === 'NEW'), undefined,
     '不可把無法到貨的數量當成 NEW 的供貨');
@@ -613,6 +614,7 @@ test('修正後與既有列撞號時，未到量回到原 SKU，兩個 SKU 都�
   assert.equal(rowFor(result, 'OLD').onOrder, 5, '貨會以 OLD 進來，未到量要掛回 OLD');
   assert.equal(rowFor(result, 'OLD').status, DASHBOARD_STATUS.ANOMALY);
   assert.equal(rowFor(result, 'OLD').reorderable, false, '修正出錯時不可自動叫貨');
+  assert.match(rowFor(result, 'OLD').note, /未到量算在 OLD/);
   assert.equal(rowFor(result, 'NEW').status, DASHBOARD_STATUS.ANOMALY);
 });
 
@@ -637,6 +639,9 @@ test('已套用的修正即使再次出錯，也不可把未到量退回歷史 S
 
   assert.equal(rowFor(result, 'NEW').onOrder, 5, '貨以現行的 NEW 進來');
   assert.equal(result.rows.find((row) => row.sku === 'OLD'), undefined, '不可退回歷史 SKU');
+  assert.match(rowFor(result, 'NEW').note, /未到量算在 NEW/, '備註不可宣稱算回原 SKU');
+  assert.ok(!rowFor(result, 'NEW').note.includes('算回原 SKU'),
+    `備註與實際歸屬不符會害人工核帳算錯：${rowFor(result, 'NEW').note}`);
 });
 
 test('合法且無衝突的修正，未到量算到修正後 SKU 且不標異常', () => {

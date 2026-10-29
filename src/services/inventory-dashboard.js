@@ -93,8 +93,11 @@ export function collectCorrectionIssues(tracking = []) {
     const issue = describeCorrectionIssue(item);
     if (!issue) continue;
     // 未到量算到哪個 SKU，異常就標在哪個 SKU，兩者不可分家。
-    for (const sku of new Set([resolveTrackingSku(item), text(item?.sku)])) {
-      if (sku && !issues.has(sku)) issues.set(sku, issue);
+    const effective = resolveTrackingSku(item);
+    // 備註要講實際歸屬，不可一律宣稱算回原 SKU：已套用的修正是留在現行 SKU 的。
+    const note = effective ? `${issue}，未到量算在 ${effective}` : issue;
+    for (const sku of new Set([effective, text(item?.sku)])) {
+      if (sku && !issues.has(sku)) issues.set(sku, note);
     }
   }
   return issues;
@@ -167,7 +170,7 @@ function decide({ known, writebackPending, correctionIssue, estimatedStock, gap 
     return { status: DASHBOARD_STATUS.ANOMALY, note: '這個貨號不在 SKU主檔，請人工確認' };
   }
   if (correctionIssue) {
-    return { status: DASHBOARD_STATUS.ANOMALY, note: `規格修正不會生效：${correctionIssue}，已將未到量算回原 SKU` };
+    return { status: DASHBOARD_STATUS.ANOMALY, note: `規格修正不會生效：${correctionIssue}` };
   }
   if (estimatedStock < 0) {
     return {
