@@ -33,6 +33,23 @@ export const DASHBOARD_HEADERS = Object.freeze([
 ]);
 export const DASHBOARD_ROW_COUNT = 5000;
 
+// 同步狀態單獨一張分頁。放在「庫存看板」裡的話，整張覆寫會把它蓋掉——
+// 而這張表存在的意義正是「看板覆寫失敗時還看得到上一次成功是什麼時候」。
+export const SYNC_STATUS_SHEET_NAME = '看板同步狀態';
+export const SYNC_STATUS_HEADERS = Object.freeze([
+  '狀態',
+  '最後成功時間',
+  '最後嘗試時間',
+  '訊息'
+]);
+export const SYNC_STATUS_ROW_COUNT = 10;
+export const DASHBOARD_SYNC_OK = '正常';
+export const DASHBOARD_SYNC_FAILED = '同步失敗';
+
+// 讀取 SKU主檔 只為了取 SKU、顯示名稱與庫存快照。**絕不寫入**：
+// 目錄同步每次寫入前都會比對 A:N 的欄位名稱，動了就會讓整批同步停止。
+export const CATALOG_SHEET_NAME = 'SKU主檔';
+
 function columnLetter(count) {
   if (count < 1 || count > 26) throw new Error('欄數超出支援範圍');
   return String.fromCharCode(64 + count);
@@ -171,5 +188,82 @@ export async function writeInventoryDashboard({ sheets, spreadsheetId, dashboard
     rows: values.length - 1,
     clearedRows: blankRows,
     updatedAt: normalizeText(dashboard?.updatedAt)
+  });
+}
+
+// 只取看板要用的三個欄位。庫存快照原樣傳下去：空白或壞值由
+// src/services/inventory-dashboard.js 的 indexCatalog 丟錯，這裡不先猜成 0。
+export async function readCatalogSnapshots({ sheets, spreadsheetId }) {
+  if (!sheets || !spreadsheetId) throw new Error('SKU主檔讀取設定不完整');
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${CATALOG_SHEET_NAME}'!A2:N`,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  return (response.data.values ?? [])
+    .filter((row) => normalizeText(row?.[0]))
+    .map((row) => Object.freeze({
+      sku: normalizeText(row[0]),
+      // 補貨顯示名稱優先，沒有才用商品名稱，比照 repository 的 catalogSku。
+      displayName: normalizeText(row[7]) || normalizeText(row[1]) || normalizeText(row[0]),
+      stock: row[4]
+    }));
+}
+
+export function parseSyncStatusRows(values) {
+  assertSheetHeaders(values?.[0] ?? [], SYNC_STATUS_HEADERS, SYNC_STATUS_SHEET_NAME);
+  const row = paddedRow(values?.[1], SYNC_STATUS_HEADERS.length);
+  return Object.freeze({
+    status: normalizeText(row[0]),
+    lastSuccessAt: normalizeText(row[1]),
+    lastAttemptAt: normalizeText(row[2]),
+    message: normalizeText(row[3])
+  });
+}
+
+export async function readDashboardSyncStatus({ sheets, spreadsheetId }) {
+  if (!sheets || !spreadsheetId) throw new Error('看板同步狀態讀取設定不完整');
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${SYNC_STATUS_SHEET_NAME}'!A1:${columnLetter(SYNC_STATUS_HEADERS.length)}2`
+  });
+  return parseSyncStatusRows(response.data.values ?? []);
+}
+
+// 錯誤訊息會被人看到，也可能被 LINE 指令帶出去，所以去換行、遮敏感值、限長。
+export function safeSyncMessage(value) {
+  return String(value ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/(password|cookie|authorization|token)\s*[:=]\s*\S+/ig, '$1=<redacted>')
+    .trim()
+    .slice(0, 300);
+}
+
+export async function writeDashboardSyncStatus({
+  sheets,
+  spreadsheetId,
+  status,
+  lastSuccessAt = '',
+  lastAttemptAt,
+  message = ''
+}) {
+  if (!sheets || !spreadsheetId) throw new Error('看板同步狀態寫入設定不完整');
+  if (![DASHBOARD_SYNC_OK, DASHBOARD_SYNC_FAILED].includes(status)) {
+    throw new Error(`看板同步狀態不正確：${status}`);
+  }
+  const attemptedAt = normalizeText(lastAttemptAt);
+  if (!attemptedAt) throw new Error('看板同步狀態缺少最後嘗試時間');
+  const values = [[status, normalizeText(lastSuccessAt), attemptedAt, safeSyncMessage(message)]];
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `'${SYNC_STATUS_SHEET_NAME}'!A2:${columnLetter(SYNC_STATUS_HEADERS.length)}2`,
+    valueInputOption: 'RAW',
+    requestBody: { values }
+  });
+  return Object.freeze({
+    status,
+    lastSuccessAt: values[0][1],
+    lastAttemptAt: attemptedAt,
+    message: values[0][3]
   });
 }

@@ -6,6 +6,8 @@ import {
   DASHBOARD_SHEET_NAME,
   PREORDER_HEADERS,
   PREORDER_SHEET_NAME,
+  SYNC_STATUS_HEADERS,
+  SYNC_STATUS_SHEET_NAME,
   buildDashboardValues,
   dashboardRowValues,
   parsePreorderRows,
@@ -311,15 +313,22 @@ test('initializeInventoryDashboard creates both sheets with frozen bold headers'
 
   const result = await initializeInventoryDashboard({ sheets, spreadsheetId: 'sheet-123' });
 
-  assert.deepEqual(result, { created: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME], checked: [], changes: 4 });
+  assert.deepEqual(result, {
+    created: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME],
+    checked: [],
+    changes: 6
+  });
   const added = batch.requestBody.requests.filter((entry) => entry.addSheet);
   assert.deepEqual(added.map((entry) => entry.addSheet.properties.title),
-    [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME]);
+    [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME]);
   assert.equal(added[1].addSheet.properties.gridProperties.frozenRowCount, 1);
   assert.equal(added[1].addSheet.properties.gridProperties.columnCount, DASHBOARD_HEADERS.length);
-  const header = batch.requestBody.requests.filter((entry) => entry.updateCells).at(-1);
-  assert.deepEqual(header.updateCells.rows[0].values.map((cell) => cell.userEnteredValue.stringValue),
+  const headers = batch.requestBody.requests.filter((entry) => entry.updateCells);
+  assert.deepEqual(headers[1].updateCells.rows[0].values.map((cell) => cell.userEnteredValue.stringValue),
     [...DASHBOARD_HEADERS]);
+  // 同步狀態必須自成一張分頁：看板每輪整張覆寫，放在裡面會被蓋掉。
+  assert.deepEqual(headers[2].updateCells.rows[0].values.map((cell) => cell.userEnteredValue.stringValue),
+    [...SYNC_STATUS_HEADERS]);
   // SKU主檔 每次寫入前都會比對欄位名稱，初始化絕不可以碰它。
   assert.equal(JSON.stringify(batch).includes('SKU主檔'), false);
 });
@@ -328,15 +337,16 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
   const batches = [];
   const sheets = {
     spreadsheets: {
-      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME]).spreadsheets,
+      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME]).spreadsheets,
       async batchUpdate(request) {
         batches.push(request);
         return { data: {} };
       },
       values: {
         async get({ range }) {
-          const headers = range.includes(PREORDER_SHEET_NAME) ? PREORDER_HEADERS : DASHBOARD_HEADERS;
-          return { data: { values: [[...headers]] } };
+          if (range.includes(PREORDER_SHEET_NAME)) return { data: { values: [[...PREORDER_HEADERS]] } };
+          if (range.includes(SYNC_STATUS_SHEET_NAME)) return { data: { values: [[...SYNC_STATUS_HEADERS]] } };
+          return { data: { values: [[...DASHBOARD_HEADERS]] } };
         }
       }
     }
@@ -346,7 +356,7 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
 
   assert.deepEqual(result, {
     created: [],
-    checked: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME],
+    checked: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME],
     changes: 0
   });
   assert.deepEqual(batches, []);

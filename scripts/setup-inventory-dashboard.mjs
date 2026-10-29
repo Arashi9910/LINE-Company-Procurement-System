@@ -10,6 +10,9 @@ import {
   PREORDER_HEADERS,
   PREORDER_ROW_COUNT,
   PREORDER_SHEET_NAME,
+  SYNC_STATUS_HEADERS,
+  SYNC_STATUS_ROW_COUNT,
+  SYNC_STATUS_SHEET_NAME,
   assertSheetHeaders
 } from '../src/sheets/inventory-dashboard.js';
 
@@ -27,6 +30,15 @@ export const DASHBOARD_TABLES = Object.freeze([
     name: DASHBOARD_SHEET_NAME,
     headers: DASHBOARD_HEADERS,
     rowCount: DASHBOARD_ROW_COUNT,
+    manual: false
+  }),
+  // 同步狀態不能放在「庫存看板」裡：那張表每輪整張覆寫，會把它蓋掉，
+  // 而它存在的意義正是「看板覆寫失敗時還看得到上一次成功是什麼時候」。
+  Object.freeze({
+    sheetId: 1720000002,
+    name: SYNC_STATUS_SHEET_NAME,
+    headers: SYNC_STATUS_HEADERS,
+    rowCount: SYNC_STATUS_ROW_COUNT,
     manual: false
   })
 ]);
