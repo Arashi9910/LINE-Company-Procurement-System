@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   DASHBOARD_STATUS,
   resolveTrackingSku,
+  describeCorrectionIssue,
   sumOutstandingBySku,
   buildInventoryDashboard
 } from '../src/services/inventory-dashboard.js';
@@ -514,4 +515,47 @@ test('resolveTrackingSku 在規格修正不生效時回傳原 SKU', () => {
   assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW', status: '部分到貨' }), 'OLD');
   assert.equal(resolveTrackingSku({ sku: 'OLD', correctionSku: 'NEW', skuCorrectionError: 'x' }), 'OLD');
   assert.equal(resolveTrackingSku({ sku: 'NEW', correctionSku: 'NEW', originalSku: 'OLD', status: '部分到貨' }), 'NEW');
+});
+
+test('repository 的實際輸出形狀：有 skuCorrectionError 但沒有 correctionSku 也要標異常', () => {
+  // listOpenRequests / listRequestRows 只輸出 sku 與 skuCorrectionError，不輸出 correctionSku。
+  const result = dashboard({
+    catalog: [{ sku: 'OLD', displayName: '原規格', stock: 0 }],
+    tracking: [{
+      sku: 'OLD', status: '部分到貨', orderedQuantity: 10, receivedQuantity: 2,
+      skuCorrectionError: '此品項已有到貨，不能修改規格'
+    }]
+  });
+  const row = rowFor(result, 'OLD');
+  assert.equal(row.onOrder, 8);
+  assert.equal(row.status, DASHBOARD_STATUS.ANOMALY, '到貨流程會因同一個錯誤擋下登記，不可當成正常供貨');
+  assert.equal(row.reorderable, false);
+  assert.match(row.note, /規格修正/);
+});
+
+test('describeCorrectionIssue 先看 skuCorrectionError，不因 correctionSku 空白就放行', () => {
+  assert.equal(describeCorrectionIssue({ sku: 'OLD', skuCorrectionError: '壞掉了' }), '壞掉了');
+  assert.equal(describeCorrectionIssue({ sku: 'OLD' }), '');
+});
+
+test('補貨已全數到貨、只剩回寫未完成的 SKU 仍要出現在看板', () => {
+  // confirmReceipt 先把追蹤改成已完成，completeWritebackEvent 才更新快照，
+  // 中間這段時間該 SKU 沒庫存、沒訂單、沒預購額度、也沒有未到量。
+  const result = dashboard({
+    catalog: [{ sku: 'A', displayName: '商品 A', stock: 0 }],
+    orderQuantities: [],
+    tracking: [{ sku: 'A', status: '已完成', orderedQuantity: 5, receivedQuantity: 5 }],
+    preorders: [],
+    writebackPendingSkus: ['A']
+  });
+  const row = rowFor(result, 'A');
+  assert.equal(row.status, DASHBOARD_STATUS.WRITEBACK_PENDING);
+  assert.equal(row.gap, null);
+  assert.equal(row.estimatedStock, null);
+  assert.equal(row.reorderable, false);
+});
+
+test('回寫未完成的 SKU 連 SKU主檔都沒有時，仍列出且標回寫未完成', () => {
+  const result = dashboard({ catalog: [], writebackPendingSkus: ['GHOST'] });
+  assert.equal(rowFor(result, 'GHOST').status, DASHBOARD_STATUS.WRITEBACK_PENDING);
 });

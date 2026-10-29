@@ -63,10 +63,11 @@ export function describeCorrectionIssue(item) {
   const sku = text(item?.sku);
   const correctionSku = text(item?.correctionSku);
   const originalSku = text(item?.originalSku);
-  if (!correctionSku) return '';
-  // 上游已經解析過就直接採信。
+  // 上游已經解析過就直接採信。repository 的 listRequestRows 只輸出 sku 與
+  // skuCorrectionError，不輸出 correctionSku，所以這個檢查必須排在最前面。
   const upstream = text(item?.skuCorrectionError);
   if (upstream) return upstream;
+  if (!correctionSku) return '';
   // originalSku 已填代表修正早就套用完成，此時 correctionSku 就等於現行 SKU。
   if (originalSku) {
     return correctionSku === sku ? '' : '規格修正已套用，不可再改成別的 SKU';
@@ -198,7 +199,10 @@ export function buildInventoryDashboard({
     ...orderBySku.keys(),
     ...outstandingBySku.keys(),
     ...preorderBySku.keys(),
-    ...correctionIssues.keys()
+    ...correctionIssues.keys(),
+    // 到貨已登記、追蹤已結案，但回寫還沒跑完的 SKU 可能四項都沒有，
+    // 仍要列出來才看得到「回寫未完成」。
+    ...pendingSkus
   ]);
 
   const rows = [...candidates].map((sku) => {
