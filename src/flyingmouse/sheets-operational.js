@@ -47,8 +47,9 @@ function uniqueSourceBySku(sourceItems) {
     const sku = normalizeText(item.partNumber);
     if (!sku) throw new Error('官方 Excel 含有空白 SKU');
     if (result.has(sku)) throw new Error(`官方 Excel SKU 重複：${sku}`);
-    if (!Number.isSafeInteger(item.stock) || item.stock < 0) {
-      throw new Error(`官方 Excel SKU ${sku} 的庫存不是非負安全整數`);
+    // 負庫存代表飛鼠超賣，是要同步進快照的真實值，只擋非整數與超出安全範圍。
+    if (!Number.isSafeInteger(item.stock)) {
+      throw new Error(`官方 Excel SKU ${sku} 的庫存不是安全整數`);
     }
     result.set(sku, item);
   }

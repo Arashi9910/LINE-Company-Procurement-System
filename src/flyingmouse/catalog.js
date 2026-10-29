@@ -41,7 +41,8 @@ function parseStock(cell, rowNumber) {
   if (!Number.isSafeInteger(stock)) {
     throw new Error(`第 ${rowNumber} 列的庫存超出安全整數範圍`);
   }
-  return Math.max(0, stock);
+  // 飛鼠超賣時庫存是負的，那是真實值。夾成 0 會讓下游的缺口少算，所以原樣帶出。
+  return stock;
 }
 
 async function sha256File(filePath) {

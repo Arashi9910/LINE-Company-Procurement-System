@@ -36,8 +36,9 @@
 
 ```js
 export function expectedStock(currentStock, receivedQuantity) {
-  if (!Number.isInteger(currentStock) || currentStock < 0) {
-    throw new Error('飛鼠庫存必須是非負整數');
+  // 飛鼠超賣時庫存是負的，那是真實值；只擋非整數，不擋負號。
+  if (!Number.isInteger(currentStock)) {
+    throw new Error('飛鼠庫存必須是整數');
   }
   if (!Number.isInteger(receivedQuantity) || receivedQuantity < 1) {
     throw new Error('本次到貨量必須是正整數');

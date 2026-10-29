@@ -318,6 +318,22 @@ test('importApprovedReviewSnapshots imports an approved review snapshot without 
   assert.deepEqual(data[2].values, [['已匯入']]);
 });
 
+test('importApprovedReviewSnapshots keeps an approved negative stock', async () => {
+  const item = source('SKU-NEG', { stock: -3, productName: '超賣新品' });
+  const finding = buildReviewFindings(emptyDiff({ newItems: [item] }))[0];
+  const state = snapshotImportSheets([reviewRow(finding, '核准匯入')]);
+
+  const result = await importApprovedReviewSnapshots({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    generatedAt: new Date('2026-07-17T02:03:04Z')
+  });
+
+  // 以前 stock < 0 會讓整列被當成無效核准而跳過，新品就永遠匯不進來。
+  assert.deepEqual(result, { approved: 1, imported: 1, idempotent: 0, stale: 0 });
+  assert.equal(state.getWrite().requestBody.data[0].values[0][4], -3);
+});
+
 test('importApprovedReviewSnapshots performs no writes when nothing is approved', async () => {
   const item = source('SKU-WAIT');
   const finding = buildReviewFindings(emptyDiff({ newItems: [item] }))[0];

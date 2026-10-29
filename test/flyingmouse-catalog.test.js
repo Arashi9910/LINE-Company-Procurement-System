@@ -46,15 +46,17 @@ test('parseFlyingMouseWorkbook validates and normalizes the official export', as
   assert.equal(result.items[1].stock, 1000);
 });
 
-test('parseFlyingMouseWorkbook normalizes negative stock to zero', async (t) => {
+test('parseFlyingMouseWorkbook keeps negative stock as the real value', async (t) => {
   const filePath = await temporaryWorkbook(t, FLYINGMOUSE_HEADERS, [
     ['NEG-1', '負庫存商品 A', '', '', -1, '', ''],
-    ['NEG-2', '負庫存商品 B', '', '', '-2', '', '']
+    ['NEG-2', '負庫存商品 B', '', '', '-2', '', ''],
+    ['NEG-3', '負庫存商品 C', '', '', '-1,234', '', '']
   ]);
 
   const result = await parseFlyingMouseWorkbook(filePath);
 
-  assert.deepEqual(result.items.map((item) => item.stock), [0, 0]);
+  // 夾成 0 會讓下游缺口少算，所以超賣的負庫存要原樣帶出，不能正規化。
+  assert.deepEqual(result.items.map((item) => item.stock), [-1, -2, -1234]);
 });
 
 test('parseFlyingMouseWorkbook rejects a changed header', async (t) => {

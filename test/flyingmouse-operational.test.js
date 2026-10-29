@@ -320,6 +320,46 @@ test('inventory sync writes only changed SKU主檔 E cells', async () => {
   assert.deepEqual(write.requestBody.data, [{ range: "'SKU主檔'!E3", values: [[9]] }]);
 });
 
+test('inventory sync writes a negative FlyingMouse stock and still stops on garbage', async () => {
+  let write;
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get() {
+          return {
+            data: {
+              values: [
+                MAIN_HEADERS.slice(0, 5),
+                ['SKU-A', '商品 A', '', '', 0]
+              ]
+            }
+          };
+        },
+        async batchUpdate(request) {
+          write = request;
+          return { data: {} };
+        }
+      }
+    }
+  };
+
+  // 超賣的 −1 是真實庫存，寫 0 會讓看板的缺口少算 1。
+  const result = await syncInventorySnapshots({
+    sheets,
+    spreadsheetId: 'sheet-123',
+    sourceItems: [source('SKU-A', -1)]
+  });
+
+  assert.equal(result.updated, 1);
+  assert.deepEqual(write.requestBody.data, [{ range: "'SKU主檔'!E2", values: [[-1]] }]);
+
+  await assert.rejects(syncInventorySnapshots({
+    sheets,
+    spreadsheetId: 'sheet-123',
+    sourceItems: [source('SKU-A', 1.5)]
+  }), /不是安全整數/);
+});
+
 test('inventory sync stops before writes when main coverage is too low', async () => {
   let writes = 0;
   const sheets = {

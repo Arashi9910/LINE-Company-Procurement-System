@@ -87,6 +87,18 @@ function optionalNonNegativeInteger(value, label, { positive = false } = {}) {
   return number;
 }
 
+// 庫存可以是負的（飛鼠超賣），但空白以外的壞值不可以被 Number() 悄悄變成 0。
+function optionalStockInteger(value, label) {
+  if (value === '' || value == null) return '';
+  if (typeof value === 'number') {
+    if (Number.isSafeInteger(value)) return value;
+  } else if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const number = Number(value.trim());
+    if (Number.isSafeInteger(number)) return number;
+  }
+  throw new Error(`${label}必須是整數`);
+}
+
 function timestamp(value, label, { optional = false } = {}) {
   const normalized = normalizeText(value);
   if (!normalized && optional) return '';
@@ -121,8 +133,8 @@ function normalizeEvent(input) {
     attempts: nonNegativeInteger(input.attempts ?? 0, '嘗試次數'),
     nextRetryAt: timestamp(input.nextRetryAt, '下次重試時間', { optional: true }),
     partId: optionalNonNegativeInteger(input.partId, '飛鼠貨品 ID', { positive: true }),
-    beforeStock: optionalNonNegativeInteger(input.beforeStock, '更新前庫存'),
-    targetStock: optionalNonNegativeInteger(input.targetStock, '預期更新後庫存'),
+    beforeStock: optionalStockInteger(input.beforeStock, '更新前庫存'),
+    targetStock: optionalStockInteger(input.targetStock, '預期更新後庫存'),
     completedAt: timestamp(input.completedAt, '完成時間', { optional: true }),
     lastError: normalizeText(input.lastError).slice(0, 500),
     processedAt: timestamp(input.processedAt, '最後處理時間', { optional: true })

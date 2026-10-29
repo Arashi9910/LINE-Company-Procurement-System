@@ -53,9 +53,15 @@ function preparedEvent(overrides = {}) {
 
 test('expectedStock and payload validation permit only safe inventory values', () => {
   assert.equal(expectedStock(10, 2), 12);
-  assert.throws(() => expectedStock(-1, 2), /非負整數/);
+  // 飛鼠超賣後庫存是負的，到貨就是要從負的加上來，不可擋。
+  assert.equal(expectedStock(-1, 2), 1);
+  assert.equal(expectedStock(-5, 2), -3);
   assert.throws(() => expectedStock(10, 0), /正整數/);
   assert.throws(() => expectedStock(Number.MAX_SAFE_INTEGER, 1), /安全整數/);
+  // Number() 會把這些都變成 0，解析庫存時等於把「欄位不見了」當成「庫存 0」。
+  for (const broken of [null, undefined, '', ' ', false, [], '10.5', '一百']) {
+    assert.throws(() => expectedStock(broken, 2), /必須是整數/);
+  }
 
   const payload = buildPartUpdatePayload(part(), 12);
   assert.deepEqual(Object.keys(payload).sort(), [
@@ -66,6 +72,46 @@ test('expectedStock and payload validation permit only safe inventory values', (
   assert.equal(payload.op_remark, '既有備註');
   assert.equal(Object.hasOwn(payload, 'stock_history'), false);
   assert.equal(Object.hasOwn(payload, 'unexpected'), false);
+});
+
+test('prepareFlyingMouseWriteback works from a negative FlyingMouse stock', async () => {
+  const client = { async getBySku() { return part({ stock: -1 }); } };
+
+  const result = await prepareFlyingMouseWriteback({ client, event: pendingEvent() });
+
+  assert.deepEqual(result, { partId: 933, beforeStock: -1, targetStock: 1 });
+});
+
+test('prepareFlyingMouseWriteback refuses a part whose stock field is missing', async () => {
+  for (const stock of [null, '', 'N/A']) {
+    const client = { async getBySku() { return part({ stock }); } };
+    await assert.rejects(
+      prepareFlyingMouseWriteback({ client, event: pendingEvent() }),
+      (error) => error instanceof FlyingMouseWritebackError &&
+        error.code === 'INVALID_PART' &&
+        error.manualReview === true &&
+        /飛鼠庫存必須是整數/.test(error.message)
+    );
+  }
+});
+
+test('applyPreparedFlyingMouseWriteback PUTs the honest total from a negative stock', async () => {
+  const reads = [part({ stock: -5 }), part({ stock: -3 })];
+  const puts = [];
+  const client = {
+    async getBySku() { return reads.shift(); },
+    async putPart(id, payload) { puts.push({ id, payload }); }
+  };
+
+  const result = await applyPreparedFlyingMouseWriteback({
+    client,
+    event: preparedEvent({ beforeStock: -5, targetStock: -3 }),
+    mode: 'live'
+  });
+
+  assert.deepEqual(result, { action: 'applied', partId: 933, beforeStock: -5, targetStock: -3 });
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].payload.stock, -3);
 });
 
 test('prepareFlyingMouseWriteback reads an exact SKU and computes before and target', async () => {

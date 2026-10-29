@@ -423,8 +423,9 @@ function sourceFromApprovedReviewRow(row) {
   const partNumber = normalizeText(row[4]);
   const productName = normalizeText(row[5]);
   const stock = Number(row[8]);
+  // 負庫存是飛鼠超賣的真實值，核准匯入要照原值帶進 SKU主檔。
   if (!partNumber || !productName || row[0] !== `新增:${partNumber}` ||
-    !Number.isSafeInteger(stock) || stock < 0) {
+    !Number.isSafeInteger(stock)) {
     return null;
   }
   return Object.freeze({
