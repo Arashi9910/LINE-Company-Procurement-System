@@ -1,5 +1,5 @@
 import { MAIN_HEADERS, MAIN_SHEET_NAME } from './sheets-review.js';
-import { classifyStockMode, STOCK_MODE_LABEL } from '../services/stock-mode.js';
+import { classifyStockMode, STOCK_MODE, STOCK_MODE_LABEL } from '../services/stock-mode.js';
 import {
   TRACKING_HEADERS,
   TRACKING_ITEM_INDEX,
@@ -122,7 +122,11 @@ function buildDisplayName(item, salesName) {
 }
 
 // 一個貨號可能綁多個銷售商品。目前實測衝突數為 0，但不能假設永遠如此：
-// 綁定之間若推導出不同的出貨型態，就不猜，讓名稱留空、型態記為未知。
+// 綁定之間若推導出不同的出貨型態，名稱仍取第一個綁定（它就是採購會看到的標題），
+// 但型態記為未知——猜錯任何一邊都會讓缺口算錯。
+//
+// 型態要跟著名稱一起決定，不能讓呼叫端從最後的顯示名稱回推：衝突時顯示名稱
+// 只代表其中一個綁定，拿它重新分類等於把「不知道」偷換成一個猜測。
 function salesNamesBySku(imageItems) {
   const names = new Map();
   for (const item of imageItems ?? []) {
@@ -134,7 +138,10 @@ function salesNamesBySku(imageItems) {
     const candidates = bindings.map((binding) => normalizeText(binding?.productName)).filter(Boolean);
     if (candidates.length === 0) continue;
     const modes = new Set(candidates.map((name) => classifyStockMode(name)));
-    names.set(sku, modes.size === 1 ? candidates[0] : '');
+    names.set(sku, Object.freeze({
+      name: candidates[0],
+      mode: modes.size === 1 ? [...modes][0] : STOCK_MODE.UNKNOWN
+    }));
   }
   return names;
 }
@@ -247,7 +254,8 @@ export async function syncCatalogItems({
   let updated = 0;
   let unchanged = 0;
   for (const [sku, source] of sourceBySku) {
-    const displayName = buildDisplayName(source, salesNames.get(sku));
+    const sales = salesNames.get(sku);
+    const displayName = buildDisplayName(source, sales?.name);
     // B 欄要維持官方 Excel 的貨品名稱：sheets-baseline.js 拿 A:D 當差異比對基準，
     // 改成銷售商品名稱會讓每一列都被判定為與 Excel 不符（規格第 3 節）。
     const catalogValues = [
@@ -259,7 +267,8 @@ export async function syncCatalogItems({
       source.location,
       displayName
     ];
-    const stockMode = STOCK_MODE_LABEL[classifyStockMode(displayName)];
+    // 有銷售商品資料時以它決定的型態為準；沒有才從（退回貨品層的）顯示名稱推導。
+    const stockMode = STOCK_MODE_LABEL[sales?.mode ?? classifyStockMode(displayName)];
     const existing = main.bySku.get(sku);
     if (existing) {
       const current = existing.row.slice(1, 8);
@@ -621,27 +630,8 @@ export const TRACKING_SHEET_NAME = '補貨追蹤';
 // 名稱當作紀錄，不回頭改寫（規格第 4.3 節，使用者 2026-10-30 選定）。
 const REFRESHABLE_TRACKING_STATUSES = Object.freeze(new Set(['待確認', '已下單', '部分到貨']));
 
-// 補貨追蹤的「品項」是建單當下從 SKU主檔 複製的一份快照。飛鼠改了上架名稱之後
-// 這份快照不會變，採購就會看著「預購」兩個字以為還在等上游，於是重複下單。
-export async function refreshTrackingDisplayNames({
-  sheets,
-  spreadsheetId,
-  dryRun = false
-}) {
-  if (!sheets || !spreadsheetId) throw new Error('補貨追蹤名稱同步設定不完整');
-  const response = await sheets.spreadsheets.values.batchGet({
-    spreadsheetId,
-    ranges: [
-      `'${MAIN_SHEET_NAME}'!A1:O`,
-      `'${TRACKING_SHEET_NAME}'!A1:${TRACKING_LAST_COLUMN}`
-    ],
-    valueRenderOption: 'UNFORMATTED_VALUE'
-  });
-  const mainValues = response.data.valueRanges?.[0]?.values ?? [];
-  const trackingValues = response.data.valueRanges?.[1]?.values ?? [];
+function readCatalogDisplayNames(mainValues) {
   exactHeaders(mainValues[0] ?? [], MAIN_HEADERS, MAIN_SHEET_NAME);
-  exactHeaders(trackingValues[0] ?? [], TRACKING_HEADERS, TRACKING_SHEET_NAME);
-
   const catalog = new Map();
   for (let index = 1; index < mainValues.length; index += 1) {
     const row = paddedRow(mainValues[index], MAIN_HEADERS.length);
@@ -651,7 +641,13 @@ export async function refreshTrackingDisplayNames({
     if (!displayName) continue;
     catalog.set(sku, { displayName, stockMode: normalizeText(row[14]) });
   }
+  return catalog;
+}
 
+// 每一列要寫什麼，完全由傳進來的這份追蹤資料決定——尤其是該列當下的 SKU 與狀態。
+// 這樣即使中途有人動了那一列，算出來的名稱也是配著新 SKU 的，不會張冠李戴。
+function planTrackingNameWrites(catalog, trackingValues) {
+  exactHeaders(trackingValues[0] ?? [], TRACKING_HEADERS, TRACKING_SHEET_NAME);
   const data = [];
   let refreshed = 0;
   let unchanged = 0;
@@ -687,12 +683,68 @@ export async function refreshTrackingDisplayNames({
     }
     refreshed += 1;
   }
+  return { data, refreshed, unchanged, skipped };
+}
 
-  if (!dryRun && data.length > 0) {
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId,
-      requestBody: { valueInputOption: 'RAW', data }
+// 補貨追蹤的「品項」是建單當下從 SKU主檔 複製的一份快照。飛鼠改了上架名稱之後
+// 這份快照不會變，採購就會看著「預購」兩個字以為還在等上游，於是重複下單。
+//
+// 這支跑在獨立的同步 Job，和 LINE 那邊的寫入不同程序，SheetsRepository 的
+// 寫入佇列保護不到。危險的交錯是：到貨時若帶規格修正，repository 會改寫同一列的
+// D（品項）、N（SKU）並把狀態推進成已完成；如果我們接著把**讀取當下**那個舊 SKU
+// 的名稱寫回 D，就會變成 N 是新 SKU、D 是舊名稱，而該列已結案、往後不再刷新，
+// 錯誤永久留著。
+//
+// 所以寫入前重讀一次追蹤表，並完全依最新那份重算：中途被改過的列，要嘛已經不在
+// 流程中而被排除，要嘛算出來的是配著新 SKU 的名稱。殘留的風險只剩重讀到送出
+// 之間那一瞬；要完全消除得靠跨程序鎖，那會牽動所有寫入者，不在這次範圍。
+export async function refreshTrackingDisplayNames({
+  sheets,
+  spreadsheetId,
+  dryRun = false
+}) {
+  if (!sheets || !spreadsheetId) throw new Error('補貨追蹤名稱同步設定不完整');
+  const trackingRange = `'${TRACKING_SHEET_NAME}'!A1:${TRACKING_LAST_COLUMN}`;
+  const response = await sheets.spreadsheets.values.batchGet({
+    spreadsheetId,
+    ranges: [`'${MAIN_SHEET_NAME}'!A1:O`, trackingRange],
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const catalog = readCatalogDisplayNames(response.data.valueRanges?.[0]?.values ?? []);
+  const planned = planTrackingNameWrites(catalog, response.data.valueRanges?.[1]?.values ?? []);
+  if (planned.data.length === 0) {
+    return Object.freeze({
+      refreshed: planned.refreshed,
+      unchanged: planned.unchanged,
+      skipped: planned.skipped,
+      dryRun
     });
   }
-  return Object.freeze({ refreshed, unchanged, skipped, dryRun });
+  if (dryRun) {
+    return Object.freeze({
+      refreshed: planned.refreshed,
+      unchanged: planned.unchanged,
+      skipped: planned.skipped,
+      dryRun
+    });
+  }
+
+  const fresh = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: trackingRange,
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const final = planTrackingNameWrites(catalog, fresh.data.values ?? []);
+  if (final.data.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: { valueInputOption: 'RAW', data: final.data }
+    });
+  }
+  return Object.freeze({
+    refreshed: final.refreshed,
+    unchanged: final.unchanged,
+    skipped: final.skipped,
+    dryRun
+  });
 }

@@ -658,14 +658,17 @@ test('catalog sync falls back to the part name when the sales name is missing', 
   );
 });
 
-// 一個貨號綁多個銷售商品時，兩邊前綴不一樣就無從判斷。猜錯任何一邊都會
-// 讓缺口算錯，所以寧可留白讓人處理。
-test('catalog sync refuses to pick a name when bound products disagree', async () => {
+// 一個貨號綁多個銷售商品時，兩邊前綴不一樣就無從判斷。名稱還是取第一個綁定
+// （那就是採購會看到的標題），但型態必須是「未知」——猜錯任何一邊都會讓缺口算錯。
+//
+// 貨品名稱刻意帶「預售」前綴：若實作是退回貨品名稱再重新分類，這裡會寫出
+// 「預購」而不是「未知」，等於把不知道偷換成一個猜測。
+test('catalog sync refuses to guess the mode when bound products disagree', async () => {
   let write;
   await syncCatalogItems({
     sheets: catalogSheets({ rows: [], onWrite: (request) => { write = request; } }),
     spreadsheetId: 'sheet-123',
-    sourceItems: [catalogSource({ productName: '貨品舊名' })],
+    sourceItems: [catalogSource({ productName: '預售✨ 收納盒' })],
     imageItems: [image({
       sku: 'SKU-A',
       productName: '隔日到貨⚡️ 收納盒',
@@ -678,7 +681,7 @@ test('catalog sync refuses to pick a name when bound products disagree', async (
 
   const inserted = write.requestBody.data
     .find((entry) => entry.range === "'SKU主檔'!A2:J2").values[0];
-  assert.equal(inserted[7], '貨品舊名｜紅色｜大');
+  assert.equal(inserted[7], '隔日到貨⚡️ 收納盒｜紅色｜大');
   assert.deepEqual(
     write.requestBody.data.find((entry) => entry.range === "'SKU主檔'!O2").values[0],
     ['未知']
@@ -695,8 +698,11 @@ function trackingRow({ requestId, item, status, sku, stockMode = '' }) {
   return row;
 }
 
-function trackingSheets({ catalog, tracking, onWrite }) {
+// freshTracking 讓測試模擬「讀完之後、寫入之前有人動了那一列」。
+function trackingSheets({ catalog, tracking, freshTracking, onWrite }) {
+  const calls = { rereads: 0 };
   return {
+    calls,
     spreadsheets: {
       values: {
         async batchGet({ ranges }) {
@@ -709,6 +715,11 @@ function trackingSheets({ catalog, tracking, onWrite }) {
               ]
             }
           };
+        },
+        async get({ range }) {
+          assert.equal(range, "'補貨追蹤'!A1:W");
+          calls.rereads += 1;
+          return { data: { values: [[...TRACKING_HEADERS], ...(freshTracking ?? tracking)] } };
         },
         async batchUpdate(request) {
           onWrite?.(request);
@@ -776,4 +787,68 @@ test('tracking refresh skips rows whose SKU is gone from the catalog', async () 
   });
 
   assert.deepEqual(result, { refreshed: 0, unchanged: 0, skipped: 1, dryRun: false });
+});
+
+// Codex SNS-004 指出的交錯：刷新讀到 SKU-A／已下單之後，使用者登記到貨並帶規格修正，
+// repository 會改寫同一列的 D、N 並把狀態推進成已完成。若刷新仍照舊讀寫回去，
+// 會變成 N 是新 SKU、D 是舊名稱，而且該列已結案、往後不再刷新，錯誤永久留著。
+test('tracking refresh drops a row that left the flow between the two reads', async () => {
+  let writes = 0;
+  const state = trackingSheets({
+    catalog: [
+      ['SKU-A', '甲貨品', '', '', 1, '', '', '隔日到貨⚡️ 甲', '一般SKU', '是', '', '件', '飛鼠', '', '現貨'],
+      ['SKU-B', '乙貨品', '', '', 1, '', '', '預購 乙', '一般SKU', '是', '', '件', '飛鼠', '', '預購']
+    ],
+    tracking: [trackingRow({ requestId: 'RQ-1', item: '預售✨ 甲', status: '已下單', sku: 'SKU-A' })],
+    freshTracking: [trackingRow({
+      requestId: 'RQ-1', item: '預購 乙', status: '已完成', sku: 'SKU-B', stockMode: '預購'
+    })],
+    onWrite: () => { writes += 1; }
+  });
+
+  const result = await refreshTrackingDisplayNames({ sheets: state, spreadsheetId: 'sheet-123' });
+
+  assert.equal(state.calls.rereads, 1);
+  assert.equal(writes, 0);
+  assert.deepEqual(result, { refreshed: 0, unchanged: 0, skipped: 0, dryRun: false });
+});
+
+test('tracking refresh uses the SKU the row holds at write time', async () => {
+  let write;
+  const state = trackingSheets({
+    catalog: [
+      ['SKU-A', '甲貨品', '', '', 1, '', '', '隔日到貨⚡️ 甲', '一般SKU', '是', '', '件', '飛鼠', '', '現貨'],
+      ['SKU-B', '乙貨品', '', '', 1, '', '', '預購 乙', '一般SKU', '是', '', '件', '飛鼠', '', '預購']
+    ],
+    tracking: [trackingRow({ requestId: 'RQ-1', item: '預售✨ 甲', status: '已下單', sku: 'SKU-A' })],
+    // 規格修正把這一列換成了 SKU-B，但單還在流程中。
+    freshTracking: [trackingRow({ requestId: 'RQ-1', item: '預售✨ 甲', status: '部分到貨', sku: 'SKU-B' })],
+    onWrite: (request) => { write = request; }
+  });
+
+  await refreshTrackingDisplayNames({ sheets: state, spreadsheetId: 'sheet-123' });
+
+  assert.deepEqual(write.requestBody.data, [
+    { range: "'補貨追蹤'!D2", values: [['預購 乙']] },
+    { range: "'補貨追蹤'!W2", values: [['預購']] }
+  ]);
+});
+
+test('tracking refresh never re-reads or writes when nothing needs changing', async () => {
+  let writes = 0;
+  const state = trackingSheets({
+    catalog: [[
+      'SKU-A', '甲貨品', '', '', 1, '', '', '隔日到貨⚡️ 甲', '一般SKU', '是', '', '件', '飛鼠', '', '現貨'
+    ]],
+    tracking: [trackingRow({
+      requestId: 'RQ-1', item: '隔日到貨⚡️ 甲', status: '已下單', sku: 'SKU-A', stockMode: '現貨'
+    })],
+    onWrite: () => { writes += 1; }
+  });
+
+  const result = await refreshTrackingDisplayNames({ sheets: state, spreadsheetId: 'sheet-123' });
+
+  assert.equal(state.calls.rereads, 0);
+  assert.equal(writes, 0);
+  assert.deepEqual(result, { refreshed: 0, unchanged: 1, skipped: 0, dryRun: false });
 });

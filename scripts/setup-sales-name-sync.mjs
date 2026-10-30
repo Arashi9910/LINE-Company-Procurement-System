@@ -41,8 +41,15 @@ export async function setupSalesNameSync({ sheets, spreadsheetId, dryRun = false
     .map((sheet) => sheet.properties)
     .map((sheet) => [sheet.title, sheet]));
 
+  // 讀取範圍要夾在分頁現有的欄數內。實測 Sheets 的 batchGet 會自行裁切超界範圍，
+  // 但這支腳本存在的前提就是欄位還沒補上，不該賴在 API 的寬容上。
+  const readWidths = SALES_NAME_TABLES.map((table) => {
+    const sheet = properties.get(table.name);
+    if (!sheet) throw new Error(`缺少 ${table.name} 分頁`);
+    return Math.max(1, Math.min(table.headers.length, sheet.gridProperties?.columnCount ?? 0));
+  });
   const ranges = SALES_NAME_TABLES
-    .map((table) => `'${table.name}'!A1:${columnLetter(table.headers.length - 1)}1`);
+    .map((table, index) => `'${table.name}'!A1:${columnLetter(readWidths[index] - 1)}1`);
   const read = await sheets.spreadsheets.values.batchGet({
     spreadsheetId,
     ranges,

@@ -37,7 +37,18 @@ function sheetsFor({ catalogHeader, trackingHeader, catalogColumns, trackingColu
           return { data: {} };
         },
         values: {
-          async batchGet() {
+          // 真實分頁讀不到還不存在的欄。要求超出網格的範圍就是錯，不能賴在 API 會裁切。
+          async batchGet({ ranges }) {
+            const limits = [catalogColumns, trackingColumns];
+            for (const [index, range] of ranges.entries()) {
+              const last = /![A-Z]+\d*:([A-Z]+)/.exec(range)[1];
+              const width = [...last]
+                .reduce((total, letter) => total * 26 + (letter.charCodeAt(0) - 64), 0);
+              assert.ok(
+                width <= limits[index],
+                `${range} 超出分頁現有的 ${limits[index]} 欄`
+              );
+            }
             return {
               data: {
                 valueRanges: [{ values: [catalogHeader] }, { values: [trackingHeader] }]

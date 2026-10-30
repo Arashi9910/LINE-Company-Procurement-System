@@ -468,7 +468,7 @@ async function importApprovedItems({
     spreadsheetId,
     ranges: [
       `'${REVIEW_SHEET_NAME}'!A1:S${reviewRowCount}`,
-      `'${MAIN_SHEET_NAME}'!A1:N${mainRowCount}`
+      `'${MAIN_SHEET_NAME}'!A1:O${mainRowCount}`
     ],
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
