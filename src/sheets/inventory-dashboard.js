@@ -28,6 +28,7 @@ export const DASHBOARD_HEADERS = Object.freeze([
   '已叫貨未到',
   '預購額度',
   '安全庫存',
+  '額度來源',
   '推算實際庫存',
   '缺口',
   '狀態',
@@ -54,6 +55,7 @@ export const DASHBOARD_SYNC_FAILED = '同步失敗';
 export const MOVEMENT_SHEET_NAME = '動銷清單';
 export const MOVEMENT_HEADERS = Object.freeze([
   'SKU',
+  '近30天售出',
   '起算日',
   '更新時間'
 ]);
@@ -169,6 +171,7 @@ export function dashboardRowValues(row, updatedAt) {
     row.onOrder,
     row.preorderAllowance,
     row.safetyStock,
+    row.allowanceSource ?? '',
     cell(row.estimatedStock),
     cell(row.gap),
     row.status,
@@ -390,11 +393,12 @@ export function parseDashboardRows(values) {
       onOrder: optionalNumber(row[6]),
       preorderAllowance: optionalNumber(row[7]),
       safetyStock: optionalNumber(row[8]),
-      estimatedStock: optionalNumber(row[9]),
-      gap: optionalNumber(row[10]),
-      status: normalizeText(row[11]),
-      note: normalizeText(row[12]),
-      updatedAt: normalizeText(row[13])
+      allowanceSource: normalizeText(row[9]),
+      estimatedStock: optionalNumber(row[10]),
+      gap: optionalNumber(row[11]),
+      status: normalizeText(row[12]),
+      note: normalizeText(row[13]),
+      updatedAt: normalizeText(row[14])
     }));
   }
   return rows;
@@ -442,22 +446,28 @@ export function createDashboardReader({ sheets, spreadsheetId, enabled }) {
 export function parseMovementRows(values) {
   assertSheetHeaders(values?.[0] ?? [], MOVEMENT_HEADERS, MOVEMENT_SHEET_NAME);
   const skus = new Set();
+  const units = new Map();
   let since = '';
   let updatedAt = '';
   for (let index = 1; index < (values?.length ?? 0); index += 1) {
     const row = paddedRow(values[index], MOVEMENT_HEADERS.length);
     if (!hasValues(row)) continue;
     const sku = normalizeText(row[0]);
-    const rowUpdatedAt = normalizeText(row[2]);
+    const rowUpdatedAt = normalizeText(row[3]);
     if (!sku && !rowUpdatedAt) {
       throw new Error(`${MOVEMENT_SHEET_NAME} 第 ${index + 1} 列缺少 SKU`);
     }
-    if (sku) skus.add(sku);
-    since = since || normalizeText(row[1]);
+    if (sku) {
+      skus.add(sku);
+      const sold = Number(row[1]);
+      // 件數壞掉當成 0：寧可少留安全庫存，也不要憑一個亂數去叫貨。
+      units.set(sku, Number.isSafeInteger(sold) && sold >= 0 ? sold : 0);
+    }
+    since = since || normalizeText(row[2]);
     updatedAt = updatedAt || rowUpdatedAt;
   }
   // 只有表頭＝建好了但還沒寫過，不是「這 30 天沒人買任何東西」。
-  return Object.freeze({ skus, since, updatedAt, initialized: Boolean(updatedAt) });
+  return Object.freeze({ skus, units, since, updatedAt, initialized: Boolean(updatedAt) });
 }
 
 export async function readMovementSkus({ sheets, spreadsheetId }) {
@@ -472,12 +482,20 @@ export async function readMovementSkus({ sheets, spreadsheetId }) {
 
 // 整張覆寫，跟看板同一套做法：新資料後面補整列空白蓋掉上一輪多出來的列，
 // 只送一次 update。分成寫入與清除兩次請求的話，中間失敗會留下新舊混合的清單。
-export async function writeMovementSkus({ sheets, spreadsheetId, skus, since, updatedAt }) {
+export async function writeMovementSkus({ sheets, spreadsheetId, units, since, updatedAt }) {
   if (!sheets || !spreadsheetId) throw new Error('動銷清單寫入設定不完整');
   const sinceText = normalizeText(since);
   const atText = normalizeText(updatedAt);
   if (!sinceText || !atText) throw new Error('動銷清單缺少起算日或更新時間');
-  const sorted = [...new Set([...skus].map((sku) => normalizeText(sku)).filter(Boolean))].sort();
+  const entries = [...(units instanceof Map ? units : new Map())]
+    .map(([sku, sold]) => [normalizeText(sku), sold])
+    .filter(([sku]) => sku)
+    .sort((left, right) => left[0].localeCompare(right[0]));
+  for (const [sku, sold] of entries) {
+    if (!Number.isSafeInteger(sold) || sold < 0) {
+      throw new Error(`動銷清單 ${sku} 的售出件數必須是非負整數`);
+    }
+  }
 
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId,
@@ -488,9 +506,9 @@ export async function writeMovementSkus({ sheets, spreadsheetId, skus, since, up
   assertSheetHeaders(existing[0] ?? [], MOVEMENT_HEADERS, MOVEMENT_SHEET_NAME);
 
   // 空集合也要留下完成標記，不然讀取端分不出「查過且為空」與「還沒查過」。
-  const dataRows = sorted.length > 0
-    ? sorted.map((sku) => [sku, sinceText, atText])
-    : [['', sinceText, atText]];
+  const dataRows = entries.length > 0
+    ? entries.map(([sku, sold]) => [sku, sold, sinceText, atText])
+    : [['', '', sinceText, atText]];
   const values = [[...MOVEMENT_HEADERS], ...dataRows];
   const blankRows = Math.max(0, existing.length - values.length);
   const payload = [
@@ -506,5 +524,5 @@ export async function writeMovementSkus({ sheets, spreadsheetId, skus, since, up
     valueInputOption: 'RAW',
     requestBody: { values: payload }
   });
-  return Object.freeze({ skus: sorted.length, clearedRows: blankRows, since: sinceText });
+  return Object.freeze({ skus: entries.length, clearedRows: blankRows, since: sinceText });
 }

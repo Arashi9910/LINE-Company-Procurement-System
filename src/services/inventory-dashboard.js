@@ -1,5 +1,13 @@
 // 庫存看板的純計算：只吃資料、只吐結果，不讀也不寫任何資料來源。
 // 公式與欄位依 docs/inventory-dashboard-spec.md 第 3、4.1、5 節。
+import { DEFAULT_COVER_DAYS, STOCK_MODE, safetyStockFromVelocity } from './stock-mode.js';
+
+// 預購額度與安全庫存從哪裡來。看板上會標明，否則人看到數字不知道是誰填的。
+export const ALLOWANCE_SOURCE = Object.freeze({
+  MANUAL: '人工填寫',
+  PREORDER: '名稱推導：預購',
+  PHYSICAL: '名稱推導：現貨'
+});
 
 export const DASHBOARD_STATUS = Object.freeze({
   REORDER: '要叫貨',
@@ -162,6 +170,33 @@ function indexOrders(orderQuantities) {
   return bySku;
 }
 
+// 「預購額度」分頁填了就以它為準；沒填才用名稱推導。
+// 使用者說名稱不保證 100% 正確，所以人工永遠贏過推導。
+function resolveAllowance({ override, mode, flyingmouseStock, unshipped, units, coverDays }) {
+  if (override) {
+    return {
+      preorderAllowance: override.preorderAllowance,
+      safetyStock: override.safetyStock,
+      allowanceSource: ALLOWANCE_SOURCE.MANUAL
+    };
+  }
+  if (mode === STOCK_MODE.PREORDER) {
+    // 手上沒有實體：飛鼠那個數字整個是放出去的額度，推算實際因此恆為 0，
+    // 缺口收斂成「未寄 + 安全庫存 − 已叫貨未到」＝我欠客戶幾件還沒去訂。
+    return {
+      preorderAllowance: flyingmouseStock + unshipped,
+      safetyStock: 0,
+      allowanceSource: ALLOWANCE_SOURCE.PREORDER
+    };
+  }
+  // 有實體（或看不出來）：飛鼠的數字就是真實可賣量，靠安全庫存觸發叫貨。
+  return {
+    preorderAllowance: 0,
+    safetyStock: safetyStockFromVelocity(units, coverDays),
+    allowanceSource: ALLOWANCE_SOURCE.PHYSICAL
+  };
+}
+
 function decide({ known, writebackPending, correctionIssue, estimatedStock, gap }) {
   if (writebackPending) {
     return { status: DASHBOARD_STATUS.WRITEBACK_PENDING, note: '回寫尚未完成，暫不計算缺口' };
@@ -188,6 +223,11 @@ export function buildInventoryDashboard({
   tracking = [],
   preorders = [],
   writebackPendingSkus = [],
+  // 從商品名稱推導出來的「有沒有實體庫存」，以及近 30 天售出件數。
+  // 沒給就全部當 unknown、件數 0，行為跟以前一樣（額度與安全庫存都是 0）。
+  stockModes = new Map(),
+  recentUnits = new Map(),
+  coverDays = DEFAULT_COVER_DAYS,
   updatedAt = ''
 } = {}) {
   const catalogBySku = indexCatalog(catalog);
@@ -214,12 +254,18 @@ export function buildInventoryDashboard({
     const known = catalogBySku.has(sku);
     const catalogEntry = catalogBySku.get(sku);
     const orders = orderBySku.get(sku) ?? { processing: 0, preparing: 0 };
-    const preorder = preorderBySku.get(sku) ?? { preorderAllowance: 0, safetyStock: 0 };
 
     const flyingmouseStock = catalogEntry?.stock ?? 0;
     const unshipped = orders.processing + orders.preparing;
     const onOrder = outstandingBySku.get(sku) ?? 0;
-    const { preorderAllowance, safetyStock } = preorder;
+    const { preorderAllowance, safetyStock, allowanceSource } = resolveAllowance({
+      override: preorderBySku.get(sku),
+      mode: stockModes.get(sku),
+      flyingmouseStock,
+      unshipped,
+      units: recentUnits.get(sku) ?? 0,
+      coverDays
+    });
 
     // 規格第 3 節。
     const estimatedStock = flyingmouseStock + unshipped - preorderAllowance;
@@ -231,7 +277,11 @@ export function buildInventoryDashboard({
     const publishable = status !== DASHBOARD_STATUS.WRITEBACK_PENDING;
 
     // 規格第 3 節最後一列：還有單沒寄而實際不夠時，現在不能關閉預購。
-    const closeShortfall = publishable && preorderAllowance > 0
+    // 只對人工填的額度有意義——額度是從名稱推導出來的話，推算實際恆為 0，
+    // 這個數字就永遠等於未寄量，跟缺口講同一件事，變成每一列都掛一句廢話。
+    const closeShortfall = publishable
+      && preorderAllowance > 0
+      && allowanceSource === ALLOWANCE_SOURCE.MANUAL
       ? Math.max(0, unshipped - estimatedStock)
       : null;
     const notes = [note];
@@ -250,6 +300,7 @@ export function buildInventoryDashboard({
       onOrder,
       preorderAllowance,
       safetyStock,
+      allowanceSource,
       estimatedStock: publishable ? estimatedStock : null,
       gap: publishable ? gap : null,
       status,

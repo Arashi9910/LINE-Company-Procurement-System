@@ -138,8 +138,8 @@ test('runInventoryDashboard writes the board and marks the sync successful', asy
   assert.equal(result.rows, 1);
   // 規格第 3 節商品 A「賣 3」：飛鼠 7、未寄 3、推算實際 0、缺口 3。
   const written = dashboardWrites(state.calls)[0].values;
-  assert.deepEqual(written[1].slice(0, 12),
-    ['SKU-A', '商品 SKU-A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨']);
+  assert.deepEqual(written[1].slice(0, 13),
+    ['SKU-A', '商品 SKU-A', 7, 3, 0, 3, 0, 10, 0, '人工填寫', 0, 3, '要叫貨']);
   assert.deepEqual(statusWrite(state.calls), [DASHBOARD_SYNC_OK, UPDATED_AT, UPDATED_AT, '']);
 });
 
@@ -169,10 +169,10 @@ test('runInventoryDashboard suppresses a SKU that still has an unfinished writeb
 
     assert.equal(result.writebackPendingSkus, 1, `${status} 應該被擋下來`);
     const row = dashboardWrites(state.calls)[0].values[1];
-    assert.equal(row[11], '回寫未完成', `${status} 的狀態欄不對`);
+    assert.equal(row[12], '回寫未完成', `${status} 的狀態欄不對`);
     // 缺口與推算實際要空白，不可寫 0——寫 0 在看板上看起來就是「不缺貨」。
-    assert.equal(row[9], '', `${status} 的推算實際庫存應該空白`);
-    assert.equal(row[10], '', `${status} 的缺口應該空白`);
+    assert.equal(row[10], '', `${status} 的推算實際庫存應該空白`);
+    assert.equal(row[11], '', `${status} 的缺口應該空白`);
   }
 });
 
@@ -225,7 +225,7 @@ test('a receipt landing mid-read makes the round start over, not publish a half 
   assert.equal(result.ok, true);
   assert.equal(result.writebackPendingSkus, 1);
   assert.equal(state.calls.writebackReads, 4);
-  assert.equal(dashboardWrites(state.calls)[0].values[1][11], '回寫未完成');
+  assert.equal(dashboardWrites(state.calls)[0].values[1][12], '回寫未完成');
 });
 
 test('a queue that keeps changing gives up instead of publishing', async () => {
@@ -491,8 +491,8 @@ test('the real repository path still works when 補貨追蹤 is intact', async (
   assert.equal(result.ok, true);
   const row = dashboardWrites(state.calls)[0].values[1];
   assert.equal(row[6], 5);
-  assert.equal(row[10], -2);
-  assert.equal(row[11], '正常');
+  assert.equal(row[11], -2);
+  assert.equal(row[12], '正常');
 });
 
 test('a transient read failure still records the failure note', async () => {

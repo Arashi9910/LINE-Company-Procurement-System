@@ -42,6 +42,7 @@ function row(overrides = {}) {
     safetyStock: 0,
     estimatedStock: 0,
     gap: 3,
+    allowanceSource: '人工填寫',
     status: DASHBOARD_STATUS.REORDER,
     reorderable: true,
     preorderCloseShortfall: 3,
@@ -113,7 +114,7 @@ test('preorder headers and dashboard headers match the spec', () => {
   assert.deepEqual([...PREORDER_HEADERS], ['SKU', '預購額度', '安全庫存', '備註', '最後修改人', '最後修改時間']);
   assert.deepEqual([...DASHBOARD_HEADERS], [
     'SKU', '商品名稱', '飛鼠庫存', '處理中', '備貨中', '賣掉還沒寄', '已叫貨未到',
-    '預購額度', '安全庫存', '推算實際庫存', '缺口', '狀態', '備註', '更新時間'
+    '預購額度', '安全庫存', '額度來源', '推算實際庫存', '缺口', '狀態', '備註', '更新時間'
   ]);
 });
 
@@ -172,7 +173,8 @@ test('parsePreorderRows still catches a duplicate beyond the old row budget', ()
 test('dashboardRowValues writes suppressed numbers as blank, never zero', () => {
   const published = dashboardRowValues(row(), '2026-10-29 14:00:00');
   assert.deepEqual(published, [
-    'SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '目前不能關閉預購，還差 3 個', '2026-10-29 14:00:00'
+    'SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, '人工填寫', 0, 3, '要叫貨',
+    '目前不能關閉預購，還差 3 個', '2026-10-29 14:00:00'
   ]);
 
   // 回寫未完成時缺口是 null。寫 0 會讓看板看起來像「不缺貨」。
@@ -184,9 +186,9 @@ test('dashboardRowValues writes suppressed numbers as blank, never zero', () => 
     preorderCloseShortfall: null,
     note: '到貨已登記，飛鼠庫存回寫尚未完成'
   }), '2026-10-29 14:00:00');
-  assert.equal(suppressed[9], '');
   assert.equal(suppressed[10], '');
-  assert.equal(suppressed[11], '回寫未完成');
+  assert.equal(suppressed[11], '');
+  assert.equal(suppressed[12], '回寫未完成');
 });
 
 test('buildDashboardValues puts the header first and refuses a missing timestamp', () => {
@@ -200,7 +202,7 @@ test('buildDashboardValues puts the header first and refuses a missing timestamp
 });
 
 test('writeInventoryDashboard replaces a shrinking table in one request', async () => {
-  const stale = (sku) => [sku, `舊商品 ${sku}`, 1, 0, 0, 0, 0, 0, 0, 1, 0, '正常', '', '2026-10-29 13:00:00'];
+  const stale = (sku) => [sku, `舊商品 ${sku}`, 1, 0, 0, 0, 0, 0, 0, '人工填寫', 1, 0, '正常', '', '2026-10-29 13:00:00'];
   const state = sheetsFor({
     dashboard: [[...DASHBOARD_HEADERS], stale('SKU-OLD-1'), stale('SKU-OLD-2'), stale('SKU-OLD-3')]
   });
@@ -222,7 +224,7 @@ test('writeInventoryDashboard replaces a shrinking table in one request', async 
   // 分成寫入與清除兩次請求的話，中間失敗會留下 C、B、C 這種新舊混合的看板。
   // 看板與同步狀態在同一次 batchUpdate 裡，所以是兩筆 range、一次請求。
   assert.deepEqual(state.calls.updates.map((entry) => entry.range),
-    ["'庫存看板'!A1:N4", "'看板同步狀態'!A2:D2"]);
+    ["'庫存看板'!A1:O4", "'看板同步狀態'!A2:D2"]);
   assert.deepEqual(state.calls.clears, []);
   const sent = boardWrite(state.calls);
   assert.deepEqual(sent.values[0], [...DASHBOARD_HEADERS]);
@@ -247,12 +249,12 @@ test('writeInventoryDashboard pads nothing when the table grew', async () => {
   assert.equal(result.clearedRows, 0);
   assert.deepEqual(state.calls.clears, []);
   assert.equal(boardWrite(state.calls).values.length, 3);
-  assert.equal(boardWrite(state.calls).range, "'庫存看板'!A1:N3");
+  assert.equal(boardWrite(state.calls).range, "'庫存看板'!A1:O3");
 });
 
 test('writeInventoryDashboard empties every old row when nothing qualifies', async () => {
   const state = sheetsFor({
-    dashboard: [[...DASHBOARD_HEADERS], ['SKU-OLD', '', 0, 0, 0, 0, 0, 0, 0, 0, 0, '正常', '', '']]
+    dashboard: [[...DASHBOARD_HEADERS], ['SKU-OLD', '', 0, 0, 0, 0, 0, 0, 0, '', 0, 0, '正常', '', '']]
   });
 
   const result = await writeInventoryDashboard({
@@ -353,7 +355,8 @@ test('the sheet layer carries a real dashboard end to end', async () => {
   });
 
   assert.deepEqual(boardWrite(state.calls).values[1], [
-    'SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '目前不能關閉預購，還差 3 個', '2026-10-29 14:00:00'
+    'SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, '人工填寫', 0, 3, '要叫貨',
+    '目前不能關閉預購，還差 3 個', '2026-10-29 14:00:00'
   ]);
 });
 
@@ -397,6 +400,7 @@ test('initializeInventoryDashboard creates both sheets with frozen bold headers'
   assert.deepEqual(result, {
     created: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME],
     checked: [],
+    rewritten: [],
     changes: 8
   });
   const added = batch.requestBody.requests.filter((entry) => entry.addSheet);
@@ -439,9 +443,56 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
   assert.deepEqual(result, {
     created: [],
     checked: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME],
+    rewritten: [],
     changes: 0
   });
   assert.deepEqual(batches, []);
+});
+
+test('initializeInventoryDashboard rewrites a system sheet header but never a manual one', async () => {
+  // 系統每輪整張覆寫的分頁，表頭由程式當準，不然每次加欄位都要人進去手動改。
+  // 「預購額度」是使用者的資料，腳本沒有資格改它。
+  const batches = [];
+  const sheetsFactory = (headersBySheet) => ({
+    spreadsheets: {
+      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME]).spreadsheets,
+      async batchUpdate(request) {
+        batches.push(request);
+        return { data: {} };
+      },
+      values: {
+        async get({ range }) {
+          for (const [name, headers] of Object.entries(headersBySheet)) {
+            if (range.includes(name)) return { data: { values: [headers] } };
+          }
+          throw new Error(`unexpected range: ${range}`);
+        }
+      }
+    }
+  });
+
+  // 看板少了最後一欄（模擬加欄位之前的舊分頁）→ 自動補寫表頭。
+  const stale = await initializeInventoryDashboard({
+    sheets: sheetsFactory({
+      [PREORDER_SHEET_NAME]: [...PREORDER_HEADERS],
+      [DASHBOARD_SHEET_NAME]: DASHBOARD_HEADERS.slice(0, -1),
+      [SYNC_STATUS_SHEET_NAME]: [...SYNC_STATUS_HEADERS],
+      [MOVEMENT_SHEET_NAME]: [...MOVEMENT_HEADERS]
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+  assert.deepEqual(stale.rewritten, [DASHBOARD_SHEET_NAME]);
+
+  // 人工維護的分頁被改名 → 停手，不覆寫。
+  await assert.rejects(initializeInventoryDashboard({
+    sheets: sheetsFactory({
+      [PREORDER_SHEET_NAME]: ['SKU', '預購量', '安全庫存', '備註', '最後修改人', '最後修改時間'],
+      [DASHBOARD_SHEET_NAME]: [...DASHBOARD_HEADERS],
+      [SYNC_STATUS_SHEET_NAME]: [...SYNC_STATUS_HEADERS],
+      [MOVEMENT_SHEET_NAME]: [...MOVEMENT_HEADERS]
+    }),
+    spreadsheetId: 'sheet-123'
+  }), /預購額度 表頭不符/);
 });
 
 test('initializeInventoryDashboard stops when an existing header was changed', async () => {
@@ -464,9 +515,9 @@ test('initializeInventoryDashboard stops when an existing header was changed', a
 test('parseDashboardRows reads the board back and skips the blanked tail', () => {
   const rows = parseDashboardRows([
     [...DASHBOARD_HEADERS],
-    ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '備註', '2026-10-29 14:00:00'],
+    ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, '人工填寫', 0, 3, '要叫貨', '備註', '2026-10-29 14:00:00'],
     // 回寫未完成那一列的推算實際與缺口是空白，讀回來要是 null 不是 0。
-    ['SKU-B', '商品 B', 0, 0, 0, 0, 0, 0, 0, '', '', '回寫未完成', '回寫尚未完成', '2026-10-29 14:00:00'],
+    ['SKU-B', '商品 B', 0, 0, 0, 0, 0, 0, 0, '', '', '', '回寫未完成', '回寫尚未完成', '2026-10-29 14:00:00'],
     DASHBOARD_HEADERS.map(() => '')
   ]);
 
@@ -478,7 +529,7 @@ test('parseDashboardRows reads the board back and skips the blanked tail', () =>
 });
 
 test('parseDashboardRows refuses a changed header', () => {
-  assert.throws(() => parseDashboardRows([[...DASHBOARD_HEADERS.slice(0, 13), '最後更新']]),
+  assert.throws(() => parseDashboardRows([[...DASHBOARD_HEADERS.slice(0, 14), '最後更新']]),
     /庫存看板 表頭不符/);
 });
 
@@ -486,7 +537,7 @@ test('readInventoryDashboard returns the rows and the sync status together', asy
   const state = sheetsFor({
     dashboard: [
       [...DASHBOARD_HEADERS],
-      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
+      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, '人工填寫', 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
     ],
     syncStatus: [[...SYNC_STATUS_HEADERS], [DASHBOARD_SYNC_FAILED, '2026-10-29 13:00:00', '2026-10-29 14:00:00', '飛鼠登入逾時']]
   });
@@ -508,7 +559,7 @@ test('createDashboardReader honours the feature flag', async () => {
   const state = sheetsFor({
     dashboard: [
       [...DASHBOARD_HEADERS],
-      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
+      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, '人工填寫', 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
     ]
   });
   const reader = createDashboardReader({
@@ -566,16 +617,16 @@ test('the movement list round-trips and overwrites the previous one', async () =
   const state = sheetsFor({
     movement: [
       [...MOVEMENT_HEADERS],
-      ['SKU-OLD-1', '2026-09-01 00:00:00', '2026-10-28 09:00:00'],
-      ['SKU-OLD-2', '2026-09-01 00:00:00', '2026-10-28 09:00:00'],
-      ['SKU-OLD-3', '2026-09-01 00:00:00', '2026-10-28 09:00:00']
+      ['SKU-OLD-1', 1, '2026-09-01 00:00:00', '2026-10-28 09:00:00'],
+      ['SKU-OLD-2', 1, '2026-09-01 00:00:00', '2026-10-28 09:00:00'],
+      ['SKU-OLD-3', 1, '2026-09-01 00:00:00', '2026-10-28 09:00:00']
     ]
   });
 
   const result = await writeMovementSkus({
     sheets: state.sheets,
     spreadsheetId: 'sheet-123',
-    skus: new Set(['SKU-B', 'SKU-A', 'SKU-A']),
+    units: new Map([['SKU-B', 3], ['SKU-A', 12]]),
     since: '2026-09-29 00:00:00',
     updatedAt: '2026-10-29 10:00:00'
   });
@@ -583,23 +634,23 @@ test('the movement list round-trips and overwrites the previous one', async () =
   // 舊的 3 列換成 2 列，多出來的 1 列要被蓋成空白（表頭 + 2 + 1 = 4 列）。
   assert.deepEqual(result, { skus: 2, clearedRows: 1, since: '2026-09-29 00:00:00' });
   const sent = state.calls.updates[0];
-  assert.equal(sent.range, "'動銷清單'!A1:C4");
-  assert.deepEqual(sent.values[1], ['SKU-A', '2026-09-29 00:00:00', '2026-10-29 10:00:00']);
-  assert.deepEqual(sent.values[2], ['SKU-B', '2026-09-29 00:00:00', '2026-10-29 10:00:00']);
-  assert.deepEqual(sent.values.slice(3), [['', '', '']]);
+  assert.equal(sent.range, "'動銷清單'!A1:D4");
+  assert.deepEqual(sent.values[1], ['SKU-A', 12, '2026-09-29 00:00:00', '2026-10-29 10:00:00']);
+  assert.deepEqual(sent.values[2], ['SKU-B', 3, '2026-09-29 00:00:00', '2026-10-29 10:00:00']);
+  assert.deepEqual(sent.values.slice(3), [['', '', '', '']]);
 });
 
 test('writeMovementSkus refuses a missing window or a changed header', async () => {
   const state = sheetsFor();
   await assert.rejects(writeMovementSkus({
-    sheets: state.sheets, spreadsheetId: 'sheet-123', skus: new Set(['A']), since: '', updatedAt: 'x'
+    sheets: state.sheets, spreadsheetId: 'sheet-123', units: new Map([['A', 1]]), since: '', updatedAt: 'x'
   }), /缺少起算日或更新時間/);
 
-  const renamed = sheetsFor({ movement: [['SKU', '起算', '更新時間']] });
+  const renamed = sheetsFor({ movement: [['SKU', '近30天售出', '起算', '更新時間']] });
   await assert.rejects(writeMovementSkus({
     sheets: renamed.sheets,
     spreadsheetId: 'sheet-123',
-    skus: new Set(['A']),
+    units: new Map([['A', 1]]),
     since: '2026-09-29 00:00:00',
     updatedAt: '2026-10-29 10:00:00'
   }), /動銷清單 表頭不符/);
@@ -609,9 +660,9 @@ test('writeMovementSkus refuses a missing window or a changed header', async () 
 test('parseMovementRows skips the blanked tail and reports the window', () => {
   const parsed = parseMovementRows([
     [...MOVEMENT_HEADERS],
-    ['SKU-A', '2026-09-29 00:00:00', '2026-10-29 10:00:00'],
-    ['SKU-B', '2026-09-29 00:00:00', '2026-10-29 10:00:00'],
-    ['', '', '']
+    ['SKU-A', 12, '2026-09-29 00:00:00', '2026-10-29 10:00:00'],
+    ['SKU-B', 3, '2026-09-29 00:00:00', '2026-10-29 10:00:00'],
+    ['', '', '', '']
   ]);
   assert.deepEqual([...parsed.skus], ['SKU-A', 'SKU-B']);
   assert.equal(parsed.since, '2026-09-29 00:00:00');
@@ -621,13 +672,13 @@ test('parseMovementRows skips the blanked tail and reports the window', () => {
   // 但「查過了、結果是空的」要分得出來，否則會退回列出全部缺貨。
   const emptyButQueried = parseMovementRows([
     [...MOVEMENT_HEADERS],
-    ['', '2026-09-29 00:00:00', '2026-10-29 10:00:00']
+    ['', '', '2026-09-29 00:00:00', '2026-10-29 10:00:00']
   ]);
   assert.equal(emptyButQueried.initialized, true);
   assert.equal(emptyButQueried.skus.size, 0);
   assert.equal(emptyButQueried.updatedAt, '2026-10-29 10:00:00');
   // 有內容卻既沒有 SKU 也沒有更新時間：那不是完成標記，是壞掉的列。
-  assert.throws(() => parseMovementRows([[...MOVEMENT_HEADERS], ['', '2026-09-29', '']]),
+  assert.throws(() => parseMovementRows([[...MOVEMENT_HEADERS], ['', 1, '2026-09-29', '']]),
     /第 2 列缺少 SKU/);
 });
 
@@ -635,7 +686,7 @@ test('readInventoryDashboard tolerates a missing movement sheet', async () => {
   const state = sheetsFor({
     dashboard: [
       [...DASHBOARD_HEADERS],
-      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
+      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, '人工填寫', 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
     ],
     movement: [['壞掉的表頭']]
   });
@@ -651,7 +702,7 @@ test('readInventoryDashboard still answers when the movement sheet does not exis
   const state = sheetsFor({
     dashboard: [
       [...DASHBOARD_HEADERS],
-      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
+      ['SKU-A', '商品 A', 7, 3, 0, 3, 0, 10, 0, '人工填寫', 0, 3, '要叫貨', '', '2026-10-29 14:00:00']
     ]
   });
   // Google 對不存在的分頁會讓整個請求失敗，所以動銷清單不可以跟看板同一次 batchGet。
@@ -671,12 +722,12 @@ test('readInventoryDashboard still answers when the movement sheet does not exis
 
 test('readMovementSkus reads the whole column, not a fixed budget', async () => {
   const state = sheetsFor({
-    movement: [[...MOVEMENT_HEADERS], ['SKU-A', '2026-09-29 00:00:00', '2026-10-29 10:00:00']]
+    movement: [[...MOVEMENT_HEADERS], ['SKU-A', 12, '2026-09-29 00:00:00', '2026-10-29 10:00:00']]
   });
 
   const result = await readMovementSkus({ sheets: state.sheets, spreadsheetId: 'sheet-123' });
 
-  assert.deepEqual(state.calls.reads.filter((range) => range.includes('動銷清單')), ["'動銷清單'!A:C"]);
+  assert.deepEqual(state.calls.reads.filter((range) => range.includes('動銷清單')), ["'動銷清單'!A:D"]);
   assert.deepEqual([...result.skus], ['SKU-A']);
 });
 
@@ -686,14 +737,14 @@ test('a non-empty movement list that becomes empty still filters, end to end', a
   const state = sheetsFor({
     movement: [
       [...MOVEMENT_HEADERS],
-      ['SKU-A', '2026-09-28 00:00:00', '2026-10-28 14:00:00']
+      ['SKU-A', 5, '2026-09-28 00:00:00', '2026-10-28 14:00:00']
     ]
   });
 
   const written = await writeMovementSkus({
     sheets: state.sheets,
     spreadsheetId: 'sheet-123',
-    skus: new Set(),
+    units: new Map(),
     since: '2026-09-29 00:00:00',
     updatedAt: '2026-10-29 14:00:00'
   });

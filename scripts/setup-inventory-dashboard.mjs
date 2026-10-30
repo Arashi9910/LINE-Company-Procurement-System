@@ -65,6 +65,7 @@ export async function initializeInventoryDashboard({ sheets, spreadsheetId }) {
   const requests = [];
   const created = [];
   const checked = [];
+  const rewritten = [];
 
   for (const table of DASHBOARD_TABLES) {
     const sheet = existing.find((item) => item.properties?.title === table.name);
@@ -73,9 +74,40 @@ export async function initializeInventoryDashboard({ sheets, spreadsheetId }) {
         spreadsheetId,
         range: `'${table.name}'!A1:${columnLetter(table.headers.length)}1`
       });
-      assertSheetHeaders(response.data.values?.[0] ?? [], table.headers, table.name);
+      const actual = response.data.values?.[0] ?? [];
+      const matches = table.headers.every((header, index) => actual[index] === header);
+
+      // 人工維護的分頁（預購額度）表頭不符就停手——那是使用者的資料，
+      // 腳本沒有資格改它。系統每輪整張覆寫的分頁則相反：表頭由程式當準，
+      // 不然每次加欄位都要人進去手動改，而那正是可重跑腳本該省下的事。
+      if (!matches && table.manual) {
+        assertSheetHeaders(actual, table.headers, table.name);
+      }
       if ((sheet.properties.gridProperties?.columnCount ?? 0) < table.headers.length) {
-        throw new Error(`${table.name} 欄數不足，請先手動加欄`);
+        requests.push({
+          updateSheetProperties: {
+            properties: {
+              sheetId: sheet.properties.sheetId,
+              gridProperties: { columnCount: table.headers.length }
+            },
+            fields: 'gridProperties.columnCount'
+          }
+        });
+      }
+      if (!matches) {
+        requests.push({
+          updateCells: {
+            start: { sheetId: sheet.properties.sheetId, rowIndex: 0, columnIndex: 0 },
+            rows: [{
+              values: table.headers.map((value) => ({
+                userEnteredValue: { stringValue: value },
+                userEnteredFormat: { textFormat: { bold: true } }
+              }))
+            }],
+            fields: 'userEnteredValue,userEnteredFormat.textFormat.bold'
+          }
+        });
+        rewritten.push(table.name);
       }
       if ((sheet.properties.gridProperties?.rowCount ?? 0) < table.rowCount) {
         requests.push({
@@ -126,7 +158,7 @@ export async function initializeInventoryDashboard({ sheets, spreadsheetId }) {
   if (requests.length > 0) {
     await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
   }
-  return { created, checked, changes: requests.length };
+  return { created, checked, rewritten, changes: requests.length };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

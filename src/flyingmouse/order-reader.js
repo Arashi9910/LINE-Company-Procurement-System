@@ -117,9 +117,10 @@ export function recentOrderSince(now = new Date(), days = RECENT_ORDER_DAYS) {
   return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())} 00:00:00`;
 }
 
-// 只收貨號，不算數量——判定是「有沒有訂單」，不是「賣了幾件」。
-export function collectOrderedSkus(orders) {
-  const skus = new Set();
+// 收貨號也收件數。件數是給安全庫存用的（賣得快就多留一點），
+// 「有沒有在動」則只看這個 Map 有沒有這個鍵。
+export function collectOrderedQuantities(orders) {
+  const units = new Map();
   for (const order of orders) {
     const orderNo = normalizeText(order?.no) || String(order?.id ?? '');
     const status = strictInteger(order?.status, `訂單 ${orderNo} 的狀態`);
@@ -136,17 +137,26 @@ export function collectOrderedSkus(orders) {
       if (!Array.isArray(partList)) {
         throw new FlyingMouseOrderError(`訂單 ${orderNo} 的 part_list 型別不正確`, { code: 'INVALID_ORDER' });
       }
+      if (partList.length === 0) continue;
+      const productQty = positiveInteger(product.qty, `訂單 ${orderNo} 的購買`);
       for (const part of partList) {
         if (!isPlainObject(part)) {
           throw new FlyingMouseOrderError(`訂單 ${orderNo} 的 part_list 元素格式不正確`, {
             code: 'INVALID_ORDER'
           });
         }
-        skus.add(partNumber(part.no, `訂單 ${orderNo} 的 part_list `));
+        const partNo = partNumber(part.no, `訂單 ${orderNo} 的 part_list `);
+        const partQty = positiveInteger(part.qty, `訂單 ${orderNo} 貨號 ${partNo} 的`);
+        // part_list[].qty 是每 1 件的用量，要乘上購買數量。
+        units.set(partNo, (units.get(partNo) ?? 0) + productQty * partQty);
       }
     }
   }
-  return skus;
+  return units;
+}
+
+export function collectOrderedSkus(orders) {
+  return new Set(collectOrderedQuantities(orders).keys());
 }
 
 function accumulate(target, orders, key) {
@@ -379,17 +389,19 @@ export async function readRecentlyOrderedSkus(client, {
   for (let attempt = 0; attempt <= maxRereads; attempt += 1) {
     try {
       const orders = await client.fetchOrdersSince(since);
-      const skus = collectOrderedSkus(orders);
+      const units = collectOrderedQuantities(orders);
+      const skus = new Set(units.keys());
       if (typeof logger?.info === 'function') {
         logger.info({
           component: 'inventory-dashboard',
           status: 'recent-orders',
           since,
           orders: orders.length,
-          skus: skus.size
+          skus: skus.size,
+          units: [...units.values()].reduce((sum, value) => sum + value, 0)
         });
       }
-      return { since, skus, orderCount: orders.length };
+      return { since, skus, units, orderCount: orders.length };
     } catch (error) {
       if (!error?.retryable || attempt === maxRereads) throw error;
       lastError = error;

@@ -20,6 +20,7 @@ import {
   writeInventoryDashboard
 } from '../sheets/inventory-dashboard.js';
 import { buildInventoryDashboard } from './inventory-dashboard.js';
+import { classifyStockMode } from './stock-mode.js';
 
 // 要擋的是「除了已完成以外的全部」。WRITEBACK_STATUSES 共五種：
 // 待處理、已準備、等待重試、已完成、需人工確認。
@@ -116,12 +117,18 @@ export async function runInventoryDashboard({
     });
     const writebackPendingSkus = pendingWritebackSkus(events);
 
+    // 從商品名稱判斷有沒有實體庫存。這只是預設值，「預購額度」分頁填了就以它為準。
+    const stockModes = new Map(catalog.map((item) => [item.sku, classifyStockMode(item.displayName)]));
+    const recentUnits = orders.recentlyOrdered?.units ?? new Map();
+
     const dashboard = buildInventoryDashboard({
       catalog,
       orderQuantities: orders.parts,
       tracking,
       preorders,
       writebackPendingSkus,
+      stockModes,
+      recentUnits,
       updatedAt: attemptedAt
     });
     // 看板與「同步成功」同一批寫入：分兩次的話，看板換新了而狀態寫入失敗，
@@ -149,7 +156,7 @@ export async function runInventoryDashboard({
         movement = await writeMovementSkus({
           sheets,
           spreadsheetId,
-          skus: orders.recentlyOrdered.skus,
+          units: orders.recentlyOrdered.units,
           since: orders.recentlyOrdered.since,
           updatedAt: attemptedAt
         });
