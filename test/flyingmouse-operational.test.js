@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PRODUCT_IMAGE_HEADERS,
+  refreshTrackingDisplayNames,
   syncCatalogItems,
   syncInventorySnapshots,
   syncProductImages
 } from '../src/flyingmouse/sheets-operational.js';
 import { MAIN_HEADERS } from '../src/flyingmouse/sheets-review.js';
+import { TRACKING_HEADERS } from '../src/sheets/order-spec-correction.js';
 
 function source(partNumber, stock) {
   return { partNumber, stock };
@@ -47,7 +49,7 @@ function catalogSheets({ rows, rowCount = 20, onWrite, onStructuralWrite }) {
       },
       values: {
         async get({ range }) {
-          assert.equal(range, `'SKU主檔'!A1:N${rowCount}`);
+          assert.equal(range, `'SKU主檔'!A1:O${rowCount}`);
           return { data: { values: [[...MAIN_HEADERS], ...rows] } };
         },
         async batchUpdate(request) {
@@ -100,6 +102,7 @@ test('catalog sync inserts new SKUs and refreshes every source-owned B:H field',
       range: "'SKU主檔'!B2:H2",
       values: [['新版商品 A', '紅色', '大', 8, '0012345', 'A-01', '新版商品 A｜紅色｜大']]
     },
+    { range: "'SKU主檔'!O2", values: [['未知']] },
     {
       range: "'SKU主檔'!A3:J3",
       values: [[
@@ -107,7 +110,8 @@ test('catalog sync inserts new SKUs and refreshes every source-owned B:H field',
         '一般SKU', '是'
       ]]
     },
-    { range: "'SKU主檔'!L3:M3", values: [['件', '飛鼠']] }
+    { range: "'SKU主檔'!L3:M3", values: [['件', '飛鼠']] },
+    { range: "'SKU主檔'!O3", values: [['未知']] }
   ]);
 });
 
@@ -141,9 +145,10 @@ test('catalog sync stops before writes when managed SKU coverage is too low', as
 });
 
 test('catalog sync preserves source-missing rows and expands capacity for new SKUs', async () => {
+  // 已遷移過的分頁會帶著 O 欄，這個案例要驗的是「來源沒變就不寫」。
   const rows = [
-    ['SKU-A', '商品 A', '', '', 1, '', '', '商品 A', '一般SKU', '是', '', '件', '飛鼠', ''],
-    ['SKU-B', '商品 B', '', '', 1, '', '', '商品 B', '一般SKU', '是', '', '件', '飛鼠', '']
+    ['SKU-A', '商品 A', '', '', 1, '', '', '商品 A', '一般SKU', '是', '', '件', '飛鼠', '', '未知'],
+    ['SKU-B', '商品 B', '', '', 1, '', '', '商品 B', '一般SKU', '是', '', '件', '飛鼠', '', '未知']
   ];
   const preserved = await syncCatalogItems({
     sheets: catalogSheets({ rows }),
@@ -177,7 +182,7 @@ test('catalog sync preserves source-missing rows and expands capacity for new SK
   assert.deepEqual(structuralWrites[0].requestBody.requests, [{
     appendDimension: { sheetId: 3, dimension: 'ROWS', length: 100 }
   }]);
-  assert.deepEqual(write.requestBody.data.slice(-2), [
+  assert.deepEqual(write.requestBody.data.slice(-3), [
     {
       range: "'SKU主檔'!A3:J3",
       values: [[
@@ -185,7 +190,8 @@ test('catalog sync preserves source-missing rows and expands capacity for new SK
         '一般SKU', '是'
       ]]
     },
-    { range: "'SKU主檔'!L3:M3", values: [['件', '飛鼠']] }
+    { range: "'SKU主檔'!L3:M3", values: [['件', '飛鼠']] },
+    { range: "'SKU主檔'!O3", values: [['未知']] }
   ]);
 });
 
@@ -607,4 +613,167 @@ test('image sync never downgrades a previously bound product when the page omits
   assert.equal(result.unchanged, 1);
   assert.equal(result.updated, 0);
   assert.equal(writes, 0);
+});
+
+// 2026-10-30 查出來的實際狀況：飛鼠的貨品名稱是建檔當下的快照，
+// 上架後把前綴改成「隔日到貨」不會同步回貨品層。整份目錄有 215 列因此
+// 標著舊的「預購」，採購看了以為還在等上游，就會重複下單。
+test('catalog sync writes the sales product name into 補貨顯示名稱', async () => {
+  let write;
+  await syncCatalogItems({
+    sheets: catalogSheets({
+      rows: [[
+        'SKU-A', '預售✨ 收納盒', '紅色', '大', 8, '0012345', 'A-01', '預售✨ 收納盒｜紅色｜大',
+        '一般SKU', '是', '', '件', '飛鼠', '', '預購'
+      ]],
+      onWrite: (request) => { write = request; }
+    }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [catalogSource({ productName: '預售✨ 收納盒' })],
+    imageItems: [image({ sku: 'SKU-A', productName: '隔日到貨⚡️ 收納盒' })]
+  });
+
+  const byRange = new Map(write.requestBody.data.map((entry) => [entry.range, entry.values[0]]));
+  // B 欄必須還是官方 Excel 的貨品名稱，否則 sheets-baseline 的差異比對會整份爆掉。
+  assert.equal(byRange.get("'SKU主檔'!B2:H2")[0], '預售✨ 收納盒');
+  assert.equal(byRange.get("'SKU主檔'!B2:H2")[6], '隔日到貨⚡️ 收納盒｜紅色｜大');
+  assert.deepEqual(byRange.get("'SKU主檔'!O2"), ['現貨']);
+});
+
+test('catalog sync falls back to the part name when the sales name is missing', async () => {
+  let write;
+  await syncCatalogItems({
+    sheets: catalogSheets({ rows: [], onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [catalogSource({ productName: '預售✨ 收納盒' })],
+    imageItems: []
+  });
+
+  const inserted = write.requestBody.data
+    .find((entry) => entry.range === "'SKU主檔'!A2:J2").values[0];
+  assert.equal(inserted[7], '預售✨ 收納盒｜紅色｜大');
+  assert.deepEqual(
+    write.requestBody.data.find((entry) => entry.range === "'SKU主檔'!O2").values[0],
+    ['預購']
+  );
+});
+
+// 一個貨號綁多個銷售商品時，兩邊前綴不一樣就無從判斷。猜錯任何一邊都會
+// 讓缺口算錯，所以寧可留白讓人處理。
+test('catalog sync refuses to pick a name when bound products disagree', async () => {
+  let write;
+  await syncCatalogItems({
+    sheets: catalogSheets({ rows: [], onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [catalogSource({ productName: '貨品舊名' })],
+    imageItems: [image({
+      sku: 'SKU-A',
+      productName: '隔日到貨⚡️ 收納盒',
+      productBindings: [
+        { productName: '隔日到貨⚡️ 收納盒' },
+        { productName: '預購 收納盒' }
+      ]
+    })]
+  });
+
+  const inserted = write.requestBody.data
+    .find((entry) => entry.range === "'SKU主檔'!A2:J2").values[0];
+  assert.equal(inserted[7], '貨品舊名｜紅色｜大');
+  assert.deepEqual(
+    write.requestBody.data.find((entry) => entry.range === "'SKU主檔'!O2").values[0],
+    ['未知']
+  );
+});
+
+function trackingRow({ requestId, item, status, sku, stockMode = '' }) {
+  const row = new Array(TRACKING_HEADERS.length).fill('');
+  row[0] = requestId;
+  row[3] = item;
+  row[6] = status;
+  row[13] = sku;
+  row[22] = stockMode;
+  return row;
+}
+
+function trackingSheets({ catalog, tracking, onWrite }) {
+  return {
+    spreadsheets: {
+      values: {
+        async batchGet({ ranges }) {
+          assert.deepEqual(ranges, ["'SKU主檔'!A1:O", "'補貨追蹤'!A1:W"]);
+          return {
+            data: {
+              valueRanges: [
+                { values: [[...MAIN_HEADERS], ...catalog] },
+                { values: [[...TRACKING_HEADERS], ...tracking] }
+              ]
+            }
+          };
+        },
+        async batchUpdate(request) {
+          onWrite?.(request);
+          return { data: {} };
+        }
+      }
+    }
+  };
+}
+
+// 補貨追蹤的「品項」是建單當下複製的快照。這正是會害採購重複下單的地方：
+// 單上寫「預購」，實際上貨早就到了、改成現貨在賣了。
+test('tracking refresh updates in-flight rows and leaves closed rows alone', async () => {
+  let write;
+  const result = await refreshTrackingDisplayNames({
+    sheets: trackingSheets({
+      catalog: [[
+        'SKU-A', '預售✨ 收納盒', '', '', 3, '', '', '隔日到貨⚡️ 收納盒', '一般SKU', '是',
+        '', '件', '飛鼠', '', '現貨'
+      ]],
+      tracking: [
+        trackingRow({ requestId: 'RQ-1', item: '預售✨ 收納盒', status: '已下單', sku: 'SKU-A' }),
+        trackingRow({ requestId: 'RQ-2', item: '預售✨ 收納盒', status: '已到貨', sku: 'SKU-A' })
+      ],
+      onWrite: (request) => { write = request; }
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  assert.deepEqual(result, { refreshed: 1, unchanged: 0, skipped: 0, dryRun: false });
+  assert.deepEqual(write.requestBody.data, [
+    { range: "'補貨追蹤'!D2", values: [['隔日到貨⚡️ 收納盒']] },
+    { range: "'補貨追蹤'!W2", values: [['現貨']] }
+  ]);
+});
+
+test('tracking refresh writes nothing when the in-flight row already matches', async () => {
+  let writes = 0;
+  const result = await refreshTrackingDisplayNames({
+    sheets: trackingSheets({
+      catalog: [[
+        'SKU-A', '貨品名', '', '', 3, '', '', '隔日到貨⚡️ 收納盒', '一般SKU', '是',
+        '', '件', '飛鼠', '', '現貨'
+      ]],
+      tracking: [trackingRow({
+        requestId: 'RQ-1', item: '隔日到貨⚡️ 收納盒', status: '待確認', sku: 'SKU-A', stockMode: '現貨'
+      })],
+      onWrite: () => { writes += 1; }
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  assert.deepEqual(result, { refreshed: 0, unchanged: 1, skipped: 0, dryRun: false });
+  assert.equal(writes, 0);
+});
+
+// 停用或改過編號的舊單在 SKU主檔 查不到，不該讓整輪同步失敗。
+test('tracking refresh skips rows whose SKU is gone from the catalog', async () => {
+  const result = await refreshTrackingDisplayNames({
+    sheets: trackingSheets({
+      catalog: [],
+      tracking: [trackingRow({ requestId: 'RQ-1', item: '舊名稱', status: '部分到貨', sku: 'SKU-X' })]
+    }),
+    spreadsheetId: 'sheet-123'
+  });
+
+  assert.deepEqual(result, { refreshed: 0, unchanged: 0, skipped: 1, dryRun: false });
 });

@@ -39,7 +39,9 @@ export const MAIN_HEADERS = Object.freeze([
   '搜尋關鍵字',
   '單位',
   '主要供應商',
-  '資料更新日'
+  '資料更新日',
+  // 由每小時同步從銷售商品名稱推導，採購用它判斷要不要補單。
+  '出貨型態'
 ]);
 const REVIEW_ROW_COUNT = 5000;
 const REVIEW_STATUS_VALUES = Object.freeze([
@@ -567,7 +569,7 @@ async function importApprovedItems({
       { range: `'${REVIEW_SHEET_NAME}'!D${approval.rowNumber}`, values: [['已匯入']] },
       { range: `'${REVIEW_SHEET_NAME}'!S${approval.rowNumber}`, values: [[timestamp]] }
     );
-    mainBySku.set(sku, { row: [...mainRow, '', '件', '飛鼠', ''], rowNumber: targetRow });
+    mainBySku.set(sku, { row: [...mainRow, '', '件', '飛鼠', '', ''], rowNumber: targetRow });
     imported += 1;
   }
 

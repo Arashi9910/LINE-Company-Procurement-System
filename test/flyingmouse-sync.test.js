@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import ExcelJS from 'exceljs';
 import { FLYINGMOUSE_HEADERS } from '../src/flyingmouse/catalog.js';
 import { MAIN_HEADERS, REVIEW_HEADERS, REVIEW_SHEET_NAME } from '../src/flyingmouse/sheets-review.js';
+import { TRACKING_HEADERS } from '../src/sheets/order-spec-correction.js';
 import { parseArguments, runFlyingMouseSync } from '../scripts/flyingmouse-sync.mjs';
 
 async function writeWorkbook(filePath, headers, rows) {
@@ -113,7 +114,8 @@ test('runFlyingMouseSync review mode performs a zero-diff review pass without ma
   let writable;
   const mainHeaders = [
     'SKU', '商品名稱', '蝦皮規格1（原始）', '蝦皮規格2（原始）', '庫存快照', 'GTIN', '儲位',
-    '補貨顯示名稱', '品項類型', '是否可補貨', '搜尋關鍵字', '單位', '主要供應商', '資料更新日'
+    '補貨顯示名稱', '品項類型', '是否可補貨', '搜尋關鍵字', '單位', '主要供應商', '資料更新日',
+    '出貨型態'
   ];
   const sheets = {
     spreadsheets: {
@@ -207,17 +209,29 @@ test('runFlyingMouseSync auto mode bypasses approvals and writes the source cata
           if (range === "'SKU主檔'!A2:D") {
             return { data: { values: [['A', '舊商品 A', '', '']] } };
           }
-          if (range === "'SKU主檔'!A1:N10") {
+          if (range === "'SKU主檔'!A1:O10") {
             return {
               data: {
                 values: [
                   [...MAIN_HEADERS],
-                  ['A', '舊商品 A', '', '', 3, '', '', '人工舊名', '一般SKU', '是', '', '件', '飛鼠', '']
+                  ['A', '舊商品 A', '', '', 3, '', '', '人工舊名', '一般SKU', '是', '', '件', '飛鼠', '', '']
                 ]
               }
             };
           }
           throw new Error(`unexpected range: ${range}`);
+        },
+        // 補貨追蹤名稱回填只有表頭可讀，等於沒有在途單，不應該產生任何寫入。
+        async batchGet({ ranges }) {
+          return {
+            data: {
+              valueRanges: ranges.map((range) => ({
+                values: range.startsWith("'SKU主檔'")
+                  ? [[...MAIN_HEADERS]]
+                  : [[...TRACKING_HEADERS]]
+              }))
+            }
+          };
         },
         async batchUpdate(request) {
           write = request;
@@ -250,7 +264,10 @@ test('runFlyingMouseSync auto mode bypasses approvals and writes the source cata
   assert.equal(result.catalogSync.updated, 1);
   assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
     "'SKU主檔'!B2:H2",
+    "'SKU主檔'!O2",
     "'SKU主檔'!A3:J3",
-    "'SKU主檔'!L3:M3"
+    "'SKU主檔'!L3:M3",
+    "'SKU主檔'!O3"
   ]);
+  assert.deepEqual(result.trackingNameSync, { refreshed: 0, unchanged: 0, skipped: 0, dryRun: false });
 });

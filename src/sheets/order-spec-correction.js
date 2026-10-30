@@ -28,10 +28,16 @@ export const TRACKING_HEADERS = Object.freeze([
   '最後操作人ID',
   '最後更新時間',
   '操作金鑰',
-  ...ORDER_SPEC_CORRECTION_HEADERS
+  ...ORDER_SPEC_CORRECTION_HEADERS,
+  // 每小時由同步從 SKU主檔 帶過來，只更新還在流程中的單（規格第 4.3 節）。
+  '出貨型態'
 ]);
 
-export const TRACKING_LAST_COLUMN = 'V';
+export const TRACKING_LAST_COLUMN = 'W';
+export const TRACKING_ITEM_INDEX = 3;
+export const TRACKING_STATUS_INDEX = 6;
+export const TRACKING_SKU_INDEX = 13;
+export const TRACKING_STOCK_MODE_INDEX = 22;
 export const CORRECTION_SKU_INDEX = 19;
 export const CORRECTION_STATUS_INDEX = 20;
 export const ORIGINAL_SKU_INDEX = 21;

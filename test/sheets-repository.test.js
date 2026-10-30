@@ -223,7 +223,7 @@ test('SheetsRepository reads one request without loading the full tracking grid'
           if (range === "'補貨追蹤'!A2:A5000") {
             return { data: { values: [['RQ-OTHER'], ['RQ-1'], ['RQ-1']] } };
           }
-          if (range === "'補貨追蹤'!A3:V4") return { data: { values: rows } };
+          if (range === "'補貨追蹤'!A3:W4") return { data: { values: rows } };
           throw new Error(`unexpected range: ${range}`);
         }
       }
@@ -236,7 +236,7 @@ test('SheetsRepository reads one request without loading the full tracking grid'
   assert.deepEqual(result.items.map((item) => item.rowNumber), [3, 4]);
   assert.equal('applicantUserId' in result, false);
   assert.equal('applicantUserId' in result.items[0], false);
-  assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A3:V4"]);
+  assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A3:W4"]);
 });
 
 test('SheetsRepository exposes requester identity only through cancellation context', async () => {
@@ -249,7 +249,7 @@ test('SheetsRepository exposes requester identity only through cancellation cont
       values: {
         async get({ range }) {
           if (range === "'補貨追蹤'!A2:A5000") return { data: { values: [['RQ-1']] } };
-          if (range === "'補貨追蹤'!A2:V2") return { data: { values: [row] } };
+          if (range === "'補貨追蹤'!A2:W2") return { data: { values: [row] } };
           throw new Error(`unexpected range: ${range}`);
         }
       }
@@ -279,7 +279,7 @@ test('SheetsRepository lists tracking rows only through the last request row', a
           if (range === "'補貨追蹤'!A2:A5000") {
             return { data: { values: [['RQ-1'], ['RQ-2'], [], []] } };
           }
-          if (range === "'補貨追蹤'!A2:V3") return { data: { values: trackingRows } };
+          if (range === "'補貨追蹤'!A2:W3") return { data: { values: trackingRows } };
           throw new Error(`unexpected range: ${range}`);
         }
       }
@@ -299,7 +299,7 @@ test('SheetsRepository lists tracking rows only through the last request row', a
       receivedQuantity: 0, outstandingQuantity: 2, sku: 'SKU-B'
     }
   ]);
-  assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A2:V3"]);
+  assert.deepEqual(ranges, ["'補貨追蹤'!A2:A5000", "'補貨追蹤'!A2:W3"]);
 });
 
 function workflowSheets(trackingRow, onWrite, {
@@ -333,7 +333,7 @@ function cancellationSheets({ rows, operationRows = [], onWrite }) {
           if (range === "'補貨追蹤'!A2:A5000") {
             return { data: { values: rows.map((row) => [row[0]]) } };
           }
-          if (range === `'補貨追蹤'!A2:V${rows.length + 1}`) {
+          if (range === `'補貨追蹤'!A2:W${rows.length + 1}`) {
             return { data: { values: rows } };
           }
           throw new Error(`unexpected range: ${range}`);
@@ -357,7 +357,7 @@ function orderAdditionSheets({ trackingRows, availableSkuRows, onWrite }) {
           if (range === "'補貨追蹤'!A2:A5000") {
             return { data: { values: trackingRows.map((row) => [row[0]]) } };
           }
-          const match = /!A(\d+):V(\d+)$/.exec(range);
+          const match = /!A(\d+):W(\d+)$/.exec(range);
           if (match) {
             const start = Number(match[1]);
             const end = Number(match[2]);

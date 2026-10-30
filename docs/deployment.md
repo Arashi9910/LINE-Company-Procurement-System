@@ -84,6 +84,10 @@ FlyingMouse 使用獨立 Cloud Run Job。部署腳本預設為商品 `read-only`
 - 飛鼠合併 Scheduler：沿用 `flyingmouse-catalog-sync-daily` 資源名稱，實際為每小時整點、`Asia/Taipei`；商品模式 `auto`、庫存模式 `live`、每次回寫上限 20、單 task、timeout 6 分鐘、平台重試 0。
 - 舊 `flyingmouse-inventory-writeback-every-5-minutes` Scheduler 已刪除；`flyingmouse-inventory-writeback` Job 由到貨 API 即時觸發，不會自行執行。
 - 兩個 HTTP Scheduler 均以自訂 `X-Job-Token` header 傳送 `line-job-token`。Secret 不應包含前後空白或換行；服務端仍會在載入 `JOB_TOKEN` 時移除意外的前後空白，以相容早期建立的 Secret 版本。
+- 出貨型態欄位遷移：`SKU主檔` O 欄與 `補貨追蹤` W 欄的「出貨型態」在部署前必須先存在，
+  否則嚴格表頭比對會讓整輪同步停住。部署新版程式**之前**先跑一次
+  `node scripts/setup-sales-name-sync.mjs --spreadsheet-id <id>`（可重跑，只補欄位與表頭，
+  不動資料列；先用 `--dry-run` 看會改什麼）。細節見 `docs/sales-name-sync-spec.md`。
 - 預算警示：預設每月 `300TWD`，於 50%、90%、100% 通知；預算不會自動停止支出。
 - Secret Manager：Cloud Run 服務帳號僅取得四個指定秘密的 `roles/secretmanager.secretAccessor`。
 - Startup probe：`/ready`，啟動時確認 Sheet 可讀且 `補貨追蹤` T:V 規格修正表頭正確；部署完成後也會以 `/ready` 驗證版本與 Sheet。持續 readiness 與 liveness probe 都使用 `/health`，只判斷程序是否存活，避免 Google Sheets 短暫延遲讓唯一執行個體退出流量。

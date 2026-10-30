@@ -37,6 +37,25 @@ export function classifyStockMode(displayName) {
   return STOCK_MODE.UNKNOWN;
 }
 
+// 寫進試算表給人看的標籤。採購掃一眼就知道，不用從 40 字的標題裡找前綴。
+export const STOCK_MODE_LABEL = Object.freeze({
+  [STOCK_MODE.PHYSICAL]: '現貨',
+  [STOCK_MODE.PREORDER]: '預購',
+  [STOCK_MODE.UNKNOWN]: '未知'
+});
+
+export function stockModeLabel(displayName) {
+  return STOCK_MODE_LABEL[classifyStockMode(displayName)];
+}
+
+const MODE_BY_LABEL = new Map(Object.entries(STOCK_MODE_LABEL).map(([mode, label]) => [label, mode]));
+
+// 讀回試算表上的「出貨型態」。欄位還沒被同步填過（剛遷移完）時回 null，
+// 由呼叫端決定要不要退回用名稱推導。
+export function stockModeFromLabel(label) {
+  return MODE_BY_LABEL.get(String(label ?? '').trim()) ?? null;
+}
+
 export const DEFAULT_COVER_DAYS = 14;
 const VELOCITY_WINDOW_DAYS = 30;
 

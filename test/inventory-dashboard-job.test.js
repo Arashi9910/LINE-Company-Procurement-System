@@ -575,11 +575,11 @@ test('readCatalogSnapshots prefers 補貨顯示名稱 and passes the stock throu
   const rows = await readCatalogSnapshots({ sheets: state.sheets, spreadsheetId: 'sheet-123' });
 
   assert.deepEqual(rows, [
-    { sku: 'SKU-A', displayName: '顯示名稱 A', stock: -1 },
-    { sku: 'SKU-B', displayName: '商品 B', stock: '' }
+    { sku: 'SKU-A', displayName: '顯示名稱 A', stockMode: '', stock: -1 },
+    { sku: 'SKU-B', displayName: '商品 B', stockMode: '', stock: '' }
   ]);
-  // 要從第 1 列讀起才驗得到表頭。
-  assert.deepEqual(state.calls.reads.filter((range) => range.includes('SKU主檔')), ["'SKU主檔'!A1:N"]);
+  // 要從第 1 列讀起才驗得到表頭，而且要含 O 欄的出貨型態。
+  assert.deepEqual(state.calls.reads.filter((range) => range.includes('SKU主檔')), ["'SKU主檔'!A1:O"]);
 });
 
 test('readCatalogSnapshots stops when a SKU主檔 column moved', async () => {

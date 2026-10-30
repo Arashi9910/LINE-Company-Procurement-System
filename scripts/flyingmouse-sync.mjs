@@ -21,6 +21,7 @@ import {
   syncReviewAndImport
 } from '../src/flyingmouse/sheets-review.js';
 import {
+  refreshTrackingDisplayNames,
   syncCatalogItems,
   syncInventorySnapshots,
   syncProductImages
@@ -205,6 +206,13 @@ export async function runFlyingMouseSync(options, {
         imageItems: imageCatalog.items
       })
     : null;
+  // 一定要排在 syncCatalogItems 之後：它靠 SKU主檔 已更新的補貨顯示名稱來回填在途單。
+  const trackingNameSync = catalogSync
+    ? await refreshTrackingDisplayNames({
+        sheets,
+        spreadsheetId: options.spreadsheetId
+      })
+    : null;
   const outputDir = resolve(options.outputDir);
   await mkdir(outputDir, { recursive: true });
   const reportPath = resolve(outputDir, `catalog-preview_${reportTimestamp(generatedAt)}.json`);
@@ -222,6 +230,7 @@ export async function runFlyingMouseSync(options, {
     catalogSync,
     inventorySync,
     imageSync,
+    trackingNameSync,
     imageSource: imageCatalog?.metadata ?? null
   };
   await writeJsonAtomic(reportPath, report);
@@ -235,7 +244,8 @@ export async function runFlyingMouseSync(options, {
     reviewSync,
     catalogSync,
     inventorySync,
-    imageSync
+    imageSync,
+    trackingNameSync
   };
 }
 

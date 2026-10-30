@@ -261,7 +261,7 @@ export async function readCatalogSnapshots({ sheets, spreadsheetId }) {
   if (!sheets || !spreadsheetId) throw new Error('SKU主檔讀取設定不完整');
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `'${CATALOG_SHEET_NAME}'!A1:N`,
+    range: `'${CATALOG_SHEET_NAME}'!A1:O`,
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
   const values = response.data.values ?? [];
@@ -278,6 +278,8 @@ export async function readCatalogSnapshots({ sheets, spreadsheetId }) {
       sku,
       // 補貨顯示名稱優先，沒有才用商品名稱，比照 repository 的 catalogSku。
       displayName: normalizeText(row[7]) || normalizeText(row[1]) || sku,
+      // 出貨型態由同步寫入，看板不自己再推導一次，免得兩邊各算各的。
+      stockMode: normalizeText(row[14]),
       stock: row[4]
     }));
   }
