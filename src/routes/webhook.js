@@ -175,7 +175,16 @@ export function createWebhookHandler({
             if (!(error instanceof AppError) || error.status >= 500) throw error;
             reply = error.message;
           }
-          if (event.replyToken) await messenger.replyText(event.replyToken, reply);
+          if (!event.replyToken) return;
+          // 缺貨清單回「摘要 + 開啟清單」；其餘（查庫存、錯誤、尚無資料）維持純文字。
+          if (typeof reply === 'object' && reply?.link) {
+            const contextToken = createGroupContext({ groupId }, config.linkSigningSecret);
+            const url = `https://liff.line.me/${config.liffId}`
+              + `?ctx=${encodeURIComponent(contextToken)}&view=shortage`;
+            await messenger.replyShortageLink(event.replyToken, reply.text, url);
+            return;
+          }
+          await messenger.replyText(event.replyToken, reply);
           return;
         }
 

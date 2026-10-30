@@ -185,6 +185,21 @@ export function createLineMessenger({ channelAccessToken, liffId }, dependencies
       });
     },
 
+    async replyShortageLink(replyToken, text, url) {
+      await client.replyMessage({
+        replyToken,
+        messages: [{
+          type: 'template',
+          altText: text,
+          template: {
+            type: 'buttons',
+            text,
+            actions: [{ type: 'uri', label: '開啟缺貨清單', uri: url }]
+          }
+        }]
+      });
+    },
+
     async replyText(replyToken, text) {
       await client.replyMessage({ replyToken, messages: [{ type: 'text', text }] });
     },

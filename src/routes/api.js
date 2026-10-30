@@ -4,7 +4,8 @@ import { verifyGroupContext } from '../line/context.js';
 import { listSearchableSkus, submitRequest } from '../services/requests.js';
 import { confirmOrder, confirmReceipt, getRequestDetails } from '../services/workflow.js';
 import { draftOverview, readDraft, mutateDraft } from '../services/purchase-drafts.js';
-import { ValidationError } from '../errors.js';
+import { buildShortageView } from '../services/shortage-view.js';
+import { ConflictError, ValidationError } from '../errors.js';
 
 function lineErrorStatus(error) {
   return Number(error?.status ?? error?.statusCode) || null;
@@ -79,13 +80,37 @@ async function triggerImmediateWriteback({ runner, result }) {
   }
 }
 
-export function createApiRouter({ config, repository, identityVerifier, messenger, writebackRunner }) {
+export function createApiRouter({
+  config,
+  repository,
+  identityVerifier,
+  messenger,
+  writebackRunner,
+  dashboardReader = null
+}) {
   const router = Router();
 
   router.use(async (request, _response, next) => {
     try {
       request.actor = await identityVerifier.verify(bearerToken(request));
       next();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/inventory/shortage', async (_request, response, next) => {
+    try {
+      // dashboardReader 在看板功能關閉時是 null（createDashboardReader 直接回 null）。
+      if (!dashboardReader) throw new ConflictError('庫存看板尚未啟用');
+      // 圖片對照涵蓋所有貨號（含停用的），listAvailableSkus 只有能下單的那些；
+      // 兩份都要，缺貨頁才分得出「缺貨但不能補」的列。
+      const [dashboard, images, orderableSkus] = await Promise.all([
+        dashboardReader(),
+        repository.listProductImages(),
+        repository.listAvailableSkus()
+      ]);
+      response.json(buildShortageView({ dashboard, images, orderableSkus }));
     } catch (error) {
       next(error);
     }

@@ -26,7 +26,8 @@ import {
 } from '../src/sheets/inventory-dashboard.js';
 import { DASHBOARD_STATUS, buildInventoryDashboard } from '../src/services/inventory-dashboard.js';
 import { readFile } from 'node:fs/promises';
-import { formatShortageReply } from '../src/services/group-commands.js';
+import { formatShortageSummary } from '../src/services/group-commands.js';
+import { buildShortageView } from '../src/services/shortage-view.js';
 import { initializeInventoryDashboard } from '../scripts/setup-inventory-dashboard.mjs';
 
 function row(overrides = {}) {
@@ -609,19 +610,23 @@ test('an anomaly survives calc → board → read back → reply, with its reaso
   });
   const values = buildDashboardValues(dashboard);
   const readBack = parseDashboardRows(values);
-  const reply = formatShortageReply({
+  const snapshot = {
     rows: readBack,
     syncStatus: { status: DASHBOARD_SYNC_OK, lastSuccessAt: '2026-10-29 14:00:00' }
+  };
+  const view = buildShortageView({
+    dashboard: snapshot,
+    orderableSkus: [{ sku: 'SKU-A', unit: '件' }]
   });
 
   assert.equal(readBack.find((row) => row.sku === 'SKU-GHOST').status, DASHBOARD_STATUS.ANOMALY);
-  assert.match(reply, /要叫貨 1 個/);
-  assert.match(reply, /SKU SKU-A/);
   // 異常列不可以混在「要叫貨」裡——缺口是正的，直接拿去下單就錯了。
-  assert.match(reply, /異常 1 個/);
-  assert.match(reply, /SKU SKU-GHOST/);
-  assert.match(reply, /不在 SKU主檔/);
-  assert.equal(reply.indexOf('SKU SKU-A') < reply.indexOf('異常'), true, '要叫貨要排在異常前面');
+  // 分成兩個陣列比「文字順序」更難搞錯。
+  assert.deepEqual(view.reorder.map((item) => item.sku), ['SKU-A']);
+  assert.deepEqual(view.anomaly.map((item) => item.sku), ['SKU-GHOST']);
+  assert.match(view.anomaly[0].note, /不在 SKU主檔/);
+  assert.match(formatShortageSummary(snapshot), /要叫貨 1 個/);
+  assert.match(formatShortageSummary(snapshot), /需人工確認 1 個/);
 });
 
 test('the movement list round-trips and overwrites the previous one', async () => {
@@ -765,7 +770,7 @@ test('a non-empty movement list that becomes empty still filters, end to end', a
   assert.equal(readBack.initialized, true, '空集合也要留下完成標記');
   assert.equal(readBack.skus.size, 0);
 
-  const reply = formatShortageReply({
+  const snapshot = {
     syncStatus: { status: DASHBOARD_SYNC_OK, lastSuccessAt: '2026-10-29 14:00:00' },
     movement: readBack,
     rows: [{
@@ -773,8 +778,9 @@ test('a non-empty movement list that becomes empty still filters, end to end', a
       preparing: 0, unshipped: 3, onOrder: 0, preorderAllowance: 10, safetyStock: 0,
       estimatedStock: 0, gap: 3, status: '要叫貨', note: '', updatedAt: '2026-10-29 14:00:00'
     }]
-  });
-  assert.match(reply, /目前沒有要叫貨的品項/);
-  assert.match(reply, /另有 1 個有缺口但近 30 天沒有訂單/);
-  assert.equal(reply.includes('SKU-OLD'), false);
+  };
+  const view = buildShortageView({ dashboard: snapshot, orderableSkus: [] });
+  assert.deepEqual(view.reorder, []);
+  assert.equal(view.quiet, 1);
+  assert.match(formatShortageSummary(snapshot), /目前沒有要叫貨的品項/);
 });

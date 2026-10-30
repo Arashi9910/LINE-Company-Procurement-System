@@ -68,7 +68,7 @@ export function createApp(dependencies = {}) {
   app.use(express.json({ limit: '64kb' }));
   app.use('/jobs', createJobsRouter({ config, repository, messenger }));
   app.use('/api', createApiRouter({
-    config, repository, identityVerifier, messenger, writebackRunner
+    config, repository, identityVerifier, messenger, writebackRunner, dashboardReader
   }));
 
   app.use(express.static('public', { extensions: ['html'] }));

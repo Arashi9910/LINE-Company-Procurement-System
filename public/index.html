@@ -35,6 +35,25 @@
         </div>
       </section>
 
+      <section id="shortage-section" class="shortage-section" hidden>
+        <div class="section-heading">
+          <h2>需要叫貨</h2>
+          <span id="shortage-count" class="count-badge" aria-label="要叫貨筆數">0</span>
+        </div>
+        <p id="shortage-meta" class="muted"></p>
+        <p id="shortage-warning" class="inline-notice" role="status" hidden></p>
+        <div id="shortage-list" class="shortage-list"></div>
+        <div id="shortage-anomaly-group" hidden>
+          <div class="section-heading">
+            <h2>⚠️ 需人工確認</h2>
+            <span id="shortage-anomaly-count" class="count-badge">0</span>
+          </div>
+          <p class="muted">缺口僅供參考，請先確認原因再決定要不要叫貨。</p>
+          <div id="shortage-anomaly" class="shortage-list"></div>
+        </div>
+        <p id="shortage-footnote" class="muted"></p>
+      </section>
+
       <section id="catalog" hidden>
         <div class="catalog-intro">
           <h2 id="catalog-title">選擇商品</h2>

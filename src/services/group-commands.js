@@ -1,4 +1,5 @@
 import { DASHBOARD_SYNC_FAILED } from '../sheets/inventory-dashboard.js';
+import { groupShortageRows } from './inventory-dashboard.js';
 import {
   AppError,
   AuthenticationError,
@@ -411,64 +412,24 @@ function inventoryLine(row) {
     + `　缺口 ${gap}｜未寄 ${row.unshipped}｜叫貨中 ${row.onOrder}｜飛鼠 ${row.flyingmouseStock}${note}`;
 }
 
-function movementUsable(dashboard) {
-  const movement = dashboard?.movement;
-  if (!movement?.initialized) return false;
-  const boardAt = normalizeText(dashboard?.rows?.[0]?.updatedAt);
-  return Boolean(boardAt) && movement.updatedAt === boardAt;
-}
-
-function byGapDescending(left, right) {
-  return right.gap - left.gap;
-}
-
-export function formatShortageReply(dashboard) {
+// 群組裡只講嚴不嚴重，細節進 LIFF 看（規格第 4 節，使用者 2026-10-30 選定）。
+export function formatShortageSummary(dashboard) {
   const prefix = inventoryFreshness(dashboard?.syncStatus);
-  const all = (dashboard?.rows ?? []).filter((row) => typeof row.gap === 'number' && row.gap > 0);
-  // 缺口為正的不一定能直接叫貨：上游會把查無貨號、規格修正失效、
-  // 推算實際為負的列標成「異常」，缺口照樣是正的。混在一起報會害人誤下單。
-  const reorder = all.filter((row) => row.status === '要叫貨').sort(byGapDescending);
-  const anomaly = all.filter((row) => row.status !== '要叫貨').sort(byGapDescending);
-
-  // 動銷篩選（使用者決定）：新品一律先填預購額度 10，賣出第一筆就會算出缺口，
-  // 但那是測試品，不該跟真正在動的商品混在一起報。
-  // 只在清單確實是「跟這份看板同一輪寫出來的」時才篩：
-  // Job 用同一個時間戳寫看板與動銷清單，所以時間不一致就代表動銷那一步失敗了，
-  // 清單是舊的。拿舊清單去篩會把今天才開始出單的商品誤判成「沒在動」而藏起來。
-  const moving = movementUsable(dashboard) ? dashboard.movement.skus : null;
-  const active = moving ? reorder.filter((row) => moving.has(row.sku)) : reorder;
-  const quiet = moving ? reorder.length - active.length : 0;
-
-  if (all.length === 0) {
-    const blocked = (dashboard?.rows ?? []).filter((row) => row.status === '回寫未完成').length;
-    const tail = blocked > 0 ? `\n（另有 ${blocked} 個貨號因回寫未完成暫不計算）` : '';
+  const { active, anomaly, quiet, blocked } = groupShortageRows(dashboard);
+  // 「要叫貨 0 個」讀起來像出了什麼事。真的沒事就直接說沒事，
+  // 但被動銷篩掉的筆數還是要講，否則會以為系統漏看。
+  if (active.length === 0 && anomaly.length === 0) {
+    const notes = [];
+    if (quiet > 0) notes.push(`另有 ${quiet} 個有缺口但近 30 天沒有訂單`);
+    if (blocked > 0) notes.push(`另有 ${blocked} 個貨號因回寫未完成暫不計算`);
+    const tail = notes.length > 0 ? `
+（${notes.join('；')}）` : '';
     return `${prefix}目前沒有要叫貨的品項。${tail}`;
   }
-
-  const sections = [];
-  if (active.length > 0) {
-    const shown = active.slice(0, INVENTORY_REPLY_LIMIT);
-    const more = active.length > shown.length
-      ? `\n…還有 ${active.length - shown.length} 個，詳見「庫存看板」分頁`
-      : '';
-    sections.push(`要叫貨 ${active.length} 個：\n${shown.map(inventoryLine).join('\n')}${more}`);
-  } else if (anomaly.length === 0) {
-    sections.push('目前沒有要叫貨的品項。');
-  }
-  if (quiet > 0) {
-    sections.push(`（另有 ${quiet} 個有缺口但近 30 天沒有訂單，未列出）`);
-  }
-  if (anomaly.length > 0) {
-    const shown = anomaly.slice(0, INVENTORY_REPLY_LIMIT);
-    const more = anomaly.length > shown.length
-      ? `\n…還有 ${anomaly.length - shown.length} 個，詳見「庫存看板」分頁`
-      : '';
-    sections.push(
-      `⚠️ 異常 ${anomaly.length} 個，缺口僅供參考，請先人工確認：\n`
-      + `${shown.map(inventoryLine).join('\n')}${more}`
-    );
-  }
-  return `${prefix}${sections.join('\n\n')}`;
+  const parts = [`要叫貨 ${active.length} 個`];
+  if (anomaly.length > 0) parts.push(`需人工確認 ${anomaly.length} 個`);
+  if (quiet > 0) parts.push(`近 30 天沒有訂單 ${quiet} 個`);
+  return `${prefix}${parts.join('，')}。`;
 }
 
 export function formatStockReply(dashboard, keyword) {
@@ -511,7 +472,10 @@ export async function executeInventoryCommand({ command }, { dashboardReader }) 
   if (!dashboard.syncStatus?.lastSuccessAt && dashboard.rows.length === 0) {
     return '庫存看板還沒有資料，請等下一次同步完成。';
   }
-  return command.action === 'shortage'
-    ? formatShortageReply(dashboard)
-    : formatStockReply(dashboard, command.keyword);
+  // 缺貨改回「摘要 + 開啟清單」：回傳物件讓 webhook 知道要送按鈕訊息。
+  // 其餘情況（錯誤、尚無資料）維持純字串，呼叫端照舊。
+  if (command.action === 'shortage') {
+    return { text: formatShortageSummary(dashboard), link: true };
+  }
+  return formatStockReply(dashboard, command.keyword);
 }

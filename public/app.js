@@ -77,7 +77,16 @@ const elements = {
   workflowDate: document.querySelector('#workflow-date'),
   workflowAdd: document.querySelector('#workflow-add'),
   workflowItems: document.querySelector('#workflow-items'),
-  workflowSubmit: document.querySelector('#workflow-submit')
+  workflowSubmit: document.querySelector('#workflow-submit'),
+  shortageSection: document.querySelector('#shortage-section'),
+  shortageCount: document.querySelector('#shortage-count'),
+  shortageMeta: document.querySelector('#shortage-meta'),
+  shortageWarning: document.querySelector('#shortage-warning'),
+  shortageList: document.querySelector('#shortage-list'),
+  shortageAnomalyGroup: document.querySelector('#shortage-anomaly-group'),
+  shortageAnomalyCount: document.querySelector('#shortage-anomaly-count'),
+  shortageAnomaly: document.querySelector('#shortage-anomaly'),
+  shortageFootnote: document.querySelector('#shortage-footnote')
 };
 
 function showStatus(message, kind = '') {
@@ -715,6 +724,8 @@ async function initialize() {
     const requestId = params.get('requestId');
     if (workflowConfig(mode) && requestId) {
       await loadWorkflow(mode, requestId);
+    } else if (params.get('view') === 'shortage') {
+      await loadShortage();
     } else {
       const body = await api('/api/skus');
       state.mode = 'request';
@@ -789,5 +800,147 @@ elements.variantDialog.addEventListener('click', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeVariantDialog();
 });
+// ---- 缺貨清單（查缺貨 的 LIFF 頁面）----
+
+// 看板列與目錄是兩份資料：看板只有貨號與數字，能不能下單要看 SKU主檔。
+// API 已經用 orderable 標好，這裡只負責不要讓不可補貨的列被勾選。
+function shortageRow(entry, catalogBySku) {
+  const row = document.createElement('div');
+  row.className = 'shortage-row';
+  row.dataset.blocked = String(!entry.orderable);
+
+  const image = document.createElement('img');
+  image.className = 'shortage-image';
+  image.alt = '';
+  image.loading = 'lazy';
+  if (entry.imageUrl) image.src = entry.imageUrl;
+  // 有約 72 筆綁定指向已刪除的銷售商品，網址可能失效：載不出來就留佔位方塊。
+  image.addEventListener('error', () => { image.removeAttribute('src'); });
+
+  const info = document.createElement('div');
+  info.className = 'shortage-info';
+
+  const title = document.createElement('strong');
+  title.textContent = entry.displayName;
+
+  const badge = document.createElement('span');
+  badge.className = 'shortage-badge';
+  badge.dataset.mode = entry.stockMode || '';
+  badge.textContent = entry.stockMode || '型態未知';
+
+  const sku = document.createElement('span');
+  sku.className = 'shortage-sku';
+  sku.textContent = entry.sku;
+
+  const numbers = document.createElement('span');
+  numbers.className = 'shortage-numbers';
+  numbers.textContent = `缺口 ${entry.gap} ${entry.unit}｜未寄 ${entry.unshipped}`
+    + `｜叫貨中 ${entry.onOrder}｜飛鼠 ${entry.flyingmouseStock}`;
+
+  info.append(title, badge, sku, numbers);
+
+  if (entry.note) {
+    const note = document.createElement('span');
+    note.className = 'shortage-note';
+    note.textContent = entry.note;
+    info.append(note);
+  }
+
+  const item = catalogBySku.get(entry.sku);
+  if (!entry.orderable || !item) {
+    const blocked = document.createElement('span');
+    blocked.className = 'shortage-note';
+    blocked.textContent = 'SKU主檔 標記為不可補貨，無法從這裡下單';
+    info.append(blocked);
+    row.append(image, info);
+    return row;
+  }
+
+  const pick = document.createElement('div');
+  pick.className = 'shortage-pick';
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.id = `shortage-pick-${entry.sku}`;
+  const label = document.createElement('label');
+  label.setAttribute('for', checkbox.id);
+  label.textContent = '叫貨';
+  const quantity = document.createElement('input');
+  quantity.type = 'number';
+  quantity.min = '1';
+  quantity.step = '1';
+  // 預設帶缺口，採購多半照這個數字叫，要改再改。
+  quantity.value = String(entry.gap);
+  quantity.setAttribute('aria-label', `${entry.displayName} 叫貨數量`);
+
+  const apply = () => {
+    const amount = Number(quantity.value);
+    const picked = checkbox.checked && Number.isSafeInteger(amount) && amount > 0;
+    updateQuantity(item, picked ? amount : 0);
+  };
+  checkbox.addEventListener('change', apply);
+  quantity.addEventListener('change', () => { if (checkbox.checked) apply(); });
+
+  const existing = state.cart.get(entry.sku);
+  if (existing) {
+    checkbox.checked = true;
+    quantity.value = String(existing.quantity);
+  }
+
+  pick.append(checkbox, label, quantity, document.createTextNode(entry.unit));
+  info.append(pick);
+  row.append(image, info);
+  return row;
+}
+
+function renderShortage(view, catalogBySku) {
+  elements.shortageCount.textContent = String(view.reorder.length);
+  elements.shortageMeta.textContent = view.updatedAt
+    ? `看板更新時間 ${view.updatedAt}`
+    : '看板尚未產生資料';
+
+  // 同步失敗時看板是上一次成功的結果，數字不能當現況看。
+  const failed = view.syncStatus?.status === '失敗';
+  elements.shortageWarning.hidden = !failed;
+  if (failed) {
+    elements.shortageWarning.textContent = view.syncStatus?.lastSuccessAt
+      ? `同步失敗，以下是上一次成功的資料（${view.syncStatus.lastSuccessAt}）`
+      : '同步失敗，而且查不到上一次成功的時間，以下數字不可信';
+  }
+
+  elements.shortageList.replaceChildren(
+    ...view.reorder.map((entry) => shortageRow(entry, catalogBySku))
+  );
+  if (view.reorder.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = '目前沒有要叫貨的品項。';
+    elements.shortageList.replaceChildren(empty);
+  }
+
+  elements.shortageAnomalyGroup.hidden = view.anomaly.length === 0;
+  elements.shortageAnomalyCount.textContent = String(view.anomaly.length);
+  elements.shortageAnomaly.replaceChildren(
+    ...view.anomaly.map((entry) => shortageRow(entry, catalogBySku))
+  );
+
+  const notes = [];
+  if (view.blockedCount > 0) notes.push(`其中 ${view.blockedCount} 筆不可補貨，需先在 SKU主檔 開啟`);
+  if (view.quiet > 0) notes.push(`另有 ${view.quiet} 筆有缺口但近 30 天沒有訂單，未列出`);
+  elements.shortageFootnote.textContent = notes.join('；');
+}
+
+async function loadShortage() {
+  const [view, catalog] = await Promise.all([
+    api('/api/inventory/shortage'),
+    api('/api/skus')
+  ]);
+  state.mode = 'request';
+  setCatalogItems(catalog.items);
+  const catalogBySku = new Map(catalog.items.map((item) => [item.sku, item]));
+  document.querySelector('h1').textContent = '缺貨清單';
+  elements.shortageSection.hidden = false;
+  renderShortage(view, catalogBySku);
+}
+
 elements.workflowSubmit.addEventListener('click', submitWorkflow);
 initialize();

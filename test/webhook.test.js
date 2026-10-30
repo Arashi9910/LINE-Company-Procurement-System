@@ -62,6 +62,10 @@ async function start(t, calls) {
     messenger: {
       async replyReplenishmentLink(replyToken, url) { calls.links.push({ replyToken, url }); },
       async replyText(replyToken, text) { calls.texts.push({ replyToken, text }); },
+      async replyShortageLink(replyToken, text, url) {
+        calls.shortageLinks ??= [];
+        calls.shortageLinks.push({ replyToken, text, url });
+      },
       async replyStatusCards(replyToken, filter, result) {
         calls.statusCards ??= [];
         calls.statusCards.push({ replyToken, filter, result });
@@ -528,9 +532,11 @@ test('webhook answers 查缺貨 from the dashboard, not the status cards', async
   // 計畫步驟 6 的重點：沒有明確分派的話會掉進 listRequestRows → 回出補貨狀態卡片。
   assert.equal(calls.statusReads, undefined, '不該去讀補貨追蹤');
   assert.equal(calls.statusCards, undefined, '不該回狀態卡片');
-  assert.match(calls.texts[0].text, /要叫貨 1 個/);
-  assert.match(calls.texts[0].text, /雨傘 大/);
-  assert.match(calls.texts[0].text, /缺口 3/);
+  // 缺貨改成「摘要 + 開啟清單」，明細在 LIFF 頁面看（使用者 2026-10-30 選定）。
+  assert.equal(calls.texts.length, 0, '不該再送純文字清單');
+  assert.match(calls.shortageLinks[0].text, /要叫貨 1 個/);
+  assert.match(calls.shortageLinks[0].url, /view=shortage/);
+  assert.match(calls.shortageLinks[0].url, /ctx=/);
 });
 
 test('webhook answers 查庫存 with the four numbers for a keyword', async (t) => {
@@ -563,8 +569,8 @@ test('webhook marks the reply as stale while the dashboard sync is failing', asy
   await sendText(baseUrl, '查缺貨');
 
   // 規格第 5 節：同步失敗期間要標明資料是上一次成功的結果與時間。
-  assert.match(calls.texts[0].text, /同步失敗/);
-  assert.match(calls.texts[0].text, /2026-10-29 16:00:00/);
+  assert.match(calls.shortageLinks[0].text, /同步失敗/);
+  assert.match(calls.shortageLinks[0].text, /2026-10-29 16:00:00/);
 });
 
 test('webhook explains itself when the dashboard cannot be read', async (t) => {
@@ -600,32 +606,6 @@ test('查庫存 without a keyword asks for one instead of listing everything', a
   assert.match(calls.texts[0].text, /請輸入要查的 SKU 或關鍵字/);
 });
 
-test('查缺貨 always shows the SKU, even when two names look identical', async (t) => {
-  const sameName = '超長商品名稱超長商品名稱超長商品名稱超長商品名稱';
-  const calls = {
-    groups: [], links: [], texts: [],
-    dashboardReader: async () => ({
-      syncStatus: { status: '正常', lastSuccessAt: '2026-10-29 17:00:00', lastAttemptAt: '', message: '' },
-      rows: [
-        { sku: 'A-紅', displayName: `${sameName}紅色`, flyingmouseStock: 1, processing: 0, preparing: 0,
-          unshipped: 0, onOrder: 0, preorderAllowance: 0, safetyStock: 0, estimatedStock: 1,
-          gap: 5, status: '要叫貨', note: '', updatedAt: '' },
-        { sku: 'A-藍', displayName: `${sameName}藍色`, flyingmouseStock: 1, processing: 0, preparing: 0,
-          unshipped: 0, onOrder: 0, preorderAllowance: 0, safetyStock: 0, estimatedStock: 1,
-          gap: 3, status: '要叫貨', note: '', updatedAt: '' }
-      ]
-    })
-  };
-  const baseUrl = await start(t, calls);
-
-  await sendText(baseUrl, '查缺貨');
-
-  // 名稱截短後兩筆長得一樣，只有 SKU 分得出要補哪個規格。
-  const reply = calls.texts[0].text;
-  assert.match(reply, /SKU A-紅/);
-  assert.match(reply, /SKU A-藍/);
-});
-
 test('查缺貨 hides SKUs that have not moved in 30 days, and says how many', async (t) => {
   const base = dashboardFixture();
   const calls = {
@@ -652,11 +632,10 @@ test('查缺貨 hides SKUs that have not moved in 30 days, and says how many', a
 
   await sendText(baseUrl, '查缺貨');
 
-  const reply = calls.texts[0].text;
+  // 明細在 LIFF 頁面，群組訊息只講數量；逐列的篩選在 shortage-view 的測試裡驗。
+  const reply = calls.shortageLinks[0].text;
   assert.match(reply, /要叫貨 1 個/);
-  assert.match(reply, /SKU SKU-A/);
-  assert.equal(reply.includes('SKU-TEST'), false, '沒在動的不該列出來');
-  assert.match(reply, /另有 1 個有缺口但近 30 天沒有訂單/);
+  assert.match(reply, /近 30 天沒有訂單 1 個/);
 });
 
 test('查缺貨 falls back to showing everything when the movement list is unreadable', async (t) => {
@@ -670,8 +649,8 @@ test('查缺貨 falls back to showing everything when the movement list is unrea
   await sendText(baseUrl, '查缺貨');
 
   // 篩子壞了不該讓人連缺貨都查不到。
-  assert.match(calls.texts[0].text, /要叫貨 1 個/);
-  assert.equal(calls.texts[0].text.includes('近 30 天沒有訂單'), false);
+  assert.match(calls.shortageLinks[0].text, /要叫貨 1 個/);
+  assert.equal(calls.shortageLinks[0].text.includes('近 30 天沒有訂單'), false);
 });
 
 test('查缺貨 ignores a movement list left over from an older run', async (t) => {
@@ -700,9 +679,8 @@ test('查缺貨 ignores a movement list left over from an older run', async (t) 
   await sendText(baseUrl, '查缺貨');
 
   // 拿舊清單去篩，會把今天才開始出單的商品誤判成「沒在動」而藏起來。
-  const reply = calls.texts[0].text;
+  const reply = calls.shortageLinks[0].text;
   assert.match(reply, /要叫貨 2 個/);
-  assert.match(reply, /SKU-NEW/);
   assert.equal(reply.includes('近 30 天沒有訂單'), false);
 });
 
@@ -720,6 +698,6 @@ test('查缺貨 does not filter against a freshly initialised empty movement she
 
   await sendText(baseUrl, '查缺貨');
 
-  assert.match(calls.texts[0].text, /要叫貨 1 個/);
-  assert.equal(calls.texts[0].text.includes('近 30 天沒有訂單'), false);
+  assert.match(calls.shortageLinks[0].text, /要叫貨 1 個/);
+  assert.equal(calls.shortageLinks[0].text.includes('近 30 天沒有訂單'), false);
 });
