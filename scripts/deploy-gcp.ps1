@@ -17,6 +17,7 @@ param(
   [string]$BudgetAmount = '300TWD',
   [switch]$EnableFlyingmouseWriteback,
   [switch]$EnableDailyTodos,
+  [switch]$EnableInventoryDashboard,
   [switch]$EnablePurchaseDrafts
 )
 
@@ -57,6 +58,8 @@ $appVersion = "$packageVersion+$gitShort"
 $deployedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 $flyingmouseWritebackEnabled = if ($EnableFlyingmouseWriteback) { 'true' } else { 'false' }
 $dailyTodosEnabled = if ($EnableDailyTodos) { 'true' } else { 'false' }
+# 看板分頁必須先存在（scripts/setup-inventory-dashboard.mjs），否則嚴格表頭比對會讓整輪失敗。
+$inventoryDashboardEnabled = if ($EnableInventoryDashboard) { 'true' } else { 'false' }
 $purchaseDraftsEnabled = if ($EnablePurchaseDrafts) { 'true' } else { 'false' }
 
 function Resolve-GcloudCommand {
@@ -214,7 +217,7 @@ if ($EnableFlyingmouseWriteback) {
   '--service-account', $serviceAccountEmail,
   '--max-instances', '1',
   '--concurrency', '20',
-  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,FLYINGMOUSE_CATALOG_JOB_NAME=$FlyingmouseCatalogJobName,FLYINGMOUSE_WRITEBACK_JOB_NAME=$FlyingmouseWritebackJobName,APP_VERSION=$appVersion,GIT_COMMIT=$gitCommit,DEPLOYED_AT=$deployedAt,FLYINGMOUSE_WRITEBACK_ENABLED=$flyingmouseWritebackEnabled,DAILY_TODOS_ENABLED=$dailyTodosEnabled,PURCHASE_DRAFTS_ENABLED=$purchaseDraftsEnabled",
+  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,FLYINGMOUSE_CATALOG_JOB_NAME=$FlyingmouseCatalogJobName,FLYINGMOUSE_WRITEBACK_JOB_NAME=$FlyingmouseWritebackJobName,APP_VERSION=$appVersion,GIT_COMMIT=$gitCommit,DEPLOYED_AT=$deployedAt,FLYINGMOUSE_WRITEBACK_ENABLED=$flyingmouseWritebackEnabled,DAILY_TODOS_ENABLED=$dailyTodosEnabled,PURCHASE_DRAFTS_ENABLED=$purchaseDraftsEnabled,INVENTORY_DASHBOARD_ENABLED=$inventoryDashboardEnabled",
   '--update-labels', "git-commit=$gitCommit",
   '--startup-probe', 'httpGet.path=/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=10,failureThreshold=12',
   '--liveness-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=30,failureThreshold=3',
