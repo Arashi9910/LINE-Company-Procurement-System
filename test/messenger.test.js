@@ -2,6 +2,35 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildStatusReply, createLineMessenger } from '../src/line/messenger.js';
 
+test('receipt notifications always include details and only offer further receiving for unfinished orders', async () => {
+  const calls = [];
+  const messenger = createLineMessenger({ channelAccessToken: 'token', liffId: 'liff-123' }, {
+    client: { async pushMessage(input) { calls.push(input); } }
+  });
+  for (const status of ['部分到貨', '已完成']) {
+    await messenger.pushReceiptConfirmed('GROUP', {
+      requestId: 'RQ-receipt', items: [
+        { displayName: '商品', status, receivedQuantity: status === '已完成' ? 3 : 1, orderedQuantity: 3, unit: '件' },
+        { displayName: '已取消商品', status: '取消' }
+      ]
+    }, { displayName: '到貨人員' });
+  }
+  for (const call of calls) {
+    assert.equal(call.to, 'GROUP');
+    assert.equal(call.messages[0].type, 'text');
+    assert.match(call.messages[0].text, /商品：累計/);
+    const card = call.messages[1];
+    assert.equal(card.type, 'template');
+    assert.equal(card.template.actions[0].label, '查看明細');
+    const url = new URL(card.template.actions[0].uri);
+    assert.equal(url.searchParams.get('mode'), 'detail');
+    assert.equal(url.searchParams.get('requestId'), 'RQ-receipt');
+  }
+  assert.deepEqual(calls[0].messages[1].template.actions.map(action => action.label), ['查看明細', '繼續登記到貨']);
+  assert.equal(new URL(calls[0].messages[1].template.actions[1].uri).searchParams.get('mode'), 'receipt');
+  assert.equal(calls[1].messages[1].template.actions.length, 1);
+});
+
 test('LINE messenger reads a member profile from the configured group', async () => {
   const calls = [];
   const client = {
@@ -71,6 +100,7 @@ test('LINE status reply builds one actionable card per request status', () => {
   assert.equal(message.altText, '【未結案】共 5 筆補貨單');
   assert.equal(message.contents.type, 'carousel');
   assert.equal(message.contents.contents.length, 5);
+  assert.equal(message.quickReply, undefined);
   const actions = message.contents.contents.map((bubble) => bubble.footer.contents[0].action);
   assert.deepEqual(actions.map((action) => action.label), [
     '確認下單', '登記到貨', '繼續登記', '查看明細', '查看明細'
@@ -95,12 +125,42 @@ test('LINE status reply limits the carousel to ten cards and keeps the total', (
     }))
   });
 
-  assert.equal(message.altText, '【待確認】共 12 筆補貨單（顯示最近 10 筆）');
+  assert.equal(message.altText, '【待確認】共 12 筆補貨單（第 1/2 頁）');
   assert.equal(message.contents.contents.length, 10);
+  assert.deepEqual(message.quickReply.items.map((item) => item.action), [{
+    type: 'message',
+    label: '下一頁',
+    text: '查待確認 2'
+  }]);
   assert.ok(Buffer.byteLength(JSON.stringify(message.contents), 'utf8') < 50 * 1024);
   const productText = message.contents.contents[0].body.contents[3].text;
   assert.ok(productText.length < 90);
   assert.match(productText, /…$/);
+});
+
+test('LINE status reply shows both page buttons on a middle page and only previous on the last page', () => {
+  const items = Array.from({ length: 10 }, (_, index) => ({
+    requestId: `RQ-${index + 1}`,
+    status: '已下單',
+    applicant: '申請人',
+    itemCount: 1,
+    firstItem: '商品'
+  }));
+  const middle = buildStatusReply('liff-123', '已下單', {
+    total: 25, page: 2, pageSize: 10, totalPages: 3, items
+  });
+  assert.equal(middle.altText, '【已下單】共 25 筆補貨單（第 2/3 頁）');
+  assert.deepEqual(middle.quickReply.items.map((item) => item.action), [
+    { type: 'message', label: '上一頁', text: '查已下單 1' },
+    { type: 'message', label: '下一頁', text: '查已下單 3' }
+  ]);
+
+  const last = buildStatusReply('liff-123', '已下單', {
+    total: 25, page: 3, pageSize: 10, totalPages: 3, items: items.slice(0, 5)
+  });
+  assert.deepEqual(last.quickReply.items.map((item) => item.action), [
+    { type: 'message', label: '上一頁', text: '查已下單 2' }
+  ]);
 });
 
 test('LINE status reply uses a normal text message for an empty result', async () => {

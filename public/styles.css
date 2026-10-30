@@ -244,7 +244,22 @@ textarea { resize: vertical; }
 }
 .step-button.plus { border-color: var(--line-green); background: var(--soft-green); color: var(--deep-green); }
 .step-button:disabled { opacity: .35; cursor: default; }
-.quantity-value { min-width: 27px; color: #26322a; font-size: .9rem; font-weight: 750; text-align: center; }
+.quantity-input {
+  width: 58px;
+  height: 34px;
+  padding: 0 4px;
+  border: 1px solid #aeb7b0;
+  border-radius: 10px;
+  appearance: textfield;
+  background: #fff;
+  color: #26322a;
+  font-size: .9rem;
+  font-weight: 750;
+  text-align: center;
+}
+.quantity-input:focus { outline: 2px solid rgba(6, 199, 85, .28); border-color: var(--line-green); }
+.quantity-input::-webkit-inner-spin-button,
+.quantity-input::-webkit-outer-spin-button { margin: 0; appearance: none; }
 .variant-footer {
   display: flex;
   align-items: center;
@@ -342,6 +357,17 @@ textarea { resize: vertical; }
 .workflow-items { display: grid; gap: 12px; margin-top: 16px; }
 .workflow-row { padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: #fff; }
 .workflow-row.purchase-added { border-color: #83d5a0; background: #f5fff8; }
+.receipt-summary { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 12px; align-items: start; }
+.receipt-summary h3, .receipt-summary p { overflow-wrap: anywhere; }
+.receipt-image-button { padding: 0; border: 0; background: transparent; color: var(--deep-green); cursor: zoom-in; }
+.receipt-image-button:disabled { cursor: default; color: #666; }
+.receipt-image-button > span { display: block; margin-top: 5px; font-size: .75rem; }
+.receipt-image { width: 88px; height: 88px; border-radius: 10px; }
+.receipt-image-dialog { width: min(92vw, 640px); max-height: 90vh; max-height: 90dvh; box-sizing: border-box; padding: 16px; border: 0; border-radius: 16px; overflow: auto; }
+.receipt-image-dialog::backdrop { background: rgba(0, 0, 0, .7); }
+.receipt-image-close { display: block; margin: 0 0 12px auto; min-height: 44px; padding: 8px 16px; cursor: pointer; }
+.receipt-image-preview { width: 100%; height: min(65vh, 560px); }
+.receipt-image-dialog p { overflow-wrap: anywhere; }
 .workflow-addition-badge {
   display: inline-block;
   margin-bottom: 6px;
@@ -380,3 +406,12 @@ textarea { resize: vertical; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; }
 }
+
+.purchase-tools { margin: 16px 0; padding: 16px; border: 1px solid #cdded3; border-radius: 16px; background: #f5fbf7; }
+.purchase-tools button { margin: 6px 0; }
+.purchase-tools h2 { margin: 16px 0 8px; }
+.purchase-source { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; overflow-wrap: anywhere; }
+.purchase-source input[type="checkbox"] { width: 22px; height: 22px; flex-shrink: 0; }
+#purchase-sources { overflow-wrap: anywhere; }
+#purchase-sources a { display: inline-block; margin-bottom: 8px; }
+#purchase-save-status { font-weight: 600; }

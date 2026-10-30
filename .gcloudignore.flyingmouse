@@ -13,3 +13,4 @@
 !scripts/
 !scripts/flyingmouse-sync.mjs
 !scripts/flyingmouse-inventory-writeback.mjs
+!scripts/flyingmouse-combined-job.mjs

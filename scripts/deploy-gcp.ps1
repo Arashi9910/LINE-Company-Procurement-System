@@ -11,9 +11,13 @@ param(
   [string]$SpreadsheetId = '16ko37-omRLDxdKXOX-VRwsCG3VyMerAO4EPBX_T10M8',
   [string]$Region = 'asia-east1',
   [string]$ServiceName = 'line-replenishment',
+  [string]$FlyingmouseCatalogJobName = 'flyingmouse-catalog-sync',
+  [string]$FlyingmouseWritebackJobName = 'flyingmouse-inventory-writeback',
   [string]$BillingAccountId = '',
   [string]$BudgetAmount = '300TWD',
-  [switch]$EnableFlyingmouseWriteback
+  [switch]$EnableFlyingmouseWriteback,
+  [switch]$EnableDailyTodos,
+  [switch]$EnablePurchaseDrafts
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,6 +56,8 @@ if ($packageVersion -notmatch '^\d+\.\d+\.\d+') {
 $appVersion = "$packageVersion+$gitShort"
 $deployedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 $flyingmouseWritebackEnabled = if ($EnableFlyingmouseWriteback) { 'true' } else { 'false' }
+$dailyTodosEnabled = if ($EnableDailyTodos) { 'true' } else { 'false' }
+$purchaseDraftsEnabled = if ($EnablePurchaseDrafts) { 'true' } else { 'false' }
 
 function Resolve-GcloudCommand {
   $command = Get-Command 'gcloud.cmd' -ErrorAction SilentlyContinue
@@ -172,6 +178,33 @@ foreach ($secret in $secretNames) {
   )).Output | Out-Null
 }
 
+if ($EnableFlyingmouseWriteback) {
+  $writebackJobProbe = Invoke-Gcloud -Arguments @(
+    'run', 'jobs', 'describe', $FlyingmouseWritebackJobName,
+    '--project', $ProjectId,
+    '--region', $Region
+  ) -AllowFailure
+  if ($writebackJobProbe.ExitCode -ne 0) {
+    throw "FlyingMouse writeback job does not exist: $FlyingmouseWritebackJobName. Deploy it before enabling immediate writeback."
+  }
+  (Invoke-Gcloud -Arguments @(
+    'run', 'jobs', 'add-iam-policy-binding', $FlyingmouseWritebackJobName,
+    '--project', $ProjectId,
+    '--region', $Region,
+    '--member', "serviceAccount:$serviceAccountEmail",
+    '--role', 'roles/run.invoker',
+    '--quiet'
+  )).Output | Out-Null
+  (Invoke-Gcloud -Arguments @(
+    'run', 'jobs', 'add-iam-policy-binding', $FlyingmouseWritebackJobName,
+    '--project', $ProjectId,
+    '--region', $Region,
+    '--member', "serviceAccount:$serviceAccountEmail",
+    '--role', 'roles/run.viewer',
+    '--quiet'
+  )).Output | Out-Null
+}
+
 (Invoke-Gcloud -Arguments @(
   'run', 'deploy', $ServiceName,
   '--source', '.',
@@ -181,11 +214,13 @@ foreach ($secret in $secretNames) {
   '--service-account', $serviceAccountEmail,
   '--max-instances', '1',
   '--concurrency', '20',
-  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId,APP_VERSION=$appVersion,GIT_COMMIT=$gitCommit,DEPLOYED_AT=$deployedAt,FLYINGMOUSE_WRITEBACK_ENABLED=$flyingmouseWritebackEnabled",
+  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,LINE_LOGIN_CHANNEL_ID=$LineLoginChannelId,LIFF_ID=$LiffId,GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_REGION=$Region,FLYINGMOUSE_CATALOG_JOB_NAME=$FlyingmouseCatalogJobName,FLYINGMOUSE_WRITEBACK_JOB_NAME=$FlyingmouseWritebackJobName,APP_VERSION=$appVersion,GIT_COMMIT=$gitCommit,DEPLOYED_AT=$deployedAt,FLYINGMOUSE_WRITEBACK_ENABLED=$flyingmouseWritebackEnabled,DAILY_TODOS_ENABLED=$dailyTodosEnabled,PURCHASE_DRAFTS_ENABLED=$purchaseDraftsEnabled",
   '--update-labels', "git-commit=$gitCommit",
   '--startup-probe', 'httpGet.path=/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=10,failureThreshold=12',
   '--liveness-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=30,failureThreshold=3',
-  '--readiness-probe', 'httpGet.path=/ready,httpGet.port=8080,timeoutSeconds=5,periodSeconds=60,failureThreshold=3',
+  # Keep transient Google Sheets latency from removing the service's only instance from traffic.
+  # Startup and the post-deploy check still use /ready to validate Sheet access and schema.
+  '--readiness-probe', 'httpGet.path=/health,httpGet.port=8080,timeoutSeconds=5,periodSeconds=60,failureThreshold=3',
   '--set-secrets', 'LINE_CHANNEL_SECRET=line-channel-secret:latest,LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token:latest,LINK_SIGNING_SECRET=line-link-signing-secret:latest,JOB_TOKEN=line-job-token:latest',
   '--quiet'
 )).Output | Out-Null
@@ -201,6 +236,31 @@ if (-not $serviceUrl) {
   throw 'Cloud Run did not return a service URL.'
 }
 
+# Cloud Run keeps an explicit traffic assignment across deploys. When the service is pinned to a
+# named revision - as this one was on 2026-10-30 - `run deploy` creates the new revision with 0%
+# traffic, the old code keeps serving, and the /ready check below fails with a stale commit while
+# the new revision is quietly retired. Route traffic to the revision this deploy just created so a
+# deploy always takes effect. Assigning 100% to a known revision is idempotent and also works when
+# the service already serves the latest revision.
+$createdRevisionResult = Invoke-Gcloud -Arguments @(
+  'run', 'services', 'describe', $ServiceName,
+  '--project', $ProjectId,
+  '--region', $Region,
+  '--format=value(status.latestCreatedRevisionName)'
+)
+$createdRevision = Get-GcloudOutputText $createdRevisionResult
+if (-not $createdRevision) {
+  throw 'Cloud Run did not return the revision created by this deploy.'
+}
+
+(Invoke-Gcloud -Arguments @(
+  'run', 'services', 'update-traffic', $ServiceName,
+  '--project', $ProjectId,
+  '--region', $Region,
+  '--to-revisions', "$createdRevision=100",
+  '--quiet'
+)).Output | Out-Null
+
 $revisionResult = Invoke-Gcloud -Arguments @(
   'run', 'services', 'describe', $ServiceName,
   '--project', $ProjectId,
@@ -210,6 +270,9 @@ $revisionResult = Invoke-Gcloud -Arguments @(
 $readyRevision = Get-GcloudOutputText $revisionResult
 if (-not $readyRevision) {
   throw 'Cloud Run did not return a ready revision.'
+}
+if ($readyRevision -ne $createdRevision) {
+  throw "Cloud Run is serving '$readyRevision' instead of the revision this deploy created ('$createdRevision')."
 }
 
 $ready = $null

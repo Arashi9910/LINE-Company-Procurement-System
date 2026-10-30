@@ -39,7 +39,9 @@ export const MAIN_HEADERS = Object.freeze([
   '搜尋關鍵字',
   '單位',
   '主要供應商',
-  '資料更新日'
+  '資料更新日',
+  // 由每小時同步從銷售商品名稱推導，採購用它判斷要不要補單。
+  '出貨型態'
 ]);
 const REVIEW_ROW_COUNT = 5000;
 const REVIEW_STATUS_VALUES = Object.freeze([
@@ -419,12 +421,22 @@ function sameCatalogIdentity(mainRow, source) {
     normalizeText(mainRow[6]) === normalizeText(source.location);
 }
 
+// 負庫存是飛鼠超賣的真實值，要照原值帶進 SKU主檔；但 Number() 會把空白、null、false
+// 都變成 0，而指紋不含庫存，所以一個被清空的庫存欄會冒充成真實的零庫存寫進主檔。
+function approvedStock(value) {
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const stock = Number(value.trim());
+    return Number.isSafeInteger(stock) ? stock : null;
+  }
+  return null;
+}
+
 function sourceFromApprovedReviewRow(row) {
   const partNumber = normalizeText(row[4]);
   const productName = normalizeText(row[5]);
-  const stock = Number(row[8]);
-  if (!partNumber || !productName || row[0] !== `新增:${partNumber}` ||
-    !Number.isSafeInteger(stock) || stock < 0) {
+  const stock = approvedStock(row[8]);
+  if (!partNumber || !productName || row[0] !== `新增:${partNumber}` || stock === null) {
     return null;
   }
   return Object.freeze({
@@ -456,7 +468,7 @@ async function importApprovedItems({
     spreadsheetId,
     ranges: [
       `'${REVIEW_SHEET_NAME}'!A1:S${reviewRowCount}`,
-      `'${MAIN_SHEET_NAME}'!A1:N${mainRowCount}`
+      `'${MAIN_SHEET_NAME}'!A1:O${mainRowCount}`
     ],
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
@@ -557,7 +569,7 @@ async function importApprovedItems({
       { range: `'${REVIEW_SHEET_NAME}'!D${approval.rowNumber}`, values: [['已匯入']] },
       { range: `'${REVIEW_SHEET_NAME}'!S${approval.rowNumber}`, values: [[timestamp]] }
     );
-    mainBySku.set(sku, { row: [...mainRow, '', '件', '飛鼠', ''], rowNumber: targetRow });
+    mainBySku.set(sku, { row: [...mainRow, '', '件', '飛鼠', '', ''], rowNumber: targetRow });
     imported += 1;
   }
 

@@ -21,6 +21,8 @@ import {
   syncReviewAndImport
 } from '../src/flyingmouse/sheets-review.js';
 import {
+  refreshTrackingDisplayNames,
+  syncCatalogItems,
   syncInventorySnapshots,
   syncProductImages
 } from '../src/flyingmouse/sheets-operational.js';
@@ -32,7 +34,7 @@ const FLYINGMOUSE_ENV_KEYS = Object.freeze([
   'FLYINGMOUSE_PASSWORD'
 ]);
 
-const SHEET_MODES = new Set(['read-only', 'review']);
+const SHEET_MODES = new Set(['read-only', 'review', 'auto']);
 
 const HELP = `飛鼠新品目錄同步
 
@@ -44,14 +46,14 @@ const HELP = `飛鼠新品目錄同步
   --input <path>         使用現有官方 Excel，不啟動瀏覽器
   --baseline <path>      與既有商品目錄 Excel 比對
   --spreadsheet-id <id>  改以 Google Sheet 的 SKU主檔作為 baseline
-  --sheet-mode <mode>    read-only（預設）或 review（寫入審核區並處理已核准新品）
+  --sheet-mode <mode>    read-only（預設）、review（人工核准）或 auto（完全自動同步）
   --credentials <path>   帳密檔，預設 .env.flyingmouse-login.txt
   --download-dir <path>  官方下載保存目錄
   --output-dir <path>    差異報告保存目錄
   --headed               顯示 Playwright 瀏覽器，供本機除錯
   --help                 顯示說明
 
-此命令永遠不寫入飛鼠；只有 review 模式會寫入 Google Sheet。`;
+此命令永遠不寫入飛鼠；review 與 auto 模式會寫入 Google Sheet。`;
 
 export function parseArguments(argv, env = process.env) {
   const options = {
@@ -95,11 +97,12 @@ export function parseArguments(argv, env = process.env) {
   if (!SHEET_MODES.has(options.sheetMode)) {
     throw new Error(`不支援的 sheet mode：${options.sheetMode}`);
   }
-  if (options.sheetMode === 'review' && !options.spreadsheetId) {
-    throw new Error('review 模式需要 --spreadsheet-id 或 SPREADSHEET_ID');
+  const writableMode = options.sheetMode !== 'read-only';
+  if (writableMode && !options.spreadsheetId) {
+    throw new Error(`${options.sheetMode} 模式需要 --spreadsheet-id 或 SPREADSHEET_ID`);
   }
-  if (options.sheetMode === 'review' && options.baseline) {
-    throw new Error('review 模式必須直接以 SKU主檔作為 baseline');
+  if (writableMode && options.baseline) {
+    throw new Error(`${options.sheetMode} 模式必須直接以 SKU主檔作為 baseline`);
   }
   return options;
 }
@@ -149,7 +152,8 @@ export async function runFlyingMouseSync(options, {
   }
 
   const source = await parseFlyingMouseWorkbook(sourcePath);
-  const imageCatalog = config && options.sheetMode === 'review'
+  const writableMode = options.sheetMode !== 'read-only';
+  const imageCatalog = config && writableMode
     ? await captureProductList({
         config,
         sourceItems: source.items,
@@ -158,7 +162,7 @@ export async function runFlyingMouseSync(options, {
       })
     : null;
   const sheets = options.spreadsheetId
-    ? sheetsFactory({ writable: options.sheetMode === 'review' })
+    ? sheetsFactory({ writable: writableMode })
     : null;
   let reference = null;
   if (options.baseline) {
@@ -180,6 +184,14 @@ export async function runFlyingMouseSync(options, {
         generatedAt
       })
     : null;
+  const catalogSync = options.sheetMode === 'auto'
+    ? await syncCatalogItems({
+        sheets,
+        spreadsheetId: options.spreadsheetId,
+        sourceItems: source.items,
+        imageItems: imageCatalog?.items ?? []
+      })
+    : null;
   const inventorySync = options.sheetMode === 'review'
     ? await syncInventorySnapshots({
         sheets,
@@ -194,11 +206,18 @@ export async function runFlyingMouseSync(options, {
         imageItems: imageCatalog.items
       })
     : null;
+  // 一定要排在 syncCatalogItems 之後：它靠 SKU主檔 已更新的補貨顯示名稱來回填在途單。
+  const trackingNameSync = catalogSync
+    ? await refreshTrackingDisplayNames({
+        sheets,
+        spreadsheetId: options.spreadsheetId
+      })
+    : null;
   const outputDir = resolve(options.outputDir);
   await mkdir(outputDir, { recursive: true });
   const reportPath = resolve(outputDir, `catalog-preview_${reportTimestamp(generatedAt)}.json`);
   const report = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     generatedAt: generatedAt.toISOString(),
     mode,
     sheetMode: options.sheetMode,
@@ -208,8 +227,10 @@ export async function runFlyingMouseSync(options, {
     summary: diff?.summary ?? { sourceRows: source.metadata.rowCount },
     diff,
     reviewSync,
+    catalogSync,
     inventorySync,
     imageSync,
+    trackingNameSync,
     imageSource: imageCatalog?.metadata ?? null
   };
   await writeJsonAtomic(reportPath, report);
@@ -221,8 +242,10 @@ export async function runFlyingMouseSync(options, {
     reportPath,
     summary: report.summary,
     reviewSync,
+    catalogSync,
     inventorySync,
-    imageSync
+    imageSync,
+    trackingNameSync
   };
 }
 
@@ -236,7 +259,7 @@ async function main() {
     const result = await runFlyingMouseSync(options);
     console.log(JSON.stringify({ ok: true, ...result }, null, 2));
   } catch (error) {
-    console.error(`飛鼠唯讀同步失敗：${error.message}`);
+    console.error(`飛鼠同步失敗：${error.message}`);
     process.exitCode = 1;
   }
 }

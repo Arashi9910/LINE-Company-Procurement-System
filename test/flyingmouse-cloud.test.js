@@ -22,12 +22,14 @@ test('FlyingMouse Cloud Build context is an allow-list that never includes secre
   assert.equal(lines.includes('!src/flyingmouse/**'), true);
   assert.equal(lines.includes('!scripts/flyingmouse-sync.mjs'), true);
   assert.equal(lines.includes('!scripts/flyingmouse-inventory-writeback.mjs'), true);
+  assert.equal(lines.includes('!scripts/flyingmouse-combined-job.mjs'), true);
   assert.equal(lines.some((line) => /^!.*\.env/i.test(line)), false);
   assert.equal(lines.some((line) => /claude/i.test(line)), false);
 });
 
-test('FlyingMouse deployment keeps credentials in Secret Manager and requires an explicit review mode', async () => {
+test('FlyingMouse combined deployment keeps credentials in Secret Manager and requires explicit writable modes', async () => {
   const deploy = await read('scripts/deploy-flyingmouse-job.ps1');
+  const dockerfile = await read('Dockerfile.flyingmouse-job');
   const sheets = await read('src/flyingmouse/sheets-baseline.js');
   const review = await read('src/flyingmouse/sheets-review.js');
 
@@ -35,11 +37,36 @@ test('FlyingMouse deployment keeps credentials in Secret Manager and requires an
   assert.match(deploy, /FLYINGMOUSE_PASSWORD=flyingmouse-password:latest/);
   assert.doesNotMatch(deploy, /\.env\.flyingmouse-login\.txt/);
   assert.match(deploy, /\[string\]\$SheetMode = 'read-only'/);
+  assert.match(deploy, /\[ValidateSet\('read-only', 'review', 'auto'\)\]/);
   assert.match(deploy, /FLYINGMOUSE_SHEET_MODE=\$SheetMode/);
+  assert.match(deploy, /\[string\]\$Schedule = '0 \* \* \* \*'/);
+  assert.match(deploy, /\[string\]\$WritebackMode = 'dry-run'/);
+  assert.match(deploy, /\[switch\]\$ApproveLive/);
+  assert.match(deploy, /if \(\$WritebackMode -eq 'live' -and -not \$ApproveLive\)/);
+  assert.match(deploy, /'--max-retries', '0'/);
+  assert.match(deploy, /'--task-timeout', '6m'/);
+  assert.match(deploy, /flyingmouse-combined-job\.mjs/);
+  assert.match(deploy, /FLYINGMOUSE_WRITEBACK_MODE=\$WritebackMode/);
+  assert.match(deploy, /FLYINGMOUSE_WRITEBACK_LIMIT=\$WritebackLimit/);
+  assert.match(dockerfile, /CMD \["node", "scripts\/flyingmouse-combined-job\.mjs"\]/);
+  assert.match(deploy, /'roles\/run\.invoker'/);
+  assert.match(deploy, /'roles\/run\.viewer'/);
   assert.match(sheets, /spreadsheets\.readonly/);
   assert.doesNotMatch(sheets, /values\.(?:update|append|batchUpdate)/);
   assert.match(review, /auth\/spreadsheets'/);
   assert.match(review, /核准匯入/);
+});
+
+test('LINE service deployment receives the FlyingMouse job resource configuration', async () => {
+  const deploy = await read('scripts/deploy-gcp.ps1');
+
+  assert.match(deploy, /\[string\]\$FlyingmouseCatalogJobName = 'flyingmouse-catalog-sync'/);
+  assert.match(deploy, /\[string\]\$FlyingmouseWritebackJobName = 'flyingmouse-inventory-writeback'/);
+  assert.match(deploy, /GOOGLE_CLOUD_REGION=\$Region/);
+  assert.match(deploy, /FLYINGMOUSE_CATALOG_JOB_NAME=\$FlyingmouseCatalogJobName/);
+  assert.match(deploy, /FLYINGMOUSE_WRITEBACK_JOB_NAME=\$FlyingmouseWritebackJobName/);
+  assert.match(deploy, /'roles\/run\.invoker'/);
+  assert.match(deploy, /'roles\/run\.viewer'/);
 });
 
 test('FlyingMouse writeback deployment defaults to dry-run and disables platform retries', async () => {

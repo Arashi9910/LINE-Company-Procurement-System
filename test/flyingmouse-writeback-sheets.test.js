@@ -72,6 +72,24 @@ test('parseWritebackRows validates headers, values, and duplicate event IDs', ()
   );
 });
 
+test('writeback rows carry a negative stock but reject a non-integer one', () => {
+  const row = writebackEventRow(event());
+  // 飛鼠超賣後的到貨：−5 加 2 件還是負的，佇列要收得下，不能被「非負」擋掉。
+  const negative = [...row.slice(0, 5), '已準備', 1, '', 933, -5, -3, '', '', ...row.slice(13)];
+  const parsed = parseWritebackRows([WRITEBACK_HEADERS, negative]);
+
+  assert.equal(parsed[0].beforeStock, -5);
+  assert.equal(parsed[0].targetStock, -3);
+
+  for (const broken of [' ', 'N/A', '10.5', false]) {
+    assert.throws(
+      () => parseWritebackRows([WRITEBACK_HEADERS,
+        [...negative.slice(0, 9), broken, ...negative.slice(10)]]),
+      /更新前庫存必須是整數/
+    );
+  }
+});
+
 test('ensureWritebackSheet creates and formats a native queue sheet', async () => {
   const structural = [];
   const values = [];

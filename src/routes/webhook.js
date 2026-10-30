@@ -1,15 +1,25 @@
 import { validateSignature } from '@line/bot-sdk';
-import { AuthenticationError, ValidationError } from '../errors.js';
+import { AppError, AuthenticationError, ValidationError } from '../errors.js';
 import { createGroupContext } from '../line/context.js';
+import { executeTodoCommand, parseTodoEvent } from '../services/daily-todos.js';
 import {
   executeAuthorizationCommand,
   executeCancellationCommand,
+  executeCatalogSyncCommand,
+  executeInventoryCommand,
   GROUP_COMMAND_HELP,
   parseGroupCommand,
   summarizeRequests
 } from '../services/group-commands.js';
 
-export function createWebhookHandler({ config, repository, messenger }) {
+export function createWebhookHandler({
+  config,
+  repository,
+  messenger,
+  catalogSyncRunner,
+  dashboardReader = null
+}) {
+  const pendingCompletions = new Set();
   return async function webhookHandler(request, response, next) {
     try {
       const rawBody = request.body;
@@ -32,7 +42,8 @@ export function createWebhookHandler({ config, repository, messenger }) {
           && event.message.text.trim() === '補貨';
         const isJoin = event.type === 'join' && groupId;
         const command = event.type === 'message' ? parseGroupCommand(event.message) : null;
-        if (!isReplenishmentCommand && !isJoin && !command) return;
+        const todoCommand = parseTodoEvent(event);
+        if (!isReplenishmentCommand && !isJoin && !command && !todoCommand) return;
 
         if (!groupId) {
           const instruction = isReplenishmentCommand
@@ -42,7 +53,9 @@ export function createWebhookHandler({ config, repository, messenger }) {
           return;
         }
 
-        const groupAllowed = await repository.saveNotificationGroupId(groupId);
+        const groupAllowed = todoCommand
+          ? groupId === await repository.getNotificationGroupId()
+          : await repository.saveNotificationGroupId(groupId);
         if (!groupAllowed) {
           if (event.replyToken) await messenger.replyText(event.replyToken, '此群組未授權使用補貨系統。');
           return;
@@ -55,8 +68,58 @@ export function createWebhookHandler({ config, repository, messenger }) {
           return;
         }
 
-        if (command.type === 'help') {
+        if (command?.type === 'help') {
           if (event.replyToken) await messenger.replyText(event.replyToken, GROUP_COMMAND_HELP);
+          return;
+        }
+
+        if (todoCommand) {
+          const completionKey = todoCommand.action === 'complete'
+            ? JSON.stringify([groupId, event.source?.userId, todoCommand.id]) : null;
+          if (completionKey && pendingCompletions.has(completionKey)) return;
+          if (completionKey) pendingCompletions.add(completionKey);
+          try {
+            if (!config.dailyTodosEnabled) {
+              if (event.replyToken) await messenger.replyText(event.replyToken, '每日待辦尚未啟用，請聯絡管理員。');
+              return;
+            }
+            const result = await executeTodoCommand({
+              command: todoCommand, actorUserId: event.source?.userId,
+              groupId, eventId: event.webhookEventId
+            }, { repository, messenger });
+            if (event.replyToken && !result.silent) {
+              if (result.message) await messenger.replyTodoMessage(event.replyToken, result.message);
+              else await messenger.replyText(event.replyToken, result.text);
+            }
+          } catch (error) {
+            if (!(error instanceof AppError) || error.status >= 500) throw error;
+            if (event.replyToken) await messenger.replyText(event.replyToken, error.message);
+          } finally {
+            if (completionKey) pendingCompletions.delete(completionKey);
+          }
+          return;
+        }
+
+        if (command.type === 'catalog-sync') {
+          let reply;
+          try {
+            reply = await executeCatalogSyncCommand({
+              command,
+              actorUserId: event.source?.userId,
+              idempotencyKey: event.webhookEventId ? `line-${event.webhookEventId}` : ''
+            }, { repository, catalogSyncRunner });
+          } catch (error) {
+            if (error instanceof AppError && error.status < 500) {
+              reply = error.message;
+            } else {
+              console.error('FlyingMouse catalog command failed', {
+                name: error?.name ?? 'Error',
+                code: Number.isInteger(error?.status) ? error.status : 'unknown'
+              });
+              reply = '飛鼠商品同步服務暫時無法使用，請稍後重試。';
+            }
+          }
+          if (event.replyToken) await messenger.replyText(event.replyToken, reply);
           return;
         }
 
@@ -73,7 +136,7 @@ export function createWebhookHandler({ config, repository, messenger }) {
               idempotencyKey: event.webhookEventId ? `line-${event.webhookEventId}` : ''
             }, { repository, messenger });
           } catch (error) {
-            if (!Number.isInteger(error.status) || error.status >= 500) throw error;
+            if (!(error instanceof AppError) || error.status >= 500) throw error;
             reply = error.message;
           }
           if (event.replyToken) await messenger.replyText(event.replyToken, reply);
@@ -95,15 +158,31 @@ export function createWebhookHandler({ config, repository, messenger }) {
               idempotencyKey: event.webhookEventId ? `line-${event.webhookEventId}` : ''
             }, { repository, messenger });
           } catch (error) {
-            if (!Number.isInteger(error.status) || error.status >= 500) throw error;
+            if (!(error instanceof AppError) || error.status >= 500) throw error;
             reply = error.message;
           }
           if (event.replyToken) await messenger.replyText(event.replyToken, reply);
           return;
         }
 
+        // 這一段是「其餘指令」的收尾，會直接當成補貨狀態查詢。
+        // 新指令一定要在上面明確分派，否則會掉進這裡回出一張狀態卡片。
+        if (command.type === 'inventory') {
+          let reply;
+          try {
+            reply = await executeInventoryCommand({ command }, { dashboardReader });
+          } catch (error) {
+            if (!(error instanceof AppError) || error.status >= 500) throw error;
+            reply = error.message;
+          }
+          if (event.replyToken) await messenger.replyText(event.replyToken, reply);
+          return;
+        }
+
+        if (command.type !== 'status') return;
+
         const rows = await repository.listRequestRows();
-        const result = summarizeRequests(rows, command.status);
+        const result = summarizeRequests(rows, command.status, 10, command.page);
         if (event.replyToken) {
           await messenger.replyStatusCards(event.replyToken, command.status, result);
         }

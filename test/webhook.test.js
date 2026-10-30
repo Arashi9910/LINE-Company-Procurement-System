@@ -50,6 +50,11 @@ async function start(t, calls) {
           idempotentReplay: false
         };
       },
+      async reserveCatalogSyncTrigger(input) {
+        calls.catalogReservations ??= [];
+        calls.catalogReservations.push(input);
+        return calls.catalogReservation ?? { idempotentReplay: false };
+      },
       async listAvailableSkus() { return []; },
       async listOpenRequests() { return []; }
     },
@@ -67,7 +72,22 @@ async function start(t, calls) {
         return { displayName: calls.profileNames?.[userId] ?? 'LINE 成員' };
       },
       async pushRequestCreated() {}
-    }
+    },
+    catalogSyncRunner: {
+      async status() {
+        calls.catalogStatusReads = (calls.catalogStatusReads ?? 0) + 1;
+        if (calls.catalogStatusError) throw calls.catalogStatusError;
+        return calls.catalogStatus ?? { state: 'never' };
+      },
+      async start() {
+        calls.catalogStarts = (calls.catalogStarts ?? 0) + 1;
+        if (calls.catalogStartError) throw calls.catalogStartError;
+        return calls.catalogStartResult ?? {
+          state: 'accepted', operation: 'operation-123', execution: 'execution-123'
+        };
+      }
+    },
+    dashboardReader: calls.dashboardReader
   });
   const server = app.listen(0);
   t.after(() => server.close());
@@ -162,6 +182,9 @@ test('webhook replies with actionable request cards in the company group', async
     filter: '未結案',
     result: {
       total: 1,
+      page: 1,
+      pageSize: 10,
+      totalPages: 1,
       items: [{
         requestId: 'RQ-1',
         requestedAt: 2,
@@ -172,6 +195,42 @@ test('webhook replies with actionable request cards in the company group', async
       }]
     }
   }]);
+});
+
+test('webhook returns the requested status-card page', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    rows: Array.from({ length: 12 }, (_, index) => ({
+      requestId: `RQ-${index + 1}`,
+      requestedAt: index + 1,
+      applicant: '小明',
+      displayName: `商品 ${index + 1}`,
+      status: '待確認'
+    }))
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    replyToken: 'reply-status-page-2',
+    source: { type: 'group', groupId: 'COMPANY' },
+    message: { type: 'text', text: '查待確認 2' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-line-signature': sign(body, 'line-secret')
+    },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.statusCards[0].result.page, 2);
+  assert.equal(calls.statusCards[0].result.totalPages, 2);
+  assert.deepEqual(
+    calls.statusCards[0].result.items.map((item) => item.requestId),
+    ['RQ-2', 'RQ-1']
+  );
 });
 
 test('webhook rejects a command from another group without reading requests', async (t) => {
@@ -286,6 +345,43 @@ test('webhook lets the original applicant cancel a pending request', async (t) =
   assert.match(calls.texts[0].text, /操作人：小明/);
 });
 
+test('webhook lets purchasing staff cancel an ordered request', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    authorizations: { BUYER: { role: '採購確認', enabled: true, exists: true } },
+    cancellationContext: {
+      requestId: 'RQ-20260715-123456-abcd',
+      requesterUserId: 'OWNER',
+      groupId: 'COMPANY',
+      items: [{ sku: 'SKU-A', status: '已下單' }]
+    },
+    profileNames: { BUYER: '採購小美' }
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: 'event-cancel-ordered-123456',
+    replyToken: 'reply-cancel-ordered',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'BUYER' },
+    message: { type: 'text', text: '取消採購 RQ-20260715-123456-abcd' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.cancelWrites, [{
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-20260715-123456-abcd',
+    idempotencyKey: 'line-event-cancel-ordered-123456',
+    mode: 'ordered'
+  }]);
+  assert.match(calls.texts[0].text, /已取消採購單 RQ-20260715-123456-abcd/);
+  assert.match(calls.texts[0].text, /操作人：採購小美/);
+});
+
 test('webhook refuses a cancellation event without an idempotency identifier', async (t) => {
   const calls = { groups: [], links: [], texts: [] };
   const baseUrl = await start(t, calls);
@@ -304,4 +400,326 @@ test('webhook refuses a cancellation event without an idempotency identifier', a
   assert.equal(response.status, 200);
   assert.equal(calls.cancelWrites, undefined);
   assert.match(calls.texts[0].text, /缺少識別碼/);
+});
+
+test('webhook lets an administrator start FlyingMouse catalog sync once', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    authorizations: { ADMIN: { role: '管理員', enabled: true, exists: true } }
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: 'event-catalog-sync-123',
+    replyToken: 'reply-catalog-sync',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'ADMIN' },
+    message: { type: 'text', text: '同步飛鼠商品' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.catalogReservations, [{
+    actor: { userId: 'ADMIN' },
+    idempotencyKey: 'line-event-catalog-sync-123'
+  }]);
+  assert.equal(calls.catalogStarts, 1);
+  assert.match(calls.texts[0].text, /已受理飛鼠商品同步/);
+  assert.match(calls.texts[0].text, /execution-123/);
+});
+
+test('webhook lets an administrator query FlyingMouse catalog sync status', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    authorizations: { ADMIN: { role: '管理員', enabled: true, exists: true } },
+    catalogStatus: {
+      state: 'succeeded', execution: 'execution-456', completedAt: '2026-07-22T10:01:00Z'
+    }
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    replyToken: 'reply-catalog-status',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'ADMIN' },
+    message: { type: 'text', text: '查飛鼠同步' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.catalogStatusReads, 1);
+  assert.equal(calls.catalogStarts, undefined);
+  assert.match(calls.texts[0].text, /同步成功/);
+  assert.match(calls.texts[0].text, /execution-456/);
+});
+
+test('webhook returns a safe reply when the FlyingMouse catalog job API fails', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    authorizations: { ADMIN: { role: '管理員', enabled: true, exists: true } },
+    catalogStartError: Object.assign(new Error('private project id and API detail'), { status: 403 })
+  };
+  const baseUrl = await start(t, calls);
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: 'event-catalog-sync-failed',
+    replyToken: 'reply-catalog-failed',
+    source: { type: 'group', groupId: 'COMPANY', userId: 'ADMIN' },
+    message: { type: 'text', text: '同步飛鼠商品' }
+  }] });
+  const response = await fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+
+  assert.equal(response.status, 200);
+  assert.match(calls.texts[0].text, /同步服務暫時無法使用/);
+  assert.doesNotMatch(calls.texts[0].text, /private project id/);
+});
+
+function dashboardFixture(overrides = {}) {
+  return {
+    syncStatus: { status: '正常', lastSuccessAt: '2026-10-29 17:00:00', lastAttemptAt: '2026-10-29 17:00:00', message: '' },
+    rows: [
+      {
+        sku: 'SKU-A', displayName: '雨傘 大', flyingmouseStock: 7, processing: 3, preparing: 0,
+        unshipped: 3, onOrder: 0, preorderAllowance: 10, safetyStock: 0,
+        estimatedStock: 0, gap: 3, status: '要叫貨', note: '', updatedAt: '2026-10-29 17:00:00'
+      },
+      {
+        sku: 'SKU-B', displayName: '雨衣', flyingmouseStock: 20, processing: 0, preparing: 0,
+        unshipped: 0, onOrder: 0, preorderAllowance: 0, safetyStock: 0,
+        estimatedStock: 20, gap: -20, status: '正常', note: '', updatedAt: '2026-10-29 17:00:00'
+      }
+    ],
+    ...overrides
+  };
+}
+
+async function sendText(baseUrl, text) {
+  const body = JSON.stringify({ events: [{
+    type: 'message',
+    webhookEventId: `event-${encodeURIComponent(text)}`,
+    replyToken: `reply-${encodeURIComponent(text)}`,
+    source: { type: 'group', groupId: 'COMPANY', userId: 'U1' },
+    message: { type: 'text', text }
+  }] });
+  return fetch(`${baseUrl}/webhook`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-line-signature': sign(body, 'line-secret') },
+    body
+  });
+}
+
+test('webhook answers 查缺貨 from the dashboard, not the status cards', async (t) => {
+  const calls = { groups: [], links: [], texts: [], dashboardReader: async () => dashboardFixture() };
+  const baseUrl = await start(t, calls);
+
+  const response = await sendText(baseUrl, '查缺貨');
+
+  assert.equal(response.status, 200);
+  // 計畫步驟 6 的重點：沒有明確分派的話會掉進 listRequestRows → 回出補貨狀態卡片。
+  assert.equal(calls.statusReads, undefined, '不該去讀補貨追蹤');
+  assert.equal(calls.statusCards, undefined, '不該回狀態卡片');
+  assert.match(calls.texts[0].text, /要叫貨 1 個/);
+  assert.match(calls.texts[0].text, /雨傘 大/);
+  assert.match(calls.texts[0].text, /缺口 3/);
+});
+
+test('webhook answers 查庫存 with the four numbers for a keyword', async (t) => {
+  const calls = { groups: [], links: [], texts: [], dashboardReader: async () => dashboardFixture() };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查庫存 雨衣');
+
+  assert.equal(calls.statusCards, undefined);
+  const reply = calls.texts[0].text;
+  assert.match(reply, /SKU SKU-B/);
+  assert.match(reply, /飛鼠 20/);
+  assert.equal(reply.includes('雨傘'), false, '關鍵字不符的不該出現');
+});
+
+test('webhook marks the reply as stale while the dashboard sync is failing', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => dashboardFixture({
+      syncStatus: {
+        status: '同步失敗',
+        lastSuccessAt: '2026-10-29 16:00:00',
+        lastAttemptAt: '2026-10-29 17:00:00',
+        message: '飛鼠登入逾時'
+      }
+    })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  // 規格第 5 節：同步失敗期間要標明資料是上一次成功的結果與時間。
+  assert.match(calls.texts[0].text, /同步失敗/);
+  assert.match(calls.texts[0].text, /2026-10-29 16:00:00/);
+});
+
+test('webhook explains itself when the dashboard cannot be read', async (t) => {
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => { throw new Error('Unable to parse range: 庫存看板'); }
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  // 不可以把原始錯誤丟給群組。
+  assert.match(calls.texts[0].text, /讀不到庫存看板/);
+  assert.equal(calls.texts[0].text.includes('Unable to parse range'), false);
+});
+
+test('webhook says the dashboard is off when no reader is wired', async (t) => {
+  const calls = { groups: [], links: [], texts: [] };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  assert.match(calls.texts[0].text, /尚未啟用/);
+  assert.equal(calls.statusCards, undefined);
+});
+
+test('查庫存 without a keyword asks for one instead of listing everything', async (t) => {
+  const calls = { groups: [], links: [], texts: [], dashboardReader: async () => dashboardFixture() };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查庫存');
+
+  assert.match(calls.texts[0].text, /請輸入要查的 SKU 或關鍵字/);
+});
+
+test('查缺貨 always shows the SKU, even when two names look identical', async (t) => {
+  const sameName = '超長商品名稱超長商品名稱超長商品名稱超長商品名稱';
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => ({
+      syncStatus: { status: '正常', lastSuccessAt: '2026-10-29 17:00:00', lastAttemptAt: '', message: '' },
+      rows: [
+        { sku: 'A-紅', displayName: `${sameName}紅色`, flyingmouseStock: 1, processing: 0, preparing: 0,
+          unshipped: 0, onOrder: 0, preorderAllowance: 0, safetyStock: 0, estimatedStock: 1,
+          gap: 5, status: '要叫貨', note: '', updatedAt: '' },
+        { sku: 'A-藍', displayName: `${sameName}藍色`, flyingmouseStock: 1, processing: 0, preparing: 0,
+          unshipped: 0, onOrder: 0, preorderAllowance: 0, safetyStock: 0, estimatedStock: 1,
+          gap: 3, status: '要叫貨', note: '', updatedAt: '' }
+      ]
+    })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  // 名稱截短後兩筆長得一樣，只有 SKU 分得出要補哪個規格。
+  const reply = calls.texts[0].text;
+  assert.match(reply, /SKU A-紅/);
+  assert.match(reply, /SKU A-藍/);
+});
+
+test('查缺貨 hides SKUs that have not moved in 30 days, and says how many', async (t) => {
+  const base = dashboardFixture();
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => ({
+      ...base,
+      rows: [
+        ...base.rows,
+        { sku: 'SKU-TEST', displayName: '新上架測試品', flyingmouseStock: 7, processing: 0,
+          preparing: 0, unshipped: 0, onOrder: 0, preorderAllowance: 10, safetyStock: 0,
+          estimatedStock: 0, gap: 3, status: '要叫貨', note: '', updatedAt: '2026-10-29 17:00:00' }
+      ],
+      // 新品上架一律先填預購額度 10，賣出第一筆就有缺口——但那是測試品。
+      // updatedAt 要跟看板那一輪一致，否則會被當成舊清單而不篩。
+      movement: {
+        skus: new Set(['SKU-A']),
+        since: '2026-09-29 00:00:00',
+        updatedAt: '2026-10-29 17:00:00',
+        initialized: true
+      }
+    })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  const reply = calls.texts[0].text;
+  assert.match(reply, /要叫貨 1 個/);
+  assert.match(reply, /SKU SKU-A/);
+  assert.equal(reply.includes('SKU-TEST'), false, '沒在動的不該列出來');
+  assert.match(reply, /另有 1 個有缺口但近 30 天沒有訂單/);
+});
+
+test('查缺貨 falls back to showing everything when the movement list is unreadable', async (t) => {
+  const base = dashboardFixture();
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => ({ ...base, movement: null })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  // 篩子壞了不該讓人連缺貨都查不到。
+  assert.match(calls.texts[0].text, /要叫貨 1 個/);
+  assert.equal(calls.texts[0].text.includes('近 30 天沒有訂單'), false);
+});
+
+test('查缺貨 ignores a movement list left over from an older run', async (t) => {
+  const base = dashboardFixture();
+  const calls = {
+    groups: [], links: [], texts: [],
+    dashboardReader: async () => ({
+      ...base,
+      rows: [
+        ...base.rows,
+        { sku: 'SKU-NEW', displayName: '今天才開始出單', flyingmouseStock: 7, processing: 0,
+          preparing: 0, unshipped: 0, onOrder: 0, preorderAllowance: 10, safetyStock: 0,
+          estimatedStock: 0, gap: 3, status: '要叫貨', note: '', updatedAt: '2026-10-29 17:00:00' }
+      ],
+      // 看板是 17:00 那輪的，動銷清單卻停在昨天——代表昨天之後動銷那一步都失敗了。
+      movement: {
+        skus: new Set(['SKU-A']),
+        since: '2026-09-28 00:00:00',
+        updatedAt: '2026-10-28 17:00:00',
+        initialized: true
+      }
+    })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  // 拿舊清單去篩，會把今天才開始出單的商品誤判成「沒在動」而藏起來。
+  const reply = calls.texts[0].text;
+  assert.match(reply, /要叫貨 2 個/);
+  assert.match(reply, /SKU-NEW/);
+  assert.equal(reply.includes('近 30 天沒有訂單'), false);
+});
+
+test('查缺貨 does not filter against a freshly initialised empty movement sheet', async (t) => {
+  const base = dashboardFixture();
+  const calls = {
+    groups: [], links: [], texts: [],
+    // 只有表頭的分頁代表「建好了但還沒寫過」，不是「這 30 天沒人買任何東西」。
+    dashboardReader: async () => ({
+      ...base,
+      movement: { skus: new Set(), since: '', updatedAt: '', initialized: false }
+    })
+  };
+  const baseUrl = await start(t, calls);
+
+  await sendText(baseUrl, '查缺貨');
+
+  assert.match(calls.texts[0].text, /要叫貨 1 個/);
+  assert.equal(calls.texts[0].text.includes('近 30 天沒有訂單'), false);
 });

@@ -115,6 +115,272 @@ test('processWritebackQueue prepares, applies, verifies, and completes one live 
   ]);
 });
 
+test('a retry after a successful PUT reuses the saved target instead of adding again', async () => {
+  // PUT 已經把 10 加到 12，但驗證 GET 掛掉，事件被退避成「等待重試」。
+  // 下一輪若依狀態重新 prepare，就會從 12 再加 2 變成 14，等於重複入庫。
+  const waiting = transitionWritebackEvent(
+    transitionWritebackEvent(queueEvent(), {
+      status: '已準備',
+      attempts: 1,
+      partId: 933,
+      beforeStock: 10,
+      targetStock: 12,
+      processedAt: '2026-07-16 10:05:00'
+    }),
+    {
+      status: '等待重試',
+      attempts: 1,
+      nextRetryAt: '2026-07-16 10:10:00',
+      lastError: 'NETWORK_ERROR: 驗證 GET 失敗',
+      processedAt: '2026-07-16 10:05:00'
+    }
+  );
+  const state = sheetsFor(waiting);
+  const puts = [];
+  // 有狀態的假飛鼠：PUT 會真的改掉庫存，重複入庫才看得出來。
+  let stock = 12;
+  const client = {
+    async getBySku() { return part(stock); },
+    async putPart(id, payload) {
+      puts.push(payload.stock);
+      stock = payload.stock;
+    }
+  };
+
+  const result = await processWritebackQueue({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    withClient: async (operation) => operation(client),
+    mode: 'live',
+    now: () => new Date('2026-07-16T02:15:00Z'),
+    logger: silentLogger
+  });
+
+  // 目前庫存已經等於保存的 target，照規格只補登完成，不再 PUT。
+  assert.deepEqual(result, {
+    mode: 'live', found: 1, completed: 1, dryRun: 0, retryScheduled: 0, manualReview: 0, failed: 0
+  });
+  assert.deepEqual(puts, []);
+  assert.equal(stock, 12);
+});
+
+test('a retry whose PUT never landed resends the same target, not a new one', async () => {
+  const waiting = transitionWritebackEvent(
+    transitionWritebackEvent(queueEvent(), {
+      status: '已準備',
+      attempts: 1,
+      partId: 933,
+      beforeStock: 10,
+      targetStock: 12,
+      processedAt: '2026-07-16 10:05:00'
+    }),
+    {
+      status: '等待重試',
+      attempts: 1,
+      nextRetryAt: '2026-07-16 10:10:00',
+      lastError: 'NETWORK_ERROR: PUT 失敗',
+      processedAt: '2026-07-16 10:05:00'
+    }
+  );
+  const state = sheetsFor(waiting);
+  const reads = [part(10), part(12)];
+  const puts = [];
+  const client = {
+    async getBySku() { return reads.shift(); },
+    async putPart(id, payload) { puts.push(payload.stock); }
+  };
+
+  const result = await processWritebackQueue({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    withClient: async (operation) => operation(client),
+    mode: 'live',
+    now: () => new Date('2026-07-16T02:15:00Z'),
+    logger: silentLogger
+  });
+
+  assert.equal(result.completed, 1);
+  assert.deepEqual(puts, [12]);
+});
+
+test('a retry with a saved target still refuses to PUT when SKU主檔 is broken', async () => {
+  const waiting = transitionWritebackEvent(
+    transitionWritebackEvent(queueEvent(), {
+      status: '已準備',
+      attempts: 1,
+      partId: 933,
+      beforeStock: 10,
+      targetStock: 12,
+      processedAt: '2026-07-16 10:05:00'
+    }),
+    {
+      status: '等待重試',
+      attempts: 1,
+      nextRetryAt: '2026-07-16 10:10:00',
+      lastError: 'NETWORK_ERROR: PUT 失敗',
+      processedAt: '2026-07-16 10:05:00'
+    }
+  );
+
+  // 退避期間主檔被改壞的三種情況。規格第 5 節：這些情況一律不得 PUT。
+  const brokenMains = {
+    缺列: [MAIN_HEADERS.slice(0, 5), ['SKU-B', '商品 B', '', '', 1]],
+    重複: [
+      MAIN_HEADERS.slice(0, 5),
+      ['SKU-A', '商品 A', '', '', 10],
+      ['SKU-A', '商品 A 複製', '', '', 10]
+    ],
+    表頭不符: [['貨號', '商品名稱', '規格 1', '規格 2', '庫存'], ['SKU-A', '商品 A', '', '', 10]]
+  };
+
+  for (const [label, mainValues] of Object.entries(brokenMains)) {
+    let puts = 0;
+    const sheets = {
+      spreadsheets: {
+        values: {
+          async get({ range }) {
+            if (range.includes('飛鼠庫存回寫')) {
+              return { data: { values: [WRITEBACK_HEADERS, writebackEventRow(waiting)] } };
+            }
+            if (range.includes('SKU主檔')) return { data: { values: mainValues } };
+            throw new Error(`unexpected range: ${range}`);
+          },
+          async update() { return { data: {} }; },
+          async batchUpdate() { return { data: {} }; }
+        }
+      }
+    };
+    const client = {
+      async getBySku() { return part(10); },
+      async putPart() { puts += 1; }
+    };
+
+    const result = await processWritebackQueue({
+      sheets,
+      spreadsheetId: 'sheet-123',
+      withClient: async (operation) => operation(client),
+      mode: 'live',
+      now: () => new Date('2026-07-16T02:15:00Z'),
+      logger: silentLogger
+    });
+
+    assert.equal(puts, 0, `${label} 不該送出 PUT`);
+    assert.equal(result.completed, 0, `${label} 不該完成`);
+    assert.equal(result.manualReview, 1, `${label} 應轉人工確認`);
+  }
+});
+
+test('a failing retry never rolls SKU主檔 back to the saved beforeStock', async () => {
+  // PUT 已經把 −5 加到 0，驗證 GET 失敗；期間目錄同步已把主檔寫成 0。
+  const waiting = transitionWritebackEvent(
+    transitionWritebackEvent(queueEvent({ receivedQuantity: 5 }), {
+      status: '已準備',
+      attempts: 1,
+      partId: 933,
+      beforeStock: -5,
+      targetStock: 0,
+      processedAt: '2026-07-16 10:05:00'
+    }),
+    {
+      status: '等待重試',
+      attempts: 1,
+      nextRetryAt: '2026-07-16 10:10:00',
+      lastError: 'NETWORK_ERROR: 驗證 GET 失敗',
+      processedAt: '2026-07-16 10:05:00'
+    }
+  );
+  const mainWrites = [];
+  const sheets = {
+    spreadsheets: {
+      values: {
+        async get({ range }) {
+          if (range.includes('飛鼠庫存回寫')) {
+            return { data: { values: [WRITEBACK_HEADERS, writebackEventRow(waiting)] } };
+          }
+          if (range.includes('SKU主檔')) {
+            return { data: { values: [MAIN_HEADERS.slice(0, 5), ['SKU-A', '商品 A', '', '', 0]] } };
+          }
+          throw new Error(`unexpected range: ${range}`);
+        },
+        async update() { return { data: {} }; },
+        async batchUpdate(request) {
+          for (const entry of request.requestBody.data ?? []) {
+            if (String(entry.range).includes('SKU主檔')) mainWrites.push(entry.values[0][0]);
+          }
+          return { data: {} };
+        }
+      }
+    }
+  };
+  const client = {
+    async getBySku() {
+      throw new FlyingMouseWritebackError('暫時無法讀取飛鼠', {
+        code: 'NETWORK_ERROR',
+        retryable: true
+      });
+    },
+    async putPart() { throw new Error('不該送出 PUT'); }
+  };
+
+  const result = await processWritebackQueue({
+    sheets,
+    spreadsheetId: 'sheet-123',
+    withClient: async (operation) => operation(client),
+    mode: 'live',
+    now: () => new Date('2026-07-16T02:15:00Z'),
+    logger: silentLogger
+  });
+
+  assert.equal(result.retryScheduled, 1);
+  // 重送只檢查主檔，不可把快照倒寫回 −5；否則這輪失敗後主檔就一直停在舊值。
+  assert.deepEqual(mainWrites, []);
+});
+
+test('a retry whose prepared columns were partly cleared never recomputes', async () => {
+  // I/J/K 是同一次 batch 寫進去的，程式不會產生只有一半的列；但人改得到那張表。
+  // 少一欄就不能當成「還沒準備」去重算——PUT 已經把 10 加到 12，重算會再 PUT 14。
+  const prepared = transitionWritebackEvent(queueEvent(), {
+    status: '已準備',
+    attempts: 1,
+    partId: 933,
+    beforeStock: 10,
+    targetStock: 12,
+    processedAt: '2026-07-16 10:05:00'
+  });
+
+  for (const missing of ['partId', 'beforeStock', 'targetStock']) {
+    const waiting = {
+      ...transitionWritebackEvent(prepared, {
+        status: '等待重試',
+        attempts: 1,
+        nextRetryAt: '2026-07-16 10:10:00',
+        lastError: 'NETWORK_ERROR: 驗證 GET 失敗',
+        processedAt: '2026-07-16 10:05:00'
+      }),
+      [missing]: ''
+    };
+    const state = sheetsFor(waiting);
+    let puts = 0;
+    const client = {
+      async getBySku() { return part(12); },
+      async putPart() { puts += 1; }
+    };
+
+    const result = await processWritebackQueue({
+      sheets: state.sheets,
+      spreadsheetId: 'sheet-123',
+      withClient: async (operation) => operation(client),
+      mode: 'live',
+      now: () => new Date('2026-07-16T02:15:00Z'),
+      logger: silentLogger
+    });
+
+    assert.equal(puts, 0, `缺少 ${missing} 時不該送出 PUT`);
+    assert.equal(result.manualReview, 1, `缺少 ${missing} 時應轉人工確認`);
+    assert.equal(result.retryScheduled, 0, `缺少 ${missing} 時不該再排重試`);
+  }
+});
+
 test('processWritebackQueue dry-run performs no PUT and no Sheet writes', async () => {
   const state = sheetsFor(queueEvent());
   const reads = [part(10), part(10)];

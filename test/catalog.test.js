@@ -4,6 +4,7 @@ import {
   cartTotals,
   filterCatalog,
   groupCatalog,
+  parseQuantityInput,
   selectableCatalogItems,
   variantLabel,
   visibleVariants
@@ -53,5 +54,14 @@ test('variantLabel and cartTotals provide stable UI values', () => {
 test('selectableCatalogItems excludes SKUs already present in an order', () => {
   const result = selectableCatalogItems(items, new Set(['SKU-RED', 'SKU-CUP']));
   assert.deepEqual(result.map((item) => item.sku), ['SKU-BLUE']);
+});
+
+test('parseQuantityInput accepts only whole numbers within the allowed range', () => {
+  assert.equal(parseQuantityInput('0', 999999), 0);
+  assert.equal(parseQuantityInput(' 25 ', 999999), 25);
+  assert.equal(parseQuantityInput('999999', 999999), 999999);
+  for (const invalid of ['', '-1', '1.5', '1000000', 'abc']) {
+    assert.equal(parseQuantityInput(invalid, 999999), null);
+  }
 });
 

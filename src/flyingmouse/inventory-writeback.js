@@ -25,15 +25,20 @@ function normalizeText(value) {
   return String(value ?? '').trim();
 }
 
-function safeNonNegativeInteger(value, label) {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) {
-    throw new FlyingMouseWritebackError(`${label}必須是非負整數且在安全範圍內`, {
-      code: 'INVALID_PART',
-      manualReview: true
-    });
+// 飛鼠超賣時庫存是負的，那是真實值，不可擋也不可夾。
+// 另外 Number() 會把 null、''、false、[] 都變成 0，拿來解析庫存等於把「欄位不見了」
+// 當成「庫存 0」，接著就會以 0 + 到貨量 PUT 回去，把真正的庫存抹掉。
+function safeStockInteger(value, label) {
+  if (typeof value === 'number') {
+    if (Number.isSafeInteger(value)) return value;
+  } else if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const number = Number(value.trim());
+    if (Number.isSafeInteger(number)) return number;
   }
-  return number;
+  throw new FlyingMouseWritebackError(`${label}必須是整數且在安全範圍內`, {
+    code: 'INVALID_PART',
+    manualReview: true
+  });
 }
 
 function optionalString(value, label) {
@@ -84,13 +89,13 @@ function normalizePart(raw, expectedSku) {
     spec_x: optionalString(raw.spec_x, 'spec_x'),
     gtin: optionalString(raw.gtin, 'gtin'),
     storage_location: optionalString(raw.storage_location, 'storage_location'),
-    stock: safeNonNegativeInteger(raw.stock, '飛鼠庫存'),
+    stock: safeStockInteger(raw.stock, '飛鼠庫存'),
     op_remark: optionalString(raw.op_remark, 'op_remark')
   });
 }
 
 export function expectedStock(currentStock, receivedQuantity) {
-  const current = safeNonNegativeInteger(currentStock, '目前庫存');
+  const current = safeStockInteger(currentStock, '目前庫存');
   const increment = Number(receivedQuantity);
   if (!Number.isSafeInteger(increment) || increment < 1) {
     throw new FlyingMouseWritebackError('本次到貨量必須是正整數', {
@@ -105,12 +110,28 @@ export function expectedStock(currentStock, receivedQuantity) {
       manualReview: true
     });
   }
+  // 飛鼠讀得出負庫存，但存檔會把負數正規化為 0。補貨量補不滿超賣時（例如 −5 收 2 件），
+  // 送出 −3 會被它存成 0，等於無聲抹掉 5 個超賣帳，而且驗證 GET 一定對不上。
+  // 這種情況只能交給人處理，不可自動修改。
+  if (result < 0) {
+    throw new FlyingMouseWritebackError(
+      `本次到貨量補不滿超賣：${current} 加 ${increment} 仍是 ${result}，飛鼠無法保存負庫存`,
+      { code: 'NEGATIVE_TARGET_STOCK', manualReview: true }
+    );
+  }
   return result;
 }
 
 export function buildPartUpdatePayload(rawPart, targetStock) {
   const part = normalizePart(rawPart, rawPart?.no);
-  const stock = safeNonNegativeInteger(targetStock, '目標庫存');
+  const stock = safeStockInteger(targetStock, '目標庫存');
+  // 最後一道：不論上游怎麼算，負數都不會離開這個函式進到 PUT。
+  if (stock < 0) {
+    throw new FlyingMouseWritebackError(`目標庫存 ${stock} 是負數，飛鼠會存成 0，不可送出`, {
+      code: 'NEGATIVE_TARGET_STOCK',
+      manualReview: true
+    });
+  }
   const payload = { ...part, stock };
   return Object.freeze(Object.fromEntries(PART_UPDATE_FIELDS.map((field) => [field, payload[field]])));
 }
@@ -148,8 +169,8 @@ export async function applyPreparedFlyingMouseWriteback({ client, event, mode = 
   if (!['dry-run', 'live'].includes(mode)) throw new Error('飛鼠庫存回寫模式不正確');
   const { sku, receivedQuantity } = validateEventIdentity(event);
   const partId = Number(event?.partId);
-  const beforeStock = safeNonNegativeInteger(event?.beforeStock, '準備階段庫存');
-  const targetStock = safeNonNegativeInteger(event?.targetStock, '準備階段目標庫存');
+  const beforeStock = safeStockInteger(event?.beforeStock, '準備階段庫存');
+  const targetStock = safeStockInteger(event?.targetStock, '準備階段目標庫存');
   if (!Number.isSafeInteger(partId) || partId < 1) throw new Error('已準備事件缺少飛鼠貨品 ID');
   if (targetStock !== expectedStock(beforeStock, receivedQuantity)) {
     throw new FlyingMouseWritebackError('已準備事件的目標庫存不一致', {

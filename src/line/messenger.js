@@ -5,7 +5,8 @@ const STATUS_ACTIONS = new Map([
   ['已下單', { label: '登記到貨', mode: 'receipt' }],
   ['部分到貨', { label: '繼續登記', mode: 'receipt' }],
   ['已完成', { label: '查看明細', mode: 'detail' }],
-  ['取消', { label: '查看明細', mode: 'detail' }]
+  ['取消', { label: '查看明細', mode: 'detail' }],
+  ['已轉單', { label: '查看轉單', mode: 'detail' }]
 ]);
 
 const STATUS_COLORS = new Map([
@@ -13,7 +14,18 @@ const STATUS_COLORS = new Map([
   ['已下單', '#0066cc'],
   ['部分到貨', '#7a4db3'],
   ['已完成', '#16833b'],
-  ['取消', '#777777']
+  ['取消', '#777777'],
+  ['已轉單', '#547080']
+]);
+
+const STATUS_COMMANDS = new Map([
+  ['未結案', '查未結案'],
+  ['待確認', '查待確認'],
+  ['已下單', '查已下單'],
+  ['部分到貨', '查部分到貨'],
+  ['已完成', '查已完成'],
+  ['取消', '查取消'],
+  ['已轉單', '查已轉單']
 ]);
 
 function workflowUrl(liffId, mode, requestId) {
@@ -96,19 +108,41 @@ function statusBubble(liffId, item) {
   };
 }
 
+function statusPageQuickReply(filter, page, totalPages) {
+  const command = STATUS_COMMANDS.get(filter);
+  if (!command || totalPages <= 1) return undefined;
+
+  const pageAction = (label, targetPage) => ({
+    type: 'action',
+    action: {
+      type: 'message',
+      label,
+      text: `${command} ${targetPage}`
+    }
+  });
+  const items = [];
+  if (page > 1) items.push(pageAction('上一頁', page - 1));
+  if (page < totalPages) items.push(pageAction('下一頁', page + 1));
+  return items.length > 0 ? { items } : undefined;
+}
+
 export function buildStatusReply(liffId, filter, result) {
   if (result.total === 0) {
     return { type: 'text', text: `【${filter}】目前沒有符合的補貨單。` };
   }
   const items = result.items.slice(0, 10);
-  const shownNote = result.total > items.length ? `（顯示最近 ${items.length} 筆）` : '';
+  const pageSize = result.pageSize ?? 10;
+  const totalPages = result.totalPages ?? Math.ceil(result.total / pageSize);
+  const page = Math.min(Math.max(result.page ?? 1, 1), Math.max(totalPages, 1));
+  const quickReply = statusPageQuickReply(filter, page, totalPages);
   return {
     type: 'flex',
-    altText: `【${filter}】共 ${result.total} 筆補貨單${shownNote}`,
+    altText: `【${filter}】共 ${result.total} 筆補貨單${totalPages > 1 ? `（第 ${page}/${totalPages} 頁）` : ''}`,
     contents: {
       type: 'carousel',
       contents: items.map((item) => statusBubble(liffId, item))
-    }
+    },
+    ...(quickReply ? { quickReply } : {})
   };
 }
 
@@ -117,6 +151,21 @@ export function createLineMessenger({ channelAccessToken, liffId }, dependencies
   const liffWorkflowUrl = (mode, requestId) => workflowUrl(liffId, mode, requestId);
 
   return {
+    async replyTodoMessage(replyToken, message) {
+      await client.replyMessage({ replyToken, messages: [message] });
+    },
+
+    async pushTodoMessage(groupId, message, retryKey) {
+      try {
+        await client.pushMessage({ to: groupId, messages: [message] }, retryKey);
+      } catch (error) {
+        const accepted = error.headers?.get?.('x-line-accepted-request-id')
+          ?? error.headers?.['x-line-accepted-request-id'];
+        if (error.status === 409 && accepted) return;
+        throw error;
+      }
+    },
+
     async getGroupMemberProfile(groupId, userId) {
       return client.getGroupMemberProfile(groupId, userId);
     },
@@ -217,9 +266,19 @@ export function createLineMessenger({ channelAccessToken, liffId }, dependencies
           text: [
             `${allComplete ? '補貨單已完成' : '已登記到貨'} ${result.requestId}`,
             `操作人：${actor.displayName}`,
-            ...lines,
-            allComplete ? '' : `仍未到齊，可再次開啟：${liffWorkflowUrl('receipt', result.requestId)}`
+            ...lines
           ].filter(Boolean).join('\n')
+        }, {
+          type: 'template',
+          altText: `到貨明細 ${result.requestId}`,
+          template: {
+            type: 'buttons',
+            text: `${result.requestId} ${allComplete ? '已完成到貨' : '尚有品項未到齊'}`,
+            actions: [
+              { type: 'uri', label: '查看明細', uri: liffWorkflowUrl('detail', result.requestId) },
+              ...(!allComplete ? [{ type: 'uri', label: '繼續登記到貨', uri: liffWorkflowUrl('receipt', result.requestId) }] : [])
+            ]
+          }
         }]
       });
     },

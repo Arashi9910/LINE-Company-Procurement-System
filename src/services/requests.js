@@ -22,6 +22,7 @@ export async function listSearchableSkus(repository) {
 
   return skus.map((sku) => ({
     ...sku,
+    productBindings: imagesBySku.get(sku.sku)?.productBindings ?? [],
     productId: imagesBySku.get(sku.sku)?.productId ?? '',
     productCode: imagesBySku.get(sku.sku)?.productCode ?? '',
     productName: imagesBySku.get(sku.sku)?.productName || sku.productName,

@@ -14,7 +14,7 @@
 | 已完成 | 查看明細 | `detail` |
 | 取消 | 查看明細 | `detail` |
 
-`查未結案` 可以同時包含前三種狀態，每張卡片依自身狀態顯示對應按鈕。每次最多顯示最近 10 張補貨單；沒有符合資料時維持簡短文字回覆。
+`查未結案` 可以同時包含前三種狀態，每張卡片依自身狀態顯示對應按鈕。每頁最多顯示 10 張補貨單；超過一頁時，在卡片下方顯示「上一頁／下一頁」quick reply，點擊後查詢同一狀態的相鄰頁。沒有符合資料時維持簡短文字回覆。
 
 ## 技術堆疊
 
@@ -40,7 +40,7 @@ npm.cmd run dev
 ```text
 src/line/messenger.js          # Flex Message、LIFF URI 與 LINE 回覆
 src/routes/webhook.js          # 狀態指令查詢與訊息分派
-src/services/group-commands.js # 指令解析、補貨單彙總與最近 10 筆限制
+src/services/group-commands.js # 指令解析、補貨單彙總、排序與分頁
 public/app.js                  # LIFF request/order/receipt/detail 畫面控制
 public/workflow.js             # 可測試的 LIFF 模式與明細文字邏輯
 test/                          # Messenger、Webhook、前端純函式測試
@@ -63,14 +63,15 @@ export function statusCardAction(status, requestId, workflowUrl) {
 ## 測試策略
 
 - Messenger 單元測試：驗證五種狀態的按鈕標籤、LIFF 模式與 Flex carousel 結構。
-- Webhook 整合測試：驗證六個狀態指令改呼叫互動卡片回覆，未授權群組不讀取資料。
+- 分頁單元測試：驗證第一頁、中間頁、最後一頁的導覽按鈕與超出範圍頁碼處理。
+- Webhook 整合測試：驗證六個狀態指令與分頁指令呼叫互動卡片回覆，未授權群組不讀取資料。
 - LIFF 純函式測試：驗證 `detail` 模式可用、所有品項產生唯讀數量與狀態摘要。
 - 回歸驗證：完整執行 `npm.cmd test`、`npm.cmd run lint`、`npm.cmd run build`。
 
 ## 邊界
 
-- 一定執行：保留最近 10 筆限制、使用 URI action、沿用 LIFF ID token 與既有操作權限、對使用者文字做長度限制。
-- 需要先確認：部署正式 Cloud Run、變更 Google Sheet 結構、增加查詢分頁或超過 10 筆的入口。
+- 一定執行：維持每頁 10 筆限制、使用 quick reply 進行分頁、使用 URI action 開啟單據、沿用 LIFF ID token 與既有操作權限、對使用者文字做長度限制。
+- 需要先確認：部署正式 Cloud Run、變更 Google Sheet 結構或變更每頁 10 筆上限。
 - 絕不執行：在 LINE 訊息或 URL 放入憑證、繞過下單／到貨角色驗證、讓唯讀明細提交資料。
 
 ## 成功標準
@@ -80,7 +81,8 @@ export function statusCardAction(status, requestId, workflowUrl) {
 3. 卡片按鈕依狀態開啟正確 `order`、`receipt` 或 `detail` LIFF URL。
 4. `detail` 模式顯示整張補貨單所有品項與申請／下單／到貨數量，但沒有輸入欄位與送出按鈕。
 5. 無資料、未授權群組與既有下單／到貨功能行為維持正確。
+6. 超過 10 筆時可由卡片下方切換相鄰頁，且第一頁、最後一頁不顯示無效方向。
 
 ## 未決問題
 
-無。互動與狀態對應已於 2026-07-20 由使用者確認。
+無。互動與狀態對應已於 2026-07-20 確認；查詢卡片分頁已於 2026-07-23 確認。

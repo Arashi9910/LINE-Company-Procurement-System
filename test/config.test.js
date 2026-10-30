@@ -13,6 +13,23 @@ test('loadConfig accepts a minimal test configuration', () => {
   assert.equal(config.spreadsheetId, 'sheet-123');
   assert.equal(config.lineChannelSecret, '');
   assert.equal(config.flyingmouseWritebackEnabled, false);
+  assert.equal(config.googleCloudRegion, 'asia-east1');
+  assert.equal(config.flyingmouseCatalogJobName, 'flyingmouse-catalog-sync');
+  assert.equal(config.flyingmouseWritebackJobName, 'flyingmouse-inventory-writeback');
+});
+
+test('loadConfig exposes custom FlyingMouse job locations', () => {
+  const config = loadConfig({
+    NODE_ENV: 'test',
+    SPREADSHEET_ID: 'sheet-123',
+    GOOGLE_CLOUD_REGION: 'us-central1',
+    FLYINGMOUSE_CATALOG_JOB_NAME: 'custom-catalog-job',
+    FLYINGMOUSE_WRITEBACK_JOB_NAME: 'custom-writeback-job'
+  });
+
+  assert.equal(config.googleCloudRegion, 'us-central1');
+  assert.equal(config.flyingmouseCatalogJobName, 'custom-catalog-job');
+  assert.equal(config.flyingmouseWritebackJobName, 'custom-writeback-job');
 });
 
 test('loadConfig rejects missing production secrets', () => {

@@ -19,6 +19,26 @@ test('getRequestDetails includes the current actor role', async () => {
   assert.equal(result.actorRole, '採購確認');
 });
 
+test('request images match effective SKU without changing quantities or requiring an available catalog item', async () => {
+  const repo = repository('到貨確認');
+  repo.getRequest = async () => ({ requestId: 'RQ-1', items: [
+    { sku: 'corrected', originalSku: 'old', outstandingQuantity: 3 },
+    { sku: 'missing', outstandingQuantity: 1 }
+  ] });
+  repo.listProductImages = async () => [
+    { sku: 'old', variantImageUrl: 'https://example.com/wrong.jpg' },
+    { sku: 'corrected', variantImageUrl: 'https://example.com/right.jpg', mainImageUrl: 'https://example.com/main.jpg' }
+  ];
+  const result = await getRequestDetails({ actor: { userId: 'U1' }, requestId: 'RQ-1' }, repo);
+  assert.equal(result.items[0].variantImageUrl, 'https://example.com/right.jpg');
+  assert.equal(result.items[0].outstandingQuantity, 3);
+  assert.equal(result.items[1].variantImageUrl, '');
+  repo.listProductImages = async () => { throw new Error('image sheet unavailable'); };
+  const fallback = await getRequestDetails({ actor: { userId: 'U1' }, requestId: 'RQ-1' }, repo);
+  assert.equal(fallback.items[0].outstandingQuantity, 3);
+  assert.equal(fallback.items[0].variantImageUrl, '');
+});
+
 test('confirmOrder enforces role, quantity, date and normalizes items', async () => {
   const denied = repository('申請人');
   await assert.rejects(confirmOrder({
@@ -56,14 +76,21 @@ test('confirmOrder enforces role, quantity, date and normalizes items', async ()
   }, allowed), /不可超過 999999/);
 });
 
-test('confirmReceipt permits receipt roles and rejects non-positive quantities', async () => {
+test('confirmReceipt skips zero quantities and requires at least one received item', async () => {
   const allowed = repository('到貨確認');
   await confirmReceipt({
-    actor: { userId: 'U1' }, requestId: 'RQ-1', items: [{ sku: 'A', receivedQuantity: 3 }], idempotencyKey: 'abcdefghijklmnop'
+    actor: { userId: 'U1' }, requestId: 'RQ-1', items: [
+      { sku: 'A', receivedQuantity: 3 },
+      { sku: 'B', receivedQuantity: 0 }
+    ], idempotencyKey: 'abcdefghijklmnop'
   }, allowed);
-  assert.equal(allowed.calls[0].items[0].receivedQuantity, 3);
+  assert.deepEqual(allowed.calls[0].items, [{ sku: 'A', receivedQuantity: 3 }]);
 
   await assert.rejects(confirmReceipt({
     actor: { userId: 'U1' }, requestId: 'RQ-1', items: [{ sku: 'A', receivedQuantity: 0 }], idempotencyKey: 'abcdefghijklmnop'
-  }, allowed), /正整數/);
+  }, allowed), /至少需要一個本次到貨量大於 0/);
+
+  await assert.rejects(confirmReceipt({
+    actor: { userId: 'U1' }, requestId: 'RQ-1', items: [{ sku: 'A', receivedQuantity: -1 }], idempotencyKey: 'abcdefghijklmnop'
+  }, allowed), /0 或正整數/);
 });

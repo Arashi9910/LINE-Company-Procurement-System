@@ -87,6 +87,18 @@ function optionalNonNegativeInteger(value, label, { positive = false } = {}) {
   return number;
 }
 
+// 庫存可以是負的（飛鼠超賣），但空白以外的壞值不可以被 Number() 悄悄變成 0。
+function optionalStockInteger(value, label) {
+  if (value === '' || value == null) return '';
+  if (typeof value === 'number') {
+    if (Number.isSafeInteger(value)) return value;
+  } else if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    const number = Number(value.trim());
+    if (Number.isSafeInteger(number)) return number;
+  }
+  throw new Error(`${label}必須是整數`);
+}
+
 function timestamp(value, label, { optional = false } = {}) {
   const normalized = normalizeText(value);
   if (!normalized && optional) return '';
@@ -121,8 +133,8 @@ function normalizeEvent(input) {
     attempts: nonNegativeInteger(input.attempts ?? 0, '嘗試次數'),
     nextRetryAt: timestamp(input.nextRetryAt, '下次重試時間', { optional: true }),
     partId: optionalNonNegativeInteger(input.partId, '飛鼠貨品 ID', { positive: true }),
-    beforeStock: optionalNonNegativeInteger(input.beforeStock, '更新前庫存'),
-    targetStock: optionalNonNegativeInteger(input.targetStock, '預期更新後庫存'),
+    beforeStock: optionalStockInteger(input.beforeStock, '更新前庫存'),
+    targetStock: optionalStockInteger(input.targetStock, '預期更新後庫存'),
     completedAt: timestamp(input.completedAt, '完成時間', { optional: true }),
     lastError: normalizeText(input.lastError).slice(0, 500),
     processedAt: timestamp(input.processedAt, '最後處理時間', { optional: true })
@@ -477,6 +489,22 @@ export async function prepareWritebackEvent({ sheets, spreadsheetId, event }) {
     }
   });
   return prepared;
+}
+
+// 重送已保存 before／target 的事件：主檔檢查照做（規格第 5 節，檢查不過不得 PUT），
+// 但不可把快照倒寫成歷史的 beforeStock——期間的目錄同步可能已經寫入更新的值，
+// 倒寫之後若這一輪又失敗，主檔就會一直停在舊值。成功時由 completeWritebackEvent 寫 target。
+export async function resumeWritebackEvent({ sheets, spreadsheetId, event }) {
+  if (!sheets || !spreadsheetId) throw new Error('飛鼠庫存回寫重送設定不完整');
+  const prepared = normalizeEvent(event);
+  if (prepared.status !== '已準備') throw new Error('只有已準備事件可以重送回寫');
+  await findMainSkuRow({
+    sheets,
+    spreadsheetId,
+    sku: prepared.sku,
+    operation: '重送回寫'
+  });
+  return writeWritebackEventState({ sheets, spreadsheetId, event: prepared });
 }
 
 export async function completeWritebackEvent({ sheets, spreadsheetId, event, completedAt }) {

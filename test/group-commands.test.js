@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   executeAuthorizationCommand,
   executeCancellationCommand,
+  executeCatalogSyncCommand,
   formatStatusReply,
   parseGroupCommand,
   summarizeRequests
@@ -21,6 +22,14 @@ test('parseGroupCommand recognizes and normalizes cancellation commands', () => 
     parseGroupCommand({ type: 'text', text: '取消補貨 RQ-123' }),
     { type: 'cancellation-error', reason: 'invalid-syntax' }
   );
+  assert.deepEqual(
+    parseGroupCommand({ type: 'text', text: ' 取消採購 rq-20260715-123456-ABCD ' }),
+    { type: 'cancellation', requestId: 'RQ-20260715-123456-abcd', mode: 'ordered' }
+  );
+  assert.deepEqual(
+    parseGroupCommand({ type: 'text', text: '取消採購 RQ-123' }),
+    { type: 'cancellation-error', reason: 'invalid-syntax', mode: 'ordered' }
+  );
 });
 
 test('parseGroupCommand recognizes every status query and help', () => {
@@ -31,6 +40,8 @@ test('parseGroupCommand recognizes every status query and help', () => {
     ['查部分到貨', { type: 'status', status: '部分到貨' }],
     ['查已完成', { type: 'status', status: '已完成' }],
     ['查取消', { type: 'status', status: '取消' }],
+    ['同步飛鼠商品', { type: 'catalog-sync', action: 'start' }],
+    ['查飛鼠同步', { type: 'catalog-sync', action: 'status' }],
     ['補貨指令', { type: 'help' }]
   ];
 
@@ -39,6 +50,14 @@ test('parseGroupCommand recognizes every status query and help', () => {
   }
   assert.equal(parseGroupCommand({ type: 'image' }), null);
   assert.equal(parseGroupCommand({ type: 'text', text: '今天要補貨嗎' }), null);
+});
+
+test('parseGroupCommand recognizes a status query page number', () => {
+  assert.deepEqual(
+    parseGroupCommand({ type: 'text', text: ' 查待確認 2 ' }),
+    { type: 'status', status: '待確認', page: 2 }
+  );
+  assert.equal(parseGroupCommand({ type: 'text', text: '查待確認 0' }), null);
 });
 
 test('summarizeRequests aggregates SKU rows and applies request status precedence', () => {
@@ -76,6 +95,18 @@ test('summarizeRequests returns the newest ten requests and keeps the total coun
   assert.equal(result.items.length, 10);
   assert.equal(result.items[0].requestId, 'RQ-12');
   assert.equal(result.items[9].requestId, 'RQ-3');
+  assert.deepEqual(
+    { page: result.page, pageSize: result.pageSize, totalPages: result.totalPages },
+    { page: 1, pageSize: 10, totalPages: 2 }
+  );
+
+  const secondPage = summarizeRequests(rows, '待確認', 10, 2);
+  assert.equal(secondPage.page, 2);
+  assert.deepEqual(secondPage.items.map((item) => item.requestId), ['RQ-2', 'RQ-1']);
+
+  const clampedPage = summarizeRequests(rows, '待確認', 10, 99);
+  assert.equal(clampedPage.page, 2);
+  assert.deepEqual(clampedPage.items.map((item) => item.requestId), ['RQ-2', 'RQ-1']);
 });
 
 test('formatStatusReply gives a compact request-level list', () => {
@@ -90,7 +121,7 @@ test('formatStatusReply gives a compact request-level list', () => {
     }]
   });
 
-  assert.match(text, /【未結案】共 12 筆（顯示最近 10 筆）/);
+  assert.match(text, /【未結案】共 12 筆（第 1\/2 頁）/);
   assert.match(text, /RQ-20260714-120000-abcd｜待確認｜小明｜3 項/);
   assert.match(text, /…等/);
 });
@@ -298,6 +329,158 @@ test('executeCancellationCommand permits enabled administrators and rejects othe
   assert.equal(member.writes.length, 0);
 });
 
+test('executeCatalogSyncCommand only allows enabled administrators', async () => {
+  const dependencyFixture = (authorization) => ({
+    repository: {
+      async getAuthorization() { return authorization; },
+      async reserveCatalogSyncTrigger() { throw new Error('must not reserve'); }
+    },
+    catalogSyncRunner: {
+      async status() { throw new Error('must not query'); },
+      async start() { throw new Error('must not start'); }
+    }
+  });
+
+  await assert.rejects(executeCatalogSyncCommand({
+    command: { type: 'catalog-sync', action: 'start' },
+    actorUserId: 'MEMBER',
+    idempotencyKey: 'line-sync-denied'
+  }, dependencyFixture({ role: '申請人', enabled: true })), /只有已啟用的管理員/);
+
+  await assert.rejects(executeCatalogSyncCommand({
+    command: { type: 'catalog-sync', action: 'status' },
+    actorUserId: '',
+    idempotencyKey: ''
+  }, dependencyFixture({ role: '管理員', enabled: true })), /LINE 未提供你的使用者識別資料/);
+});
+
+test('executeCatalogSyncCommand reserves the event before starting the job', async () => {
+  const calls = [];
+  const text = await executeCatalogSyncCommand({
+    command: { type: 'catalog-sync', action: 'start' },
+    actorUserId: 'ADMIN',
+    idempotencyKey: 'line-sync-123'
+  }, {
+    repository: {
+      async getAuthorization() { return { role: '管理員', enabled: true }; },
+      async reserveCatalogSyncTrigger(input) {
+        calls.push(['reserve', input]);
+        return { idempotentReplay: false };
+      }
+    },
+    catalogSyncRunner: {
+      async start() {
+        calls.push(['start']);
+        return { state: 'accepted', operation: 'operation-123', execution: 'execution-123' };
+      }
+    }
+  });
+
+  assert.deepEqual(calls, [
+    ['reserve', { actor: { userId: 'ADMIN' }, idempotencyKey: 'line-sync-123' }],
+    ['start']
+  ]);
+  assert.match(text, /已受理飛鼠商品同步/);
+  assert.match(text, /execution-123/);
+  assert.match(text, /查飛鼠同步/);
+});
+
+test('executeCatalogSyncCommand does not start again for a repeated LINE event', async () => {
+  let starts = 0;
+  const text = await executeCatalogSyncCommand({
+    command: { type: 'catalog-sync', action: 'start' },
+    actorUserId: 'ADMIN',
+    idempotencyKey: 'line-sync-replay'
+  }, {
+    repository: {
+      async getAuthorization() { return { role: '管理員', enabled: true }; },
+      async reserveCatalogSyncTrigger() { return { idempotentReplay: true }; }
+    },
+    catalogSyncRunner: { async start() { starts += 1; } }
+  });
+
+  assert.equal(starts, 0);
+  assert.match(text, /已受理過/);
+  assert.match(text, /未重複啟動/);
+});
+
+test('executeCatalogSyncCommand formats latest job status without exposing resource paths', async () => {
+  const base = {
+    command: { type: 'catalog-sync', action: 'status' },
+    actorUserId: 'ADMIN',
+    idempotencyKey: ''
+  };
+  const repository = {
+    async getAuthorization() { return { role: '管理員', enabled: true }; }
+  };
+  const running = await executeCatalogSyncCommand(base, {
+    repository,
+    catalogSyncRunner: {
+      async status() {
+        return {
+          state: 'running', execution: 'execution-123', startedAt: '2026-07-22T10:00:00Z'
+        };
+      }
+    }
+  });
+  assert.match(running, /執行中/);
+  assert.match(running, /execution-123/);
+
+  const succeeded = await executeCatalogSyncCommand(base, {
+    repository,
+    catalogSyncRunner: {
+      async status() {
+        return {
+          state: 'succeeded', execution: 'execution-456', completedAt: '2026-07-22T10:01:00Z'
+        };
+      }
+    }
+  });
+  assert.match(succeeded, /同步成功/);
+
+  const never = await executeCatalogSyncCommand(base, {
+    repository,
+    catalogSyncRunner: { async status() { return { state: 'never' }; } }
+  });
+  assert.match(never, /尚未有飛鼠商品同步紀錄/);
+});
+
+test('executeCancellationCommand restricts ordered cancellation to purchasing staff and administrators', async () => {
+  const buyer = cancellationDependencies({ owner: 'OWNER', role: '採購確認', enabled: true, status: '已下單' });
+  const text = await executeCancellationCommand({
+    command: {
+      type: 'cancellation',
+      requestId: 'RQ-20260715-123456-abcd',
+      mode: 'ordered'
+    },
+    actorUserId: 'BUYER',
+    groupId: 'COMPANY',
+    idempotencyKey: 'line-event-cancel-ordered-1'
+  }, buyer.dependencies);
+
+  assert.match(text, /已取消採購單 RQ-20260715-123456-abcd/);
+  assert.match(text, /採購平台上的訂單仍需另外取消/);
+  assert.deepEqual(buyer.writes, [{
+    actor: { userId: 'BUYER' },
+    requestId: 'RQ-20260715-123456-abcd',
+    idempotencyKey: 'line-event-cancel-ordered-1',
+    mode: 'ordered'
+  }]);
+
+  const applicant = cancellationDependencies({ owner: 'OWNER', role: '申請人', enabled: true, status: '已下單' });
+  await assert.rejects(executeCancellationCommand({
+    command: {
+      type: 'cancellation',
+      requestId: 'RQ-20260715-123456-abcd',
+      mode: 'ordered'
+    },
+    actorUserId: 'OWNER',
+    groupId: 'COMPANY',
+    idempotencyKey: 'line-event-cancel-ordered-2'
+  }, applicant.dependencies), /採購確認或管理員/);
+  assert.equal(applicant.writes.length, 0);
+});
+
 test('executeCancellationCommand rejects another group and gives syntax guidance', async () => {
   const fixture = cancellationDependencies();
   await assert.rejects(executeCancellationCommand({
@@ -309,4 +492,9 @@ test('executeCancellationCommand rejects another group and gives syntax guidance
     command: { type: 'cancellation-error', reason: 'invalid-syntax' }
   }, fixture.dependencies);
   assert.match(guidance, /取消補貨 RQ-/);
+
+  const orderedGuidance = await executeCancellationCommand({
+    command: { type: 'cancellation-error', reason: 'invalid-syntax', mode: 'ordered' }
+  }, fixture.dependencies);
+  assert.match(orderedGuidance, /取消採購 RQ-/);
 });

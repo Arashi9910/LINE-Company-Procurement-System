@@ -8,9 +8,15 @@ WORKDIR /app
 COPY jobs/flyingmouse/package.json jobs/flyingmouse/package-lock.json ./
 RUN npm ci --omit=dev
 
+# 看板階段（scripts/flyingmouse-dashboard.mjs）會用到 src/services 與 src/sheets，
+# 少複製任何一個，容器會在 import 階段就掛掉。
+# test/flyingmouse-job-image.test.js 會從進入點算出相依閉包，守住這份清單。
+COPY src/errors.js ./src/errors.js
 COPY src/flyingmouse ./src/flyingmouse
-COPY scripts/flyingmouse-sync.mjs scripts/flyingmouse-inventory-writeback.mjs ./scripts/
+COPY src/services ./src/services
+COPY src/sheets ./src/sheets
+COPY scripts/flyingmouse-sync.mjs scripts/flyingmouse-inventory-writeback.mjs scripts/flyingmouse-combined-job.mjs scripts/flyingmouse-dashboard.mjs ./scripts/
 
 USER pwuser
 
-CMD ["node", "scripts/flyingmouse-sync.mjs", "--download-dir", "/tmp/flyingmouse/downloads", "--output-dir", "/tmp/flyingmouse/previews"]
+CMD ["node", "scripts/flyingmouse-combined-job.mjs"]

@@ -13,8 +13,29 @@ import {
 
 const MAIN_HEADERS = [
   'SKU', '商品名稱', '蝦皮規格1（原始）', '蝦皮規格2（原始）', '庫存快照', 'GTIN', '儲位',
-  '補貨顯示名稱', '品項類型', '是否可補貨', '搜尋關鍵字', '單位', '主要供應商', '資料更新日'
+  '補貨顯示名稱', '品項類型', '是否可補貨', '搜尋關鍵字', '單位', '主要供應商', '資料更新日',
+  '出貨型態'
 ];
+
+// 真實的 Sheets 只會回傳要求範圍內的欄位。替身若無視 range 直接吐滿欄，
+// 讀取範圍沒跟上表頭擴充的 bug 就會被蓋掉（Codex SNS-001 就是這樣溜過去的）。
+function clampToRange(range, rows) {
+  const last = /![A-Z]+\d*:([A-Z]+)/.exec(range);
+  if (!last) return rows;
+  const width = [...last[1]].reduce((total, letter) => total * 26 + (letter.charCodeAt(0) - 64), 0);
+  return rows.map((row) => row.slice(0, width));
+}
+
+function rangedBatchGet(byRange) {
+  return async ({ ranges }) => ({
+    data: {
+      valueRanges: ranges.map((range) => {
+        const key = range.includes('SKU主檔') ? 'main' : 'review';
+        return { values: clampToRange(range, byRange[key] ?? []) };
+      })
+    }
+  });
+}
 
 function emptyDiff(overrides = {}) {
   return {
@@ -171,16 +192,10 @@ test('importApprovedNewItems writes only safe main columns and resets a stale ap
         };
       },
       values: {
-        async batchGet() {
-          return {
-            data: {
-              valueRanges: [
-                { values: [[...REVIEW_HEADERS], reviewRow(validFinding, '核准匯入'), reviewRow(staleFinding, '核准匯入', 'stale')] },
-                { values: [[...MAIN_HEADERS]] }
-              ]
-            }
-          };
-        },
+        batchGet: rangedBatchGet({
+          review: [[...REVIEW_HEADERS], reviewRow(validFinding, '核准匯入'), reviewRow(staleFinding, '核准匯入', 'stale')],
+          main: [[...MAIN_HEADERS]]
+        }),
         async batchUpdate(request) {
           write = request;
           return { data: {} };
@@ -230,16 +245,10 @@ test('importApprovedNewItems treats an identical existing SKU as idempotent', as
         };
       },
       values: {
-        async batchGet() {
-          return {
-            data: {
-              valueRanges: [
-                { values: [[...REVIEW_HEADERS], reviewRow(finding, '核准匯入')] },
-                { values: [[...MAIN_HEADERS], ['SKU-A', '商品 SKU-A', '紅色', '', 3, '00123', 'A-01']] }
-              ]
-            }
-          };
-        },
+        batchGet: rangedBatchGet({
+          review: [[...REVIEW_HEADERS], reviewRow(finding, '核准匯入')],
+          main: [[...MAIN_HEADERS], ['SKU-A', '商品 SKU-A', '紅色', '', 3, '00123', 'A-01']]
+        }),
         async batchUpdate(request) {
           write = request;
           return { data: {} };
@@ -278,16 +287,10 @@ function snapshotImportSheets(reviewRows, mainRows = []) {
         };
       },
       values: {
-        async batchGet() {
-          return {
-            data: {
-              valueRanges: [
-                { values: [[...REVIEW_HEADERS], ...reviewRows] },
-                { values: [[...MAIN_HEADERS], ...mainRows] }
-              ]
-            }
-          };
-        },
+        batchGet: rangedBatchGet({
+          review: [[...REVIEW_HEADERS], ...reviewRows],
+          main: [[...MAIN_HEADERS], ...mainRows]
+        }),
         async batchUpdate(request) {
           write = request;
           return { data: {} };
@@ -316,6 +319,47 @@ test('importApprovedReviewSnapshots imports an approved review snapshot without 
     values: [['SKU-FAST', '快速新品', '紅色', '', 9, '00123', 'A-01', '快速新品｜紅色', '一般SKU', '是']]
   });
   assert.deepEqual(data[2].values, [['已匯入']]);
+});
+
+test('importApprovedReviewSnapshots keeps an approved negative stock', async () => {
+  const item = source('SKU-NEG', { stock: -3, productName: '超賣新品' });
+  const finding = buildReviewFindings(emptyDiff({ newItems: [item] }))[0];
+  const state = snapshotImportSheets([reviewRow(finding, '核准匯入')]);
+
+  const result = await importApprovedReviewSnapshots({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    generatedAt: new Date('2026-07-17T02:03:04Z')
+  });
+
+  // 以前 stock < 0 會讓整列被當成無效核准而跳過，新品就永遠匯不進來。
+  assert.deepEqual(result, { approved: 1, imported: 1, idempotent: 0, stale: 0 });
+  assert.equal(state.getWrite().requestBody.data[0].values[0][4], -3);
+});
+
+test('importApprovedReviewSnapshots refuses an approval whose stock is not an integer', async () => {
+  const item = source('SKU-BLANK', { stock: 7, productName: '庫存被清掉的新品' });
+  const finding = buildReviewFindings(emptyDiff({ newItems: [item] }))[0];
+
+  // 指紋不含庫存，所以庫存欄被清空或改壞時只有這裡擋得住；
+  // 放過去就會把 Number('') 的 0 當成真實零庫存寫進 SKU主檔並標記已匯入。
+  for (const broken of ['', ' ', false, null, '10.5', '待盤點']) {
+    const row = reviewRow(finding, '核准匯入');
+    row[8] = broken;
+    const state = snapshotImportSheets([row]);
+
+    const result = await importApprovedReviewSnapshots({
+      sheets: state.sheets,
+      spreadsheetId: 'sheet-123',
+      generatedAt: new Date('2026-07-17T02:03:04Z')
+    });
+
+    assert.deepEqual(result, { approved: 1, imported: 0, idempotent: 0, stale: 1 },
+      `${JSON.stringify(broken)} 應視為無效核准`);
+    const ranges = state.getWrite().requestBody.data.map((entry) => entry.range);
+    assert.equal(ranges.some((range) => range.includes('SKU主檔')), false,
+      `${JSON.stringify(broken)} 不該寫入 SKU主檔`);
+  }
 });
 
 test('importApprovedReviewSnapshots performs no writes when nothing is approved', async () => {

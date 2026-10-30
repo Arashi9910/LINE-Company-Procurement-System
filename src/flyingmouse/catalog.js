@@ -34,13 +34,14 @@ function cellText(cell) {
 
 function parseStock(cell, rowNumber) {
   const text = cellText(cell).replaceAll(',', '');
-  if (!/^\d+$/.test(text)) {
-    throw new Error(`第 ${rowNumber} 列的庫存不是非負整數`);
+  if (!/^-?\d+$/.test(text)) {
+    throw new Error(`第 ${rowNumber} 列的庫存不是整數`);
   }
   const stock = Number(text);
   if (!Number.isSafeInteger(stock)) {
     throw new Error(`第 ${rowNumber} 列的庫存超出安全整數範圍`);
   }
+  // 飛鼠超賣時庫存是負的，那是真實值。夾成 0 會讓下游的缺口少算，所以原樣帶出。
   return stock;
 }
 

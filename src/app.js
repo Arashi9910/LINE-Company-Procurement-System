@@ -16,16 +16,34 @@ function deploymentMetadata(config, ok) {
 }
 
 export function createApp(dependencies = {}) {
-  const { config, repository, identityVerifier, messenger } = dependencies;
+  const {
+    config, repository, identityVerifier, messenger, catalogSyncRunner, writebackRunner,
+    // 讀「庫存看板」分頁給 查缺貨／查庫存 用。沒給就回「尚未啟用」，不影響其他指令。
+    dashboardReader = null
+  } = dependencies;
   for (const [name, value] of Object.entries({ config, repository, identityVerifier, messenger })) {
     if (!value) throw new Error(`缺少核心相依物件：${name}`);
   }
   if (typeof repository.checkHealth !== 'function') {
     throw new Error('核心相依物件 repository 缺少 checkHealth()');
   }
+  if (config.flyingmouseWritebackEnabled
+      && (!writebackRunner || typeof writebackRunner.start !== 'function')) {
+    throw new Error('啟用飛鼠庫存回寫時缺少 writebackRunner.start()');
+  }
 
   const app = express();
   app.disable('x-powered-by');
+
+  // Use during revision cutover so old write requests can drain before enabling a new writer.
+  app.use((request, response, next) => {
+    if (config.maintenanceMode && !['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+      return response.status(503).set('Retry-After', '60').json({
+        error: { code: 'MAINTENANCE', message: '系統更新中，請保留目前內容，稍後再送出' }
+      });
+    }
+    next();
+  });
 
   app.get('/health', (_request, response) => {
     response.json(deploymentMetadata(config, true));
@@ -46,10 +64,12 @@ export function createApp(dependencies = {}) {
   });
 
   app.post('/webhook', express.raw({ type: 'application/json', limit: '1mb' }),
-    createWebhookHandler({ config, repository, messenger }));
+    createWebhookHandler({ config, repository, messenger, catalogSyncRunner, dashboardReader }));
   app.use(express.json({ limit: '64kb' }));
   app.use('/jobs', createJobsRouter({ config, repository, messenger }));
-  app.use('/api', createApiRouter({ config, repository, identityVerifier, messenger }));
+  app.use('/api', createApiRouter({
+    config, repository, identityVerifier, messenger, writebackRunner
+  }));
 
   app.use(express.static('public', { extensions: ['html'] }));
 

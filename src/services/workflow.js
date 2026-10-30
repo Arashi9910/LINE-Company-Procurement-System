@@ -32,7 +32,25 @@ export async function getRequestDetails({ actor, requestId }, repository) {
     repository.getRequest(String(requestId ?? '').trim()),
     repository.getAuthorization(actor.userId)
   ]);
-  return { ...request, actorRole: authorization.enabled ? authorization.role : '' };
+  const transfers = repository.getTransferLinks ? await repository.getTransferLinks(request.requestId) : [];
+  // Images are optional: a failed image lookup must not prevent receiving stock.
+  let images = [];
+  try {
+    images = repository.listProductImages ? await repository.listProductImages() : [];
+  } catch {
+    images = [];
+  }
+  const imagesBySku = new Map(images.map(image => [image.sku, image]));
+  const items = request.items.map(item => {
+    const image = imagesBySku.get(item.sku);
+    return {
+      ...item,
+      variantImageUrl: image?.variantImageUrl ?? '',
+      mainImageUrl: image?.mainImageUrl ?? '',
+      listImageUrl: image?.listImageUrl ?? ''
+    };
+  });
+  return { ...request, items, transfers, actorRole: authorization.enabled ? authorization.role : '' };
 }
 
 export async function confirmOrder(input, repository) {
@@ -83,11 +101,15 @@ export async function confirmReceipt(input, repository) {
     const receivedQuantity = Number(item?.receivedQuantity);
     if (!sku || seen.has(sku)) throw new ValidationError('到貨品項 SKU 缺少或重複');
     seen.add(sku);
-    if (!Number.isInteger(receivedQuantity) || receivedQuantity < 1) {
-      throw new ValidationError(`SKU ${sku} 的本次到貨量必須是正整數`);
+    if (!Number.isInteger(receivedQuantity) || receivedQuantity < 0) {
+      throw new ValidationError(`SKU ${sku} 的本次到貨量必須是 0 或正整數`);
     }
     return { sku, receivedQuantity };
-  });
+  }).filter((item) => item.receivedQuantity > 0);
+
+  if (items.length === 0) {
+    throw new ValidationError('至少需要一個本次到貨量大於 0 的品項');
+  }
 
   return repository.confirmReceipt({
     actor: input.actor,

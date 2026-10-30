@@ -2,6 +2,7 @@ import {
   cartTotals,
   filterCatalog,
   groupCatalog,
+  parseQuantityInput,
   selectableCatalogItems,
   variantLabel,
   visibleVariants
@@ -12,6 +13,9 @@ import {
   withLineReauthMarker,
   withoutLineReauthMarker
 } from './line-session.js';
+import { sendLineFallbackNotification } from './line-notification.js';
+import { createDraftControls, reconcileDraftItems } from './purchase-drafts.js';
+import { receiptImage } from './receipt-image.js';
 import {
   selectWorkflowItems,
   workflowConfig,
@@ -20,9 +24,11 @@ import {
 
 const MAX_CART_ITEMS = 50;
 const MAX_QUANTITY = 999999;
+let draftControls;
 
 const state = {
   idToken: '',
+  liffId: '',
   items: [],
   groups: [],
   groupsBySku: new Map(),
@@ -67,6 +73,8 @@ const elements = {
   workflowTitle: document.querySelector('#workflow-title'),
   requestId: document.querySelector('#request-id'),
   workflowMeta: document.querySelector('#workflow-meta'),
+  workflowDateFields: document.querySelector('#workflow-date-fields'),
+  workflowDate: document.querySelector('#workflow-date'),
   workflowAdd: document.querySelector('#workflow-add'),
   workflowItems: document.querySelector('#workflow-items'),
   workflowSubmit: document.querySelector('#workflow-submit')
@@ -84,6 +92,30 @@ function restartLineLogin() {
   liff.logout();
   liff.login({ redirectUri });
   return true;
+}
+
+function returnToLine() {
+  try {
+    if (window.liff?.isInClient?.()) {
+      if (typeof liff.closeWindow === 'function') {
+        liff.closeWindow();
+        return;
+      }
+    }
+  } catch {
+    // ignore and fallback
+  }
+
+  if (window.history.length > 1) {
+    window.history.back();
+  } else {
+    window.location.replace('/');
+  }
+}
+
+async function recoverFailedNotification(result, stage) {
+  if (result.notification?.sent !== false) return false;
+  return sendLineFallbackNotification(window.liff, state.liffId, result.requestId, stage);
 }
 
 function clearLineReauthMarker() {
@@ -153,7 +185,8 @@ function imageFrame(values, alt, extraClass = '') {
 }
 
 function groupForItem(item) {
-  return state.groupsBySku.get(item.sku);
+  return state.groups.find((group) => item.productCode && group.productCode === item.productCode)
+    ?? state.groupsBySku.get(item.sku);
 }
 
 function itemImageUrls(item) {
@@ -189,7 +222,6 @@ function updateQuantity(item, nextQuantity) {
       state.orderDraft.set(item.sku, {
         item,
         orderedQuantity: quantity,
-        expectedDate: existing?.expectedDate ?? '',
         purchaseAdded: existing?.purchaseAdded ?? !state.orderOriginalSkus.has(item.sku)
       });
     }
@@ -219,10 +251,35 @@ function quantityStepper(item, label) {
   minus.setAttribute('aria-label', `${label} 減少數量`);
   minus.addEventListener('click', () => updateQuantity(item, quantity - 1));
 
-  const value = document.createElement('output');
-  value.className = 'quantity-value';
-  value.textContent = String(quantity);
-  value.setAttribute('aria-label', `${label} 目前數量 ${quantity}`);
+  const value = document.createElement('input');
+  value.type = 'number';
+  value.className = 'quantity-input';
+  value.min = '0';
+  value.max = String(MAX_QUANTITY);
+  value.step = '1';
+  value.inputMode = 'numeric';
+  value.enterKeyHint = 'done';
+  value.autocomplete = 'off';
+  value.value = String(quantity);
+  value.setAttribute('aria-label', `${label} 數量，可直接輸入`);
+  value.addEventListener('input', () => value.setCustomValidity(''));
+  value.addEventListener('change', () => {
+    const nextQuantity = parseQuantityInput(value.value, MAX_QUANTITY);
+    if (nextQuantity == null) {
+      value.setCustomValidity(`請輸入 0 到 ${MAX_QUANTITY} 的整數`);
+      value.reportValidity();
+      value.setCustomValidity('');
+      value.value = String(quantity);
+      return;
+    }
+    updateQuantity(item, nextQuantity);
+  });
+  value.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    value.blur();
+  });
+  value.addEventListener('focus', () => value.select());
 
   const plus = document.createElement('button');
   plus.type = 'button';
@@ -356,6 +413,12 @@ function cartRow(entry) {
   const variant = document.createElement('span');
   variant.textContent = `${variantLabel(item)}｜${item.sku}`;
   info.append(title, variant);
+  if (item.unavailable) {
+    const warning = document.createElement('span');
+    warning.className = 'danger';
+    warning.textContent = '商品已停用或不存在：請移除並重新選擇，才可正式送出';
+    info.append(warning);
+  }
 
   const controls = quantityStepper(item, item.displayName);
   const remove = document.createElement('button');
@@ -378,12 +441,15 @@ function renderCart() {
   elements.cartCount.textContent = String(totals.variants);
   elements.cartSummary.textContent = `已選 ${totals.variants} 個規格，共 ${totals.quantity} 件`;
   elements.cartDockSummary.textContent = `已選 ${totals.variants} 個規格・共 ${totals.quantity} 件`;
-  elements.cartSection.hidden = totals.variants === 0;
+  elements.cartSection.hidden = totals.variants === 0 && state.mode !== 'draft';
   elements.cartDock.hidden = totals.variants === 0;
   document.body.classList.toggle('has-cart-dock', totals.variants > 0);
+  elements.submit.textContent = state.mode === 'draft' ? '確認正式送出採購單' : '送出補貨申請';
+  draftControls?.changed();
 }
 
 async function submit() {
+  if (state.mode === 'draft') return draftControls.submit();
   if (state.cart.size === 0) return;
   elements.submit.disabled = true;
   elements.submit.textContent = '送出中…';
@@ -403,8 +469,21 @@ async function submit() {
     elements.note.value = '';
     renderCart();
     renderResults();
-    showStatus(`已建立補貨單 ${result.requestId}`, 'success');
+    const fallbackSent = await recoverFailedNotification(result, 'request');
+    if (result.notification?.sent === false && !fallbackSent) {
+      showStatus(
+        `已建立補貨單 ${result.requestId}，但 LINE 群組通知未送達。請回群組輸入「查待確認」，即可繼續確認下單。`
+      );
+    } else {
+      showStatus(
+        fallbackSent
+          ? `已建立補貨單 ${result.requestId}，確認下單卡片已送回群組`
+          : `已建立補貨單 ${result.requestId}`,
+        'success'
+      );
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (result.notification?.sent !== false || fallbackSent) returnToLine();
   } catch (error) {
     showStatus(error.message, 'error');
   } finally {
@@ -451,7 +530,14 @@ function workflowItem(item, mode) {
   meta.className = 'muted';
   meta.textContent = view.meta;
   heading.append(title, meta);
-  row.append(heading);
+  if (mode === 'receipt' || mode === 'detail') {
+    const summary = document.createElement('div');
+    summary.className = 'receipt-summary';
+    summary.append(receiptImage(item, imageFrame), heading);
+    row.append(summary);
+  } else {
+    row.append(heading);
+  }
 
   if (view.readOnly) return row;
 
@@ -462,7 +548,7 @@ function workflowItem(item, mode) {
   const quantity = document.createElement('input');
   quantity.type = 'number';
   quantity.className = 'workflow-quantity';
-  quantity.min = mode === 'order' && !purchaseAdded ? '0' : '1';
+  quantity.min = mode === 'receipt' || (mode === 'order' && !purchaseAdded) ? '0' : '1';
   quantity.max = mode === 'order' ? String(MAX_QUANTITY) : String(item.outstandingQuantity);
   quantity.step = '1';
   quantity.value = String(mode === 'order' ? draft.orderedQuantity : item.outstandingQuantity);
@@ -475,21 +561,6 @@ function workflowItem(item, mode) {
   quantityLabel.append(quantity);
   fields.append(quantityLabel);
 
-  if (mode === 'order') {
-    const dateLabel = document.createElement('label');
-    dateLabel.textContent = '預計到貨日';
-    const date = document.createElement('input');
-    date.type = 'date';
-    date.className = 'workflow-date';
-    date.min = new Date().toISOString().slice(0, 10);
-    date.value = /^\d{4}-\d{2}-\d{2}$/.test(draft.expectedDate) ? draft.expectedDate : '';
-    date.addEventListener('input', () => {
-      const current = state.orderDraft.get(item.sku);
-      if (current) current.expectedDate = date.value;
-    });
-    dateLabel.append(date);
-    fields.append(dateLabel);
-  }
   row.append(fields);
 
   if (purchaseAdded) {
@@ -520,6 +591,9 @@ async function loadWorkflow(mode, requestId) {
   const items = selectWorkflowItems(request.items, mode);
   elements.workflowTitle.textContent = config.title;
   elements.requestId.textContent = request.requestId;
+  elements.workflowDateFields.hidden = mode !== 'order' || items.length === 0;
+  elements.workflowDate.value = '';
+  elements.workflowDate.min = new Date().toISOString().slice(0, 10);
 
   if (mode === 'order' && items.length > 0) {
     state.orderDraft.clear();
@@ -528,7 +602,6 @@ async function loadWorkflow(mode, requestId) {
       state.orderDraft.set(item.sku, {
         item,
         orderedQuantity: item.requestedQuantity,
-        expectedDate: item.expectedDate,
         purchaseAdded: false
       });
     }
@@ -553,6 +626,13 @@ async function loadWorkflow(mode, requestId) {
   elements.workflowSubmit.dataset.requestId = request.requestId;
   elements.workflowSubmit.hidden = config.readOnly || items.length === 0;
   elements.workflowSection.hidden = false;
+  for (const transfer of request.transfers ?? []) {
+    const link = document.createElement('a');
+    const target = transfer.sourceId === request.requestId ? transfer.targetId : transfer.sourceId;
+    link.textContent = ` ${transfer.sourceId === request.requestId ? '已轉至採購單' : '來源需求'} ${target}`;
+    link.href = `/?mode=detail&requestId=${encodeURIComponent(target)}`;
+    elements.workflowMeta.append(link);
+  }
   if (items.length === 0) showStatus(config.emptyMessage, 'success');
 }
 
@@ -564,9 +644,17 @@ async function submitWorkflow() {
     const sku = row.dataset.sku;
     const quantity = Number(row.querySelector('.workflow-quantity').value);
     return mode === 'order'
-      ? { sku, orderedQuantity: quantity, expectedDate: row.querySelector('.workflow-date').value }
+      ? { sku, orderedQuantity: quantity, expectedDate: quantity > 0 ? elements.workflowDate.value : '' }
       : { sku, receivedQuantity: quantity };
   });
+
+  if (mode === 'order' && items.some((item) => item.orderedQuantity > 0)) {
+    if (!elements.workflowDate.value || !elements.workflowDate.checkValidity()) {
+      showStatus('請填寫整張單的預計到貨日（今天或之後）', 'error');
+      elements.workflowDate.focus();
+      return;
+    }
+  }
 
   elements.workflowSubmit.disabled = true;
   const originalText = elements.workflowSubmit.textContent;
@@ -581,9 +669,12 @@ async function submitWorkflow() {
     elements.workflowSubmit.hidden = true;
     elements.workflowAdd.hidden = true;
     elements.catalog.hidden = true;
+    const fallbackSent = await recoverFailedNotification(result, mode);
     showStatus(
-      mode === 'order' ? `已確認下單 ${result.requestId}` : `已登記到貨 ${result.requestId}`,
-      'success'
+      result.notification?.sent === false && !fallbackSent
+        ? `${mode === 'order' ? '已確認下單' : '已登記到貨'} ${result.requestId}，但 LINE 群組通知未送達。請回群組輸入「${mode === 'order' ? '查已下單' : '查未結案'}」查看。`
+        : `${mode === 'order' ? '已確認下單' : '已登記到貨'} ${result.requestId}${fallbackSent ? '，後續卡片已送回群組' : ''}`,
+      result.notification?.sent === false && !fallbackSent ? '' : 'success'
     );
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (error) {
@@ -599,6 +690,7 @@ async function initialize() {
     const configResponse = await fetch('/api/config');
     const config = await configResponse.json();
     if (!config.liffId) throw new Error('尚未設定 LIFF ID');
+    state.liffId = config.liffId;
     if (!window.liff) throw new Error('LINE LIFF SDK 載入失敗');
 
     await liff.init({ liffId: config.liffId, withLoginOnExternalBrowser: true });
@@ -632,6 +724,39 @@ async function initialize() {
       elements.catalog.hidden = false;
       renderResults();
     }
+    const access = await api('/api/purchase-access');
+    if (access.enabled) {
+      draftControls = createDraftControls({
+        api, showStatus,
+        currentSourceId: () => state.mode === 'order' ? state.workflowRequest?.requestId : '',
+        readSelection: () => state.mode === 'order'
+          ? { items: [...state.orderDraft.values()].filter(entry => entry.orderedQuantity > 0).map(entry => ({ sku: entry.item.sku, quantity: entry.orderedQuantity })), note: state.workflowRequest?.note || '', expectedDate: elements.workflowDate.value }
+          : { items: [...state.cart.values()].map(({ item, quantity }) => ({ sku: item.sku, quantity })), note: elements.note.value },
+        openSelection: async (draft, catalog) => {
+          state.mode = 'draft';
+          document.querySelector('h1').textContent = '採購草稿';
+          state.cart = new Map(reconcileDraftItems(draft.items, catalog).map(entry => [entry.item.sku, entry]));
+          elements.note.value = draft.note;
+          elements.workflowSection.hidden = true;
+          // Catalog may have been moved inside the workflow section.
+          elements.cartSection.before(elements.catalog);
+          elements.catalog.hidden = false;
+          elements.catalogTitle.textContent = '追加商品／規格';
+          elements.catalogDescription.textContent = '更新商品後可繼續加入，請記得儲存草稿';
+          setCatalogItems(catalog); renderCart(); renderResults();
+        },
+        refreshSelection: catalog => {
+          const entries = [...state.cart.values()].map(({ item, quantity }) => ({ ...item, quantity }));
+          state.cart = new Map(reconcileDraftItems(entries, catalog).map(entry => [entry.item.sku, entry]));
+          setCatalogItems(catalog); renderCart(); renderResults();
+        },
+        resetSelection: () => {
+          state.mode = 'request'; state.cart.clear(); elements.note.value = '';
+          document.querySelector('h1').textContent = '補貨申請';
+          renderCart(); renderResults();
+        }
+      });
+    }
   } catch (error) {
     elements.shell.setAttribute('aria-busy', 'false');
     showStatus(error.message, 'error');
@@ -643,6 +768,7 @@ elements.search.addEventListener('input', () => {
   if (!elements.variantDialog.hidden) renderVariantDialog();
 });
 elements.submit.addEventListener('click', submit);
+elements.note.addEventListener('input', () => draftControls?.changed());
 elements.workflowAdd.addEventListener('click', () => {
   elements.catalog.hidden = !elements.catalog.hidden;
   elements.workflowAdd.textContent = elements.catalog.hidden ? '＋ 追加商品／規格' : '收起商品選擇';

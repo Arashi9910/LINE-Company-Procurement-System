@@ -36,8 +36,9 @@
 
 ```js
 export function expectedStock(currentStock, receivedQuantity) {
-  if (!Number.isInteger(currentStock) || currentStock < 0) {
-    throw new Error('飛鼠庫存必須是非負整數');
+  // 飛鼠超賣時庫存是負的，那是真實值；只擋非整數，不擋負號。
+  if (!Number.isInteger(currentStock)) {
+    throw new Error('飛鼠庫存必須是整數');
   }
   if (!Number.isInteger(receivedQuantity) || receivedQuantity < 1) {
     throw new Error('本次到貨量必須是正整數');
@@ -122,7 +123,14 @@ export function expectedStock(currentStock, receivedQuantity) {
   - 飛鼠目前庫存等於 `target`：視為前次 PUT 已成功，只補登完成。
   - 飛鼠目前庫存等於 `before`：可安全重送同一個 PUT。
   - 其他數量：狀態改為 `需人工確認`，不再自動修改。
-- PUT 成功但驗證 GET 失敗時保持 `已準備`，下次依上述規則判斷。
+- PUT 成功但驗證 GET 失敗時不得重算增量。事件只要已保存 `partId`／`before`／`target`，
+  下一輪一律沿用該 `target` 依上述規則判斷，即使狀態因退避而是 `等待重試`。
+- `partId`／`before`／`target` 三欄只接受「全空」或「全滿」。全空才可以重新計算；
+  殘缺（人工誤刪其中一欄）一律 `需人工確認` 且不得 PUT——無法判斷是否已經 PUT 過，
+  當成未準備去重算就會重複入庫。
+- 重送仍要檢查主檔表頭與 SKU 唯一性（不過就不得 PUT），但**不重寫快照**：
+  退避期間目錄同步可能已經把快照更新成較新的值，倒寫回歷史 `before` 之後，
+  若這一輪又失敗，主檔會一直停在舊值。快照只在第一次準備時寫 `before`、完成時寫 `target`。
 - 不使用「目前庫存大於等於 target」等模糊條件猜測成功。
 - `SKU主檔` 缺少該 SKU、出現重複 SKU、表頭不符或快照寫入失敗時不得 PUT，事件轉人工確認。
 - dry-run 只計算並輸出安全摘要，不修改 queue、`SKU主檔` 或飛鼠。
@@ -137,7 +145,9 @@ export function expectedStock(currentStock, receivedQuantity) {
   `id`、`no`、`mpn`、`name`、`spec_y`、`spec_x`、`gtin`、`storage_location`、`stock`、`op_remark`。
 - 送出前再次確認貨品 ID、貨號、更新前庫存及目標庫存都是合法值。
 - 不修改名稱、規格、GTIN、儲位、備註、圖片或商品關聯。
-- 缺少 SKU、重複查詢結果、負庫存、非整數庫存、欄位結構改變或 4xx 驗證錯誤一律停止該事件。
+- 讀到的庫存可以是負的安全整數（飛鼠超賣的真實值），到貨量必須是正安全整數，相加結果必須仍在安全整數範圍內；讀到負庫存不是停止條件。
+- **目標庫存為負時不得 PUT。** 飛鼠讀得出負庫存，但存檔會把負數正規化為 `0`；送出 −3 會被存成 0，等於無聲抹掉超賣帳，而且驗證 GET 必定對不上。`expectedStock` 在相加結果為負時丟 `NEGATIVE_TARGET_STOCK`（需人工確認），`buildPartUpdatePayload` 再擋一次，所以負數不會離開程式。補得滿的情況照常處理（−1 收 2 件 → 1、−5 收 5 件 → 0）。
+- 缺少 SKU、重複查詢結果、非整數庫存（含 `null`、空字串等會被 `Number()` 變成 0 的值）、欄位結構改變或 4xx 驗證錯誤一律停止該事件。
 
 ## 7. 重試與執行方式
 

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import {
   captureFlyingMouseProductList,
+  mergeProductDetails,
+  normalizeProductDetail,
   normalizeProductListRows,
   validateImageCatalogCoverage
 } from '../src/flyingmouse/image-catalog.js';
@@ -83,7 +85,92 @@ test('requires the DOM and official Excel to have the exact same SKU set', () =>
   );
 });
 
-test('captures a real FlyingMouse-style list whose page title is an h3', async (t) => {
+test('merges sales product names, SKU-specific specs, and variant images', () => {
+  const items = normalizeProductListRows([raw()], {
+    capturedAt: new Date('2026-09-04T04:35:00.000Z')
+  });
+  const detail = normalizeProductDetail({
+    code: 0,
+    product: {
+      id: 206,
+      code: '926404525493',
+      name: '商品頁最新名稱',
+      spec: [{
+        sku: 'SKU-A',
+        specY: '藍色(三代)',
+        specX: '大',
+        item_cover: { url: 'https://img.fslol.com/10371/c/latest.jpg' }
+      }]
+    }
+  }, '206');
+
+  const [merged] = mergeProductDetails(items, [detail]);
+
+  assert.equal(merged.productName, '商品頁最新名稱');
+  assert.equal(merged.spec, '藍色(三代) / 大');
+  assert.equal(merged.variantImageUrl, 'https://img.fslol.com/10371/c/latest.jpg');
+  assert.equal(merged.listImageUrl, 'https://img.fslol.com/10371/b/example.jpg');
+  assert.equal(merged.imageType, '規格圖');
+});
+
+test('rejects unsafe or incomplete sales product detail mappings', () => {
+  assert.throws(() => normalizeProductDetail({ code: 1 }, '206'), /API 回傳失敗/);
+  assert.throws(() => normalizeProductDetail({
+    code: 0,
+    product: {
+      id: 206,
+      code: '926404525493',
+      name: '測試商品',
+      spec: [{
+        sku: 'SKU-A',
+        specY: '藍色',
+        item_cover: { url: 'https://example.com/not-allowed.jpg' }
+      }]
+    }
+  }, '206'), /規格圖網址不符合預期/);
+
+  const items = normalizeProductListRows([raw()]);
+  const wrongSku = normalizeProductDetail({
+    code: 0,
+    product: {
+      id: 206,
+      code: '926404525493',
+      name: '測試商品',
+      spec: [{ sku: 'SKU-B', specY: '藍色', item_cover: null }]
+    }
+  }, '206');
+  assert.throws(() => mergeProductDetails(items, [wrongSku]), /找不到 SKU SKU-A/);
+});
+
+test('treats a product cover returned for an item as a main image fallback', () => {
+  const detail = normalizeProductDetail({
+    code: 0,
+    product: {
+      id: 206,
+      code: '926404525493',
+      name: '測試商品',
+      coverUrl: 'https://img.fslol.com/pic/ss-select/926404525493/cover.jpg',
+      spec: [{
+        sku: 'SKU-A',
+        specY: '藍色',
+        specX: '',
+        item_cover: {
+          url: 'https://img.fslol.com/pic/ss-select/926404525493/cover.jpg'
+        }
+      }]
+    }
+  }, '206');
+
+  const [merged] = mergeProductDetails(normalizeProductListRows([raw({
+    listImageUrl: 'https://img.fslol.com/pic/ss-select/926404525493/cover.jpg'
+  })]), [detail]);
+
+  assert.equal(merged.variantImageUrl, '');
+  assert.equal(merged.listImageUrl, merged.mainImageUrl);
+  assert.equal(merged.imageType, '商品首圖');
+});
+
+test('captures every FlyingMouse list page whose page title is an h3', async (t) => {
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1');
     const authenticated = request.headers.cookie?.includes('auth=1');
@@ -109,6 +196,39 @@ test('captures a real FlyingMouse-style list whose page title is an h3', async (
       response.end('<a href="/admin/dashboard">管理首頁</a>');
       return;
     }
+    if (url.pathname === '/api/admin/product/2') {
+      response.setHeader('Content-Type', 'application/json; charset=utf-8');
+      response.end(JSON.stringify({ code: 0, product: { id: 2, code: 'P-2', name: '透明版',
+        spec: [{ sku: 'SKU-0001', specY: '三入裝', item_cover: { url: 'https://img.fslol.com/10371/a/triple.jpg' } }]
+      } }));
+      return;
+    }
+    if (url.pathname === '/api/admin/product/1') {
+      response.setHeader('Content-Type', 'application/json; charset=utf-8');
+      response.end(JSON.stringify({
+        code: 0,
+        message: 'success',
+        product: {
+          id: 1,
+          code: 'P-1',
+          name: '商品頁最新名稱',
+          coverUrl: 'https://img.fslol.com/pic/ss-select/P-1/cover.jpg',
+          spec: Array.from({ length: 1001 }, (_, index) => {
+            const number = index + 1;
+            const suffix = String(number).padStart(4, '0');
+            return {
+              sku: `SKU-${suffix}`,
+              specY: `商品頁規格 ${suffix}`,
+              specX: '',
+              item_cover: {
+                url: `https://img.fslol.com/10371/a/api-${suffix}.jpg`
+              }
+            };
+          })
+        }
+      }));
+      return;
+    }
     if (url.pathname === '/admin/part/list/*') {
       response.end(`<!doctype html><h3>庫存管理 &gt; 貨品列表</h3>
         <table class="table table-striped">
@@ -116,13 +236,24 @@ test('captures a real FlyingMouse-style list whose page title is an h3', async (
             '貨品編號', '名稱 / 規格 / GTIN', '庫存量', '儲位',
             '對應 SKU', '銷售商品', '更新時間', ''
           ].map((header) => `<th>${header}</th>`).join('')}</tr></thead>
-          <tbody><tr>
-            <td><a href="/admin/part/edit/927">SKU-A</a></td>
-            <td><img src="https://img.fslol.com/10371/a/example.jpg"><div style="padding-left:84px"><div><b>測試商品</b></div>藍色<br></div></td>
-            <td>3</td><td></td><td><a href="/admin/item/edit/927">SKU-A</a></td>
-            <td><a href="/admin/product/edit/206">926404525493</a></td><td></td><td></td>
-          </tr></tbody>
-        </table>`);
+          <tbody></tbody>
+        </table>
+        <script>
+          const state = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+          const start = (state.pageCode - 1) * state.pageSize + 1;
+          const end = Math.min(state.pageCode * state.pageSize, 1001);
+          const rows = [];
+          for (let number = start; number <= end; number += 1) {
+            const sku = 'SKU-' + String(number).padStart(4, '0');
+            rows.push('<tr>' +
+              '<td><a href="/admin/part/edit/' + number + '">' + sku + '</a></td>' +
+              '<td><img src="https://img.fslol.com/10371/a/example.jpg"><div style="padding-left:84px"><div><b>測試商品</b></div>藍色<br></div></td>' +
+              '<td>3</td><td></td><td><a href="/admin/item/edit/' + number + '">' + sku + '</a></td>' +
+              '<td><a href="/admin/product/edit/1">P-1</a>' + (number === 1 ? '<a href="/admin/product/edit/2">P-2</a>' : '') + '</td><td></td><td></td>' +
+              '</tr>');
+          }
+          document.querySelector('tbody').innerHTML = rows.join('');
+        </script>`);
       return;
     }
     response.writeHead(404);
@@ -139,11 +270,20 @@ test('captures a real FlyingMouse-style list whose page title is an h3', async (
       username: 'tester',
       password: 'secret'
     },
-    sourceItems: [{ partNumber: 'SKU-A' }],
+    sourceItems: Array.from({ length: 1001 }, (_, index) => ({
+      partNumber: `SKU-${String(index + 1).padStart(4, '0')}`
+    })),
     now: () => new Date('2026-07-15T12:34:56.000Z')
   });
 
-  assert.equal(result.metadata.rowCount, 1);
-  assert.equal(result.items[0].partId, '927');
-  assert.equal(result.items[0].spec, '藍色');
+  assert.equal(result.metadata.rowCount, 1001);
+  assert.equal(result.metadata.pageCount, 2);
+  assert.equal(result.metadata.productCount, 2);
+  assert.equal(result.items[0].productBindings[1].variantName, '三入裝');
+  assert.equal(result.items[0].partId, '1');
+  assert.equal(result.items[1000].partId, '1001');
+  assert.equal(result.items[0].productName, '商品頁最新名稱');
+  assert.equal(result.items[0].spec, '商品頁規格 0001');
+  assert.equal(result.items[0].variantImageUrl, 'https://img.fslol.com/10371/a/api-0001.jpg');
+  assert.equal(result.items[1000].spec, '商品頁規格 1001');
 });

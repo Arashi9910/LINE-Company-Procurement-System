@@ -7,15 +7,24 @@ param(
   [string]$JobName = 'flyingmouse-catalog-sync',
   [string]$Repository = 'line-automation',
   [string]$ServiceAccountName = 'line-replenishment',
-  [string]$Schedule = '0 3 * * *',
+  [string]$Schedule = '0 * * * *',
   [string]$TimeZone = 'Asia/Taipei',
-  [ValidateSet('read-only', 'review')]
+  [ValidateSet('read-only', 'review', 'auto')]
   [string]$SheetMode = 'read-only',
+  [ValidateSet('dry-run', 'live')]
+  [string]$WritebackMode = 'dry-run',
+  [ValidateRange(1, 100)]
+  [int]$WritebackLimit = 20,
+  [switch]$ApproveLive,
   [switch]$SkipSchedule,
   [switch]$ExecuteNow
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($WritebackMode -eq 'live' -and -not $ApproveLive) {
+  throw 'Live writeback mode requires the explicit -ApproveLive switch.'
+}
 
 function Resolve-GcloudCommand {
   $command = Get-Command 'gcloud.cmd' -ErrorAction SilentlyContinue
@@ -119,26 +128,37 @@ if ($repositoryProbe.ExitCode -ne 0) {
   '--image', $image,
   '--service-account', $serviceAccount,
   '--tasks', '1',
-  '--max-retries', '1',
-  '--task-timeout', '10m',
+  '--max-retries', '0',
+  '--task-timeout', '6m',
   '--cpu', '1',
   '--memory', '1Gi',
-  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,FLYINGMOUSE_SHEET_MODE=$SheetMode,FLYINGMOUSE_ADMIN_URL=https://ss-select.fslol.com/admin/dashboard,FLYINGMOUSE_PRODUCT_LIST_URL=https://ss-select.fslol.com/admin/part/list/*",
+  '--command', 'node',
+  '--args', 'scripts/flyingmouse-combined-job.mjs',
+  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,FLYINGMOUSE_SHEET_MODE=$SheetMode,FLYINGMOUSE_WRITEBACK_MODE=$WritebackMode,FLYINGMOUSE_WRITEBACK_LIMIT=$WritebackLimit,FLYINGMOUSE_ADMIN_URL=https://ss-select.fslol.com/admin/dashboard,FLYINGMOUSE_PRODUCT_LIST_URL=https://ss-select.fslol.com/admin/part/list/*",
   '--set-secrets', 'FLYINGMOUSE_USERNAME=flyingmouse-username:latest,FLYINGMOUSE_PASSWORD=flyingmouse-password:latest',
-  '--labels', "component=flyingmouse-sync,mode=$SheetMode",
+  '--labels', "component=flyingmouse-combined,mode=$SheetMode-$WritebackMode",
+  '--quiet'
+)).Output | Out-Null
+
+(Invoke-Gcloud -Arguments @(
+  'run', 'jobs', 'add-iam-policy-binding', $JobName,
+  '--project', $ProjectId,
+  '--region', $Region,
+  '--member', "serviceAccount:$serviceAccount",
+  '--role', 'roles/run.invoker',
+  '--quiet'
+)).Output | Out-Null
+
+(Invoke-Gcloud -Arguments @(
+  'run', 'jobs', 'add-iam-policy-binding', $JobName,
+  '--project', $ProjectId,
+  '--region', $Region,
+  '--member', "serviceAccount:$serviceAccount",
+  '--role', 'roles/run.viewer',
   '--quiet'
 )).Output | Out-Null
 
 if (-not $SkipSchedule) {
-  (Invoke-Gcloud -Arguments @(
-    'run', 'jobs', 'add-iam-policy-binding', $JobName,
-    '--project', $ProjectId,
-    '--region', $Region,
-    '--member', "serviceAccount:$serviceAccount",
-    '--role', 'roles/run.invoker',
-    '--quiet'
-  )).Output | Out-Null
-
   $schedulerProbe = Invoke-Gcloud -Arguments @(
     'scheduler', 'jobs', 'describe', $schedulerName,
     '--project', $ProjectId,
@@ -176,8 +196,9 @@ if ($ExecuteNow) {
 Write-Host "Cloud Run Job: $JobName"
 Write-Host "Image: $image"
 if (-not $SkipSchedule) { Write-Host "Schedule: $Schedule ($TimeZone)" }
-if ($SheetMode -eq 'review') {
-  Write-Host 'Mode: review sheet sync and approved-new-item import'
-} else {
-  Write-Host 'Mode: read-only export, validation, and diff summary'
+Write-Host "Writeback mode: $WritebackMode"
+switch ($SheetMode) {
+  'review' { Write-Host 'Mode: review sheet sync and approved-new-item import' }
+  'auto' { Write-Host 'Mode: fully automatic catalog and image sync' }
+  default { Write-Host 'Mode: read-only export, validation, and diff summary' }
 }

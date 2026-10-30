@@ -1,4 +1,6 @@
-# 飛鼠目錄同步 Cloud Run Job
+# 飛鼠每小時合併同步 Cloud Run Job
+
+> 現況摘要：正式 `flyingmouse-catalog-sync` 每小時整點執行商品／圖片同步與到貨庫存補漏；到貨登記成功後則立即啟動獨立的 `flyingmouse-inventory-writeback` Job。本文後半保留 2026-07-15 至 2026-07-21 的歷史架構與驗收紀錄；遇到衝突時，以本節現行部署邊界為準。
 
 ## 現行部署邊界
 
@@ -7,18 +9,22 @@
 1. 使用 Secret Manager 帳密登入飛鼠。
 2. 下載官方貨品 Excel。
 3. 驗證來源資料。
-4. 以 Google Sheet `SKU主檔!A:D` 作 baseline。
-5. 將差異 upsert 至 `飛鼠目錄待確認`。
-6. 只匯入人工設為 `核准匯入` 且來源指紋仍一致的新品。
-7. 將摘要輸出到 Cloud Logging 後結束。
+4. 以 Google Sheet `SKU主檔` 作 baseline；正式 `auto` 模式新增飛鼠 SKU 並更新來源管理的 B:H 欄位。
+5. 同步既有 SKU 庫存快照與 `商品圖片對照`，保留公式欄、人工圖片及來源缺漏列。
+6. 商品與圖片階段成功後，讀取 `飛鼠庫存回寫`，正式 `live` 模式每次最多處理 20 筆事件。
+7. 將 catalog 與 writeback 兩階段摘要輸出到 Cloud Logging 後結束。
 
-不修改飛鼠；描述變更、來源缺漏與衝突不會自動修改或刪除 `SKU主檔`。容器內下載檔與 JSON 報告只存在單次執行期間。
+到貨即時流程不等待下一個整點：LINE 服務原子寫入到貨追蹤與 queue 後，立即呼叫 Cloud Run Jobs API 啟動 `flyingmouse-inventory-writeback`。API 只等待啟動請求被接受；獨立 Job 完成飛鼠登入、GET、庫存加總與 PUT。若已有回寫 execution 正在執行，系統不開啟並行 worker；queue 由現有工作或下一次整點合併工作補漏。
+
+商品同步不修改飛鼠；只有已完成驗收的到貨回寫階段會更新飛鼠庫存。來源缺漏列不會自動刪除，與非飛鼠供應商發生 SKU 衝突時會整批停止。容器內下載檔與 JSON 報告只存在單次執行期間。
 
 ## 安全設計
 
 - Job 與現有 LINE Cloud Run Service 分開部署。
 - 飛鼠帳密只存 `flyingmouse-username`、`flyingmouse-password` 兩個 Secret Manager secret。
-- `read-only` 模式使用 `spreadsheets.readonly`；只有明確部署為 `review` 時使用 `spreadsheets` 寫入 scope。
+- `read-only` 模式使用 `spreadsheets.readonly`；只有明確部署為 `review` 或 `auto` 時使用 `spreadsheets` 寫入 scope。
+- 部署腳本安全預設為商品 `read-only`、庫存 `dry-run`；庫存切換為 `live` 時必須同時提供 `-ApproveLive`。
+- 合併 Job 固定單 task、Cloud Run 平台 `maxRetries=0`；商品階段失敗時不會繼續庫存回寫。
 - Cloud Build 使用 `.gcloudignore.flyingmouse` allow-list，不上傳 `.env`、`work/`、測試、文件或 Claude 橋接檔。
 - Playwright 套件與 Docker image 固定為相同版本。
 - 登入驗證碼、OTP、官方表頭變更、重複貨品編號或下載異常都會讓 Job 失敗。
@@ -44,14 +50,14 @@ npm.cmd run build
 
 ## 部署 Job
 
-預設排程為每天台北時間 03:00：
+部署腳本預設排程為每小時整點，但資料模式維持安全的 `read-only/dry-run`：
 
 ```powershell
 .\scripts\deploy-flyingmouse-job.ps1 `
   -ProjectId 'line-restock-20260714'
 ```
 
-第一次部署建議先不建立排程，手動執行並檢查日誌：
+第一次部署或模式變更建議先不建立排程，手動執行並檢查日誌：
 
 ```powershell
 .\scripts\deploy-flyingmouse-job.ps1 `
@@ -60,13 +66,23 @@ npm.cmd run build
   -ExecuteNow
 ```
 
-手動驗收成功後，再以不含 `-SkipSchedule` 的命令建立每日排程。
+正式現行模式必須明確指定可寫商品與庫存模式：
+
+```powershell
+.\scripts\deploy-flyingmouse-job.ps1 `
+  -ProjectId 'line-restock-20260714' `
+  -SheetMode 'auto' `
+  -WritebackMode 'live' `
+  -ApproveLive
+```
+
+手動驗收成功後，再以不含 `-SkipSchedule` 的命令建立每小時整點排程。單次 Job timeout 為 6 分鐘、Cloud Run 平台重試為 0；失敗時由下一個整點排程重試。Scheduler 資源名稱為了相容既有部署仍保留 `flyingmouse-catalog-sync-daily`。
 
 ## 成功訊號
 
-Cloud Run Job 結束碼為 0，日誌摘要應包含：
+Cloud Run Job 結束碼為 0，合併工作日誌應同時包含 catalog 與 writeback 階段。catalog 摘要至少應包含：
 
-- `sheetMode: review`
+- `sheetMode`
 - `readOnly: false`
 - `mode: browser-export`
 - `sourceRows`
@@ -75,10 +91,13 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - `changedItems`
 - `sourceMissingKeys`
 - `conflictGroups`
-- `reviewSync.review`
-- `reviewSync.approvals`
+- `catalogSync`
+- `inventorySync`
+- `productImageSync`
 
-目前正式 `SKU主檔` 基準為 912 列、912 個唯一 SKU；這是本次盤點值，不是永久硬編碼的驗證門檻。
+writeback 摘要至少應包含 `mode`、`found`、`completed`、`failed` 與 `manualReview`。若 catalog 階段失敗，Job 必須直接失敗，且不應出現已開始 writeback 的紀錄。
+
+2026-07-15 初次盤點的 `SKU主檔` 基準為 912 列、912 個唯一 SKU；這是歷史驗收值，不是目前筆數或永久硬編碼的驗證門檻。
 
 ## 審核模式
 
@@ -99,7 +118,31 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 
 描述變更、來源缺漏與衝突仍只供審核，不自動修改或刪除主檔。完整資料契約見 `docs/flyingmouse-sheet-review-spec.md`。
 
-## 目前部署狀態（2026-07-15）
+## 完全自動模式
+
+`自動同步` 功能部署時必須明確指定可寫模式：
+
+```powershell
+.\scripts\deploy-flyingmouse-job.ps1 `
+  -ProjectId 'line-restock-20260714' `
+  -SheetMode 'auto'
+```
+
+`auto` 模式會將飛鼠作為飛鼠 SKU 的主要資料來源：新品直接加入 `SKU主檔`，既有飛鼠 SKU 更新 B:H，並保留 K/N 公式與來源缺漏列。服務帳號在 Job 層級需要 `roles/run.invoker` 以啟動 Job，以及 `roles/run.viewer` 以查詢 execution；部署腳本會同時設定。
+
+切換 `auto`、首次執行及正式 Sheet 驗收都是獨立的正式環境關卡，不會因程式合併而自動執行。
+
+## 歷史：正式 auto 初次上線（2026-07-22，合併前）
+
+- LINE Cloud Run revision：`line-replenishment-00024-2lv`
+- Git commit：`3e6964b067f6eb8c7a976c3775062ef8606dff7e`
+- 目錄 Job mode：`auto`
+- 首次成功 execution：`flyingmouse-catalog-sync-vjkbn`（32.65 秒）
+- 來源 959 個 SKU；正式主檔新增 5、更新 11，圖片 959／959 全部配對。
+- 舊基準 912 個 SKU 的 `主要供應商` 空白已一次性識別為 `飛鼠`；不同供應商的未來衝突仍會整批停止。
+- 上線當下自動排程：每 5 分鐘，`Asia/Taipei`；此設定已於同日後續的每小時合併 Job 切換中取代。
+
+## 歷史：首次部署狀態（2026-07-15）
 
 - GCP project：`line-restock-20260714`
 - Region：`asia-east1`
@@ -118,7 +161,7 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - Review execution 結果：24.63 秒完成，912 對 912，零差異、零核准、零匯入
 - 審核分頁：`飛鼠目錄待確認`（sheetId `592816291`），首次驗收時建立成功且只有表頭
 
-## 03:00 自動同步結果（2026-07-17）
+## 歷史：03:00 自動同步結果（2026-07-17）
 
 - Scheduler：`flyingmouse-catalog-sync-daily`，狀態 `ENABLED`
 - 實際啟動：2026-07-17 03:00:05（Asia/Taipei）
@@ -131,7 +174,7 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - 圖片：新增 1 筆、更新 3 筆、未變 929 筆；未覆蓋人工保護資料
 - 下一次排程：2026-07-18 03:00（Asia/Taipei）
 
-## 到貨庫存回寫 Job
+## 歷史：獨立到貨庫存回寫 Job（已由合併 Job 取代）
 
 庫存回寫使用獨立的 `flyingmouse-inventory-writeback` Cloud Run Job，與每日 03:00 的目錄同步分開。它會讀取 `飛鼠庫存回寫` 分頁，依序處理到貨事件；LINE 服務的 `FLYINGMOUSE_WRITEBACK_ENABLED` 預設為 `false`，在分頁與 worker 驗收完成前不得開啟。
 
@@ -163,7 +206,7 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 4. 選定一筆真實到貨事件驗證只增加一次。
 5. 最後才部署 LINE Service 的 `FLYINGMOUSE_WRITEBACK_ENABLED=true`。
 
-## 庫存回寫 dry-run 部署狀態（2026-07-16）
+## 歷史：庫存回寫 dry-run 部署狀態（2026-07-16）
 
 > 歷史快照：本節與其後的 2026-07-17 補充保留當時的部署狀態。`Cloud Scheduler 尚未建立`、`正式 PUT 為 0` 等敘述已由下方「庫存回寫正式驗收狀態（2026-07-21）」取代，不代表目前正式環境。
 
@@ -186,7 +229,7 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 
 2026-07-17 當時已完成「寫入前先刷新本次到貨 SKU」程式：新 live 事件會先把 queue `已準備` 與飛鼠即時 `beforeStock` 原子寫入 `SKU主檔`，再次 GET 未變動才允許 PUT。154 項測試、lint 與 build 已通過；當時此版本尚未重新部署至 writeback Job，正式 PUT 仍為 0 次。
 
-## 庫存回寫正式驗收狀態（2026-07-21）
+## 歷史：庫存回寫正式驗收狀態（2026-07-21）
 
 - 驗收來源：乾淨工作樹 commit `4626336`；169 項測試、lint、build 全部通過。
 - 正式 image：`flyingmouse-sync:20260721103733`。
@@ -199,7 +242,7 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - Cloud Scheduler：`flyingmouse-inventory-writeback-every-5-minutes`，`ENABLED`，`*/5 * * * *`，`Asia/Taipei`。
 - Scheduler 驗證 execution：`flyingmouse-inventory-writeback-xzr9r`，空 queue 結果 `found=0`、錯誤 0，執行成功。
 
-庫存回寫已完成首筆正式 PUT 與排程驗收。後續新到貨事件會由 Scheduler 每 5 分鐘處理；若即時庫存不再等於 queue 的 before/target，worker 會停止 PUT 並轉為人工確認。
+庫存回寫在當時已完成首筆正式 PUT 與每 5 分鐘排程驗收；該排程後續已由每小時合併 Job 取代。現行 worker 若發現即時庫存不再等於 queue 的 before/target，仍會停止 PUT 並轉為人工確認。
 
 ## 新品核准後一分鐘匯入（2026-07-17）
 
@@ -215,3 +258,17 @@ Cloud Run Job 結束碼為 0，日誌摘要應包含：
 - `line-replenishment-reminders` 已於 2026-07-21、2026-07-22 10:00 自然執行並回傳 `200`，不需再以人工觸發驗收。
 - 2026-07-22 已將 `line-job-token` 輪替為 Secret Manager version 3（無 BOM、無換行），舊 versions 1、2 均已 disabled；Cloud Run 更新為 `line-replenishment-00022-hgt`，兩個 HTTP Scheduler header 均與最新 Secret 一致。
 - 輪替後 `line-replenishment-approved-imports` 在 2026-07-22 13:02（Asia/Taipei）由新 revision 自然執行並回傳 `200`；`/health`、`/ready` 亦正常。
+
+## 2026-07-22 每小時合併 Job 正式狀態
+
+- 正式 Job：`flyingmouse-catalog-sync`，入口改為 `scripts/flyingmouse-combined-job.mjs`。
+- 執行順序：商品主檔與圖片同步成功後，才執行庫存正式回寫。
+- 模式：商品 `auto`、庫存 `live`、每次庫存上限 20、平台重試 0、timeout 6 分鐘。
+- Scheduler：沿用 `flyingmouse-catalog-sync-daily` 資源名稱，實際排程為 `0 * * * *`、`Asia/Taipei`。
+- 正式 image：`flyingmouse-sync:20260722112109`。
+- 驗收 execution：`flyingmouse-catalog-sync-5xlrb`，35.33 秒，`succeededCount=1`。
+- 商品驗收：959 項全數吻合，新增 0、更新 0、缺漏 0、衝突 0；圖片 959 項全數吻合。
+- 庫存驗收：live mode，queue found 0、failed 0、manual review 0。
+- 舊 Scheduler `flyingmouse-inventory-writeback-every-5-minutes` 已刪除，避免重複登入及額外最低一分鐘計費。
+- 舊 Cloud Run Job `flyingmouse-inventory-writeback` 暫時保留但沒有排程，供緊急回復使用，不會自行執行或產生運算費。
+- 本節取代文件內較早的 5 分鐘商品／庫存排程記錄；舊段落保留為歷史驗收資料。

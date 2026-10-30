@@ -13,6 +13,9 @@ export const PRODUCT_LIST_HEADERS = Object.freeze([
 
 const DEFAULT_IMAGE = '/img/default-cover.jpg';
 const VARIANT_IMAGE = /^https:\/\/img\.fslol\.com\/10371\/.+\.(?:avif|gif|jpe?g|png|webp)(?:\?.*)?$/i;
+const PRODUCT_LIST_PAGE_SIZE = 1000;
+const MAX_PRODUCT_LIST_PAGES = 100;
+const PRODUCT_DETAIL_CONCURRENCY = 8;
 
 function normalizeText(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -33,9 +36,9 @@ function taipeiTimestamp(date) {
   return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
 }
 
-function productListUrl(value) {
+function productListUrl(value, pageCode) {
   const url = new URL(value);
-  url.hash = '{%22pageCode%22:1,%22pageSize%22:1000,%22appendQueryObj%22:{},%22sortFields%22:[%22create_time%22],%22order%22:%22DESC%22}';
+  url.hash = `{%22pageCode%22:${pageCode},%22pageSize%22:${PRODUCT_LIST_PAGE_SIZE},%22appendQueryObj%22:{},%22sortFields%22:[%22create_time%22],%22order%22:%22DESC%22}`;
   return url.toString();
 }
 
@@ -56,6 +59,19 @@ function ensureUnique(items, field, label) {
   }
 }
 
+function imageFields({ mainImageUrl, listImageUrl, variantImageUrl }) {
+  const resolvedVariantImageUrl = variantImageUrl === undefined
+    ? (VARIANT_IMAGE.test(listImageUrl) ? listImageUrl : '')
+    : variantImageUrl;
+  const isDefault = listImageUrl === DEFAULT_IMAGE || /\/img\/default-cover\.jpg(?:\?.*)?$/i.test(listImageUrl);
+  return Object.freeze({
+    variantImageUrl: resolvedVariantImageUrl,
+    listImageUrl,
+    imageType: resolvedVariantImageUrl ? '規格圖' : (isDefault ? '預設圖' : '商品首圖'),
+    imageStatus: isDefault ? '待補圖片' : (mainImageUrl ? '正常' : '待補主圖')
+  });
+}
+
 export function normalizeProductListRows(rawRows, { capturedAt = new Date() } = {}) {
   if (!Array.isArray(rawRows) || rawRows.length === 0) {
     throw new Error('飛鼠貨品列表沒有可同步的資料');
@@ -66,6 +82,11 @@ export function normalizeProductListRows(rawRows, { capturedAt = new Date() } = 
     const sku = normalizeText(raw.sku);
     const productId = parseId(raw.productHref, 'product');
     const productCode = normalizeText(raw.productCode);
+    const productBindings = (raw.productLinks ?? (raw.productHref ? [{ href: raw.productHref, code: raw.productCode }] : []))
+      .map((link) => ({ productId: parseId(link.href, 'product'), productCode: normalizeText(link.code) }));
+    if (productBindings.some((binding) => !binding.productId || !binding.productCode)) {
+      throw new Error(`飛鼠貨品 ${sku} 的銷售商品連結不完整`);
+    }
     const productName = normalizeText(raw.productName);
     const spec = normalizeText(raw.spec);
     const listImageUrl = String(raw.listImageUrl ?? '').trim();
@@ -78,20 +99,18 @@ export function normalizeProductListRows(rawRows, { capturedAt = new Date() } = 
     const mainImageUrl = productCode
       ? `https://img.fslol.com/pic/ss-select/${encodeURIComponent(productCode)}/cover.jpg`
       : '';
-    const variantImageUrl = VARIANT_IMAGE.test(listImageUrl) ? listImageUrl : '';
-    const isDefault = listImageUrl === DEFAULT_IMAGE || /\/img\/default-cover\.jpg(?:\?.*)?$/i.test(listImageUrl);
     return Object.freeze({
       partId,
       sku,
       productId,
       productCode,
+      productBindings,
       productName,
       spec,
+      sourceSpec: spec,
+      sourceImageUrl: listImageUrl,
       mainImageUrl,
-      variantImageUrl,
-      listImageUrl,
-      imageType: variantImageUrl ? '規格圖' : (isDefault ? '預設圖' : '商品首圖'),
-      imageStatus: isDefault ? '待補圖片' : (mainImageUrl ? '正常' : '待補主圖'),
+      ...imageFields({ mainImageUrl, listImageUrl }),
       bindingStatus: productId ? '已綁定銷售商品' : '未綁定銷售商品',
       source: '飛鼠貨品列表',
       capturedAt: timestamp
@@ -100,6 +119,99 @@ export function normalizeProductListRows(rawRows, { capturedAt = new Date() } = 
   ensureUnique(items, 'partId', '貨品 ID');
   ensureUnique(items, 'sku', ' SKU');
   return Object.freeze(items);
+}
+
+export function normalizeProductDetail(payload, expectedProductId) {
+  const productId = normalizeText(expectedProductId);
+  const product = payload?.product;
+  if (Number(payload?.code) !== 0 || !product || typeof product !== 'object') {
+    throw new Error(`飛鼠銷售商品 ${productId} API 回傳失敗`);
+  }
+  if (normalizeText(product.id) !== productId) {
+    throw new Error(`飛鼠銷售商品 ${productId} API 回傳錯誤商品`);
+  }
+  const productCode = normalizeText(product.code);
+  const productName = normalizeText(product.name);
+  if (!productCode || !productName || !Array.isArray(product.spec) || product.spec.length === 0) {
+    throw new Error(`飛鼠銷售商品 ${productId} API 欄位不完整`);
+  }
+  const mainImageUrl = `https://img.fslol.com/pic/ss-select/${encodeURIComponent(productCode)}/cover.jpg`;
+  const returnedMainImageUrl = String(product.coverUrl ?? '').trim();
+  if (returnedMainImageUrl && returnedMainImageUrl !== mainImageUrl) {
+    throw new Error(`飛鼠銷售商品 ${productId} 的商品首圖網址不符合預期`);
+  }
+
+  const specs = product.spec.map((raw, index) => {
+    const sku = normalizeText(raw?.sku);
+    if (!sku) throw new Error(`飛鼠銷售商品 ${productId} 第 ${index + 1} 個規格缺少 SKU`);
+    const spec = [raw?.specY, raw?.specX].map(normalizeText).filter(Boolean).join(' / ');
+    const itemImageUrl = String(raw?.item_cover?.url ?? '').trim();
+    const variantImageUrl = itemImageUrl === mainImageUrl ? '' : itemImageUrl;
+    if (variantImageUrl && !VARIANT_IMAGE.test(variantImageUrl)) {
+      throw new Error(`飛鼠銷售商品 ${productId} SKU ${sku} 的規格圖網址不符合預期`);
+    }
+    return Object.freeze({ sku, spec, variantImageUrl });
+  });
+  ensureUnique(specs, 'sku', `銷售商品 ${productId} 規格 SKU`);
+  return Object.freeze({
+    productId,
+    productCode,
+    productName,
+    mainImageUrl,
+    specs: Object.freeze(specs)
+  });
+}
+
+export function mergeProductDetails(items, productDetails) {
+  const detailsById = new Map();
+  for (const detail of productDetails ?? []) {
+    if (detailsById.has(detail.productId)) {
+      throw new Error(`飛鼠銷售商品 ID 重複：${detail.productId}`);
+    }
+    detailsById.set(detail.productId, detail);
+  }
+
+  return Object.freeze(items.map((item) => {
+    if (!item.productId) return item;
+    const detail = detailsById.get(item.productId);
+    if (!detail) throw new Error(`飛鼠貨品 ${item.sku} 缺少銷售商品 ${item.productId} 資料`);
+    if (detail.productCode !== item.productCode) {
+      throw new Error(`飛鼠貨品 ${item.sku} 的銷售商品編號不一致`);
+    }
+    if (detail.mainImageUrl !== item.mainImageUrl) {
+      throw new Error(`飛鼠貨品 ${item.sku} 的商品首圖網址不一致`);
+    }
+    const detailSpec = detail.specs.find((candidate) => candidate.sku === item.sku);
+    if (!detailSpec) {
+      throw new Error(`飛鼠銷售商品 ${item.productId} 找不到 SKU ${item.sku}`);
+    }
+    const productBindings = (item.productBindings ?? [item]).map((binding) => {
+      const boundDetail = detailsById.get(binding.productId);
+      const boundSpec = boundDetail?.specs.find((candidate) => candidate.sku === item.sku);
+      if (!boundSpec || boundDetail.productCode !== binding.productCode) {
+        throw new Error(`飛鼠貨品 ${item.sku} 的銷售商品 ${binding.productId} 綁定不完整`);
+      }
+      return {
+        productId: boundDetail.productId,
+        productCode: boundDetail.productCode,
+        productName: boundDetail.productName,
+        variantName: boundSpec.spec || item.spec,
+        mainImageUrl: boundDetail.mainImageUrl,
+        variantImageUrl: boundSpec.variantImageUrl
+      };
+    });
+    return Object.freeze({
+      ...item,
+      productBindings,
+      productName: detail.productName,
+      spec: detailSpec.spec || item.spec,
+      ...imageFields({
+        mainImageUrl: item.mainImageUrl,
+        listImageUrl: item.listImageUrl,
+        variantImageUrl: detailSpec.variantImageUrl
+      })
+    });
+  }));
 }
 
 export function validateImageCatalogCoverage(imageItems, sourceItems) {
@@ -124,11 +236,16 @@ export function validateImageCatalogCoverage(imageItems, sourceItems) {
   return Object.freeze({ sourceRows: sourceItems.length, imageRows: imageItems.length });
 }
 
-async function captureRows(page, config, timeoutMs) {
-  await page.goto(productListUrl(config.productListUrl), {
+async function capturePageRows(page, config, timeoutMs, pageCode) {
+  await page.goto(productListUrl(config.productListUrl, pageCode), {
     waitUntil: 'domcontentloaded',
     timeout: timeoutMs
   });
+  // A hash-only navigation can leave the previous page rendered. A reload makes
+  // the FlyingMouse app apply the requested page before we inspect the table.
+  if (pageCode > 1) {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: timeoutMs });
+  }
   const pathname = new URL(page.url()).pathname;
   if (pathname !== '/admin/part/list/*') {
     throw new Error(`飛鼠貨品列表導向非預期路徑：${pathname}`);
@@ -154,6 +271,8 @@ async function captureRows(page, config, timeoutMs) {
     const cells = Array.from(row.querySelectorAll(':scope > td'));
     const partLink = cells[0]?.querySelector('a[href*="/admin/part/edit/"]');
     const productLink = cells[5]?.querySelector('a[href*="/admin/product/edit/"]');
+    const productLinks = Array.from(cells[5]?.querySelectorAll('a[href*="/admin/product/edit/"]') ?? [])
+      .map((link) => ({ href: link.getAttribute('href'), code: link.textContent }));
     const details = cells[1]?.querySelector('div[style*="padding-left"]') ?? cells[1];
     const name = details?.querySelector('b');
     const normalize = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -166,12 +285,72 @@ async function captureRows(page, config, timeoutMs) {
       partHref: partLink?.getAttribute('href') ?? '',
       sku: normalize(partLink?.textContent),
       productHref: productLink?.getAttribute('href') ?? '',
+      productLinks,
       productCode: normalize(productLink?.textContent),
       productName,
       spec,
       listImageUrl: cells[1]?.querySelector('img')?.getAttribute('src') ?? ''
     };
   }));
+}
+
+async function captureAllRows(page, config, timeoutMs) {
+  const captured = [];
+  const seenSkus = new Set();
+  for (let pageCode = 1; pageCode <= MAX_PRODUCT_LIST_PAGES; pageCode += 1) {
+    const pageRows = await capturePageRows(page, config, timeoutMs, pageCode);
+    if (pageRows.length === 0) {
+      return Object.freeze({ rows: captured, pageCount: pageCode - 1 });
+    }
+    for (const row of pageRows) {
+      const sku = normalizeText(row.sku);
+      if (sku && seenSkus.has(sku)) {
+        throw new Error(`飛鼠貨品列表分頁重複 SKU：${sku}`);
+      }
+      if (sku) seenSkus.add(sku);
+    }
+    captured.push(...pageRows);
+    if (pageRows.length < PRODUCT_LIST_PAGE_SIZE) {
+      return Object.freeze({ rows: captured, pageCount: pageCode });
+    }
+  }
+  throw new Error(`飛鼠貨品列表超過 ${MAX_PRODUCT_LIST_PAGES} 頁，停止同步`);
+}
+
+async function concurrentMap(values, concurrency, mapper) {
+  const result = new Array(values.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      result[index] = await mapper(values[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return result;
+}
+
+async function captureProductDetails(page, config, items, timeoutMs) {
+  const productIds = [...new Set(items.flatMap((item) => (item.productBindings ?? [item]).map((binding) => binding.productId)).filter(Boolean))];
+  return concurrentMap(productIds, PRODUCT_DETAIL_CONCURRENCY, async (productId) => {
+    const url = new URL(`/api/admin/product/${encodeURIComponent(productId)}`, config.adminUrl);
+    const response = await page.request.get(url.toString(), {
+      timeout: timeoutMs,
+      failOnStatusCode: false,
+      headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+    });
+    if (!response.ok()) {
+      throw new Error(`飛鼠銷售商品 ${productId} API 回傳 HTTP ${response.status()}`);
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`飛鼠銷售商品 ${productId} API 回傳格式錯誤`);
+    }
+    return normalizeProductDetail(payload, productId);
+  });
 }
 
 export async function captureFlyingMouseProductList({
@@ -182,21 +361,30 @@ export async function captureFlyingMouseProductList({
   now = () => new Date(),
   launch
 }) {
-  const items = await withAuthenticatedFlyingMousePage({
+  const captured = await withAuthenticatedFlyingMousePage({
     config,
     headless,
     timeoutMs,
     ...(launch ? { launch } : {})
-  }, async (page) => normalizeProductListRows(
-    await captureRows(page, config, timeoutMs),
-    { capturedAt: now() }
-  ));
+  }, async (page) => {
+    const pages = await captureAllRows(page, config, timeoutMs);
+    const listItems = normalizeProductListRows(pages.rows, { capturedAt: now() });
+    const productDetails = await captureProductDetails(page, config, listItems, timeoutMs);
+    return Object.freeze({
+      items: mergeProductDetails(listItems, productDetails),
+      pageCount: pages.pageCount,
+      productCount: productDetails.length
+    });
+  });
+  const { items } = captured;
   const coverage = validateImageCatalogCoverage(items, sourceItems);
   return Object.freeze({
     metadata: Object.freeze({
       source: '飛鼠貨品列表',
       rowCount: items.length,
-      pageSize: 1000,
+      pageSize: PRODUCT_LIST_PAGE_SIZE,
+      pageCount: captured.pageCount,
+      productCount: captured.productCount,
       ...coverage
     }),
     items
