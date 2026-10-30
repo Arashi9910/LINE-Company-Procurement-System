@@ -84,6 +84,13 @@ FlyingMouse 使用獨立 Cloud Run Job。部署腳本預設為商品 `read-only`
 - 飛鼠合併 Scheduler：沿用 `flyingmouse-catalog-sync-daily` 資源名稱，實際為每小時整點、`Asia/Taipei`；商品模式 `auto`、庫存模式 `live`、每次回寫上限 20、單 task、timeout 6 分鐘、平台重試 0。
 - 舊 `flyingmouse-inventory-writeback-every-5-minutes` Scheduler 已刪除；`flyingmouse-inventory-writeback` Job 由到貨 API 即時觸發，不會自行執行。
 - 兩個 HTTP Scheduler 均以自訂 `X-Job-Token` header 傳送 `line-job-token`。Secret 不應包含前後空白或換行；服務端仍會在載入 `JOB_TOKEN` 時移除意外的前後空白，以相容早期建立的 Secret 版本。
+- 流量切換：Cloud Run 的流量指派會跨部署保留。這個服務曾被釘在具名 revision
+  （2026-10-30 當時是 `line-replenishment-shared-sku-1dcb4c2`），導致 `gcloud run deploy`
+  建出的新 revision 拿不到流量、舊版繼續服務，`/ready` 驗到舊 commit 而部署被判失敗，
+  新 revision 則被靜靜 Retired。`deploy-gcp.ps1` 因此在部署後會明確把 100% 流量指向
+  這次建立的 revision，並確認 `latestReadyRevisionName` 與它相符才繼續。
+  回滾改流量即可，不需要重新部署：
+  `gcloud run services update-traffic <服務> --region <區域> --to-revisions <舊 revision>=100`。
 - 出貨型態欄位遷移：`SKU主檔` O 欄與 `補貨追蹤` W 欄的「出貨型態」在部署前必須先存在，
   否則嚴格表頭比對會讓整輪同步停住。部署新版程式**之前**先跑一次
   `node scripts/setup-sales-name-sync.mjs --spreadsheet-id <id>`（可重跑，只補欄位與表頭，

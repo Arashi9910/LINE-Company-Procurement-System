@@ -236,6 +236,31 @@ if (-not $serviceUrl) {
   throw 'Cloud Run did not return a service URL.'
 }
 
+# Cloud Run keeps an explicit traffic assignment across deploys. When the service is pinned to a
+# named revision - as this one was on 2026-10-30 - `run deploy` creates the new revision with 0%
+# traffic, the old code keeps serving, and the /ready check below fails with a stale commit while
+# the new revision is quietly retired. Route traffic to the revision this deploy just created so a
+# deploy always takes effect. Assigning 100% to a known revision is idempotent and also works when
+# the service already serves the latest revision.
+$createdRevisionResult = Invoke-Gcloud -Arguments @(
+  'run', 'services', 'describe', $ServiceName,
+  '--project', $ProjectId,
+  '--region', $Region,
+  '--format=value(status.latestCreatedRevisionName)'
+)
+$createdRevision = Get-GcloudOutputText $createdRevisionResult
+if (-not $createdRevision) {
+  throw 'Cloud Run did not return the revision created by this deploy.'
+}
+
+(Invoke-Gcloud -Arguments @(
+  'run', 'services', 'update-traffic', $ServiceName,
+  '--project', $ProjectId,
+  '--region', $Region,
+  '--to-revisions', "$createdRevision=100",
+  '--quiet'
+)).Output | Out-Null
+
 $revisionResult = Invoke-Gcloud -Arguments @(
   'run', 'services', 'describe', $ServiceName,
   '--project', $ProjectId,
@@ -245,6 +270,9 @@ $revisionResult = Invoke-Gcloud -Arguments @(
 $readyRevision = Get-GcloudOutputText $revisionResult
 if (-not $readyRevision) {
   throw 'Cloud Run did not return a ready revision.'
+}
+if ($readyRevision -ne $createdRevision) {
+  throw "Cloud Run is serving '$readyRevision' instead of the revision this deploy created ('$createdRevision')."
 }
 
 $ready = $null
