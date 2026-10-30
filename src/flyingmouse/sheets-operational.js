@@ -127,14 +127,16 @@ function buildDisplayName(item, salesName) {
 //
 // 型態要跟著名稱一起決定，不能讓呼叫端從最後的顯示名稱回推：衝突時顯示名稱
 // 只代表其中一個綁定，拿它重新分類等於把「不知道」偷換成一個猜測。
+//
+// 只認 productBindings，也就是真的對到銷售商品記錄、經過 mergeProductDetails
+// 驗證過的名稱。未綁定的貨品只有貨品列表那一行的字串，沒有銷售商品可對照，
+// 那種名稱不足以拿來判斷出貨型態。
 function salesNamesBySku(imageItems) {
   const names = new Map();
   for (const item of imageItems ?? []) {
     const sku = normalizeText(item?.sku);
     if (!sku) continue;
-    const bindings = Array.isArray(item?.productBindings) && item.productBindings.length > 0
-      ? item.productBindings
-      : [{ productName: item?.productName }];
+    const bindings = Array.isArray(item?.productBindings) ? item.productBindings : [];
     const candidates = bindings.map((binding) => normalizeText(binding?.productName)).filter(Boolean);
     if (candidates.length === 0) continue;
     const modes = new Set(candidates.map((name) => classifyStockMode(name)));
@@ -196,6 +198,10 @@ export async function syncCatalogItems({
   const sourceBySku = uniqueCatalogSourceBySku(sourceItems);
   const unavailableAliases = unboundWhitespaceAliases(imageItems);
   const salesNames = salesNamesBySku(imageItems);
+  // 沒有任何銷售商品資料的那一輪（例如 --input 走既有 Excel、不開瀏覽器），
+  // 整欄都會算成「未知」。那不是「都不知道」，是「這輪沒查」——照寫下去會把
+  // 上一輪正確的 1600 筆全部洗掉。這種情況完全不碰 O 欄。
+  const maintainStockMode = salesNames.size > 0;
   const properties = await getMainSheetProperties({ sheets, spreadsheetId });
   const rowCount = properties.gridProperties?.rowCount ?? 0;
   const response = await sheets.spreadsheets.values.get({
@@ -267,14 +273,16 @@ export async function syncCatalogItems({
       source.location,
       displayName
     ];
-    // 有銷售商品資料時以它決定的型態為準；沒有才從（退回貨品層的）顯示名稱推導。
-    const stockMode = STOCK_MODE_LABEL[sales?.mode ?? classifyStockMode(displayName)];
+    // 型態只能由銷售商品名稱決定。查不到驗證過的銷售名稱就寫「未知」——
+    // 顯示名稱這時是退回貨品層的，而貨品層的前綴正是整件事不可信的來源，
+    // 拿它分類等於把「不知道」偷換成一個猜測（規格第 6 節）。
+    const stockMode = STOCK_MODE_LABEL[sales?.mode ?? STOCK_MODE.UNKNOWN];
     const existing = main.bySku.get(sku);
     if (existing) {
       const current = existing.row.slice(1, 8);
       const sameCatalog = catalogValues
         .every((value, index) => String(current[index] ?? '') === String(value));
-      const sameStockMode = String(existing.row[14] ?? '') === stockMode;
+      const sameStockMode = !maintainStockMode || String(existing.row[14] ?? '') === stockMode;
       if (sameCatalog && sameStockMode) {
         unchanged += 1;
         continue;
@@ -305,10 +313,9 @@ export async function syncCatalogItems({
         range: `'${MAIN_SHEET_NAME}'!L${targetRow}:M${targetRow}`,
         values: [['件', '飛鼠']]
       },
-      {
-        range: `'${MAIN_SHEET_NAME}'!O${targetRow}`,
-        values: [[stockMode]]
-      }
+      ...(maintainStockMode
+        ? [{ range: `'${MAIN_SHEET_NAME}'!O${targetRow}`, values: [[stockMode]] }]
+        : [])
     );
     inserted += 1;
   }

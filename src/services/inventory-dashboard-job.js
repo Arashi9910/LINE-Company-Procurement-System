@@ -20,7 +20,7 @@ import {
   writeInventoryDashboard
 } from '../sheets/inventory-dashboard.js';
 import { buildInventoryDashboard } from './inventory-dashboard.js';
-import { classifyStockMode, stockModeFromLabel } from './stock-mode.js';
+import { STOCK_MODE, stockModeFromLabel } from './stock-mode.js';
 
 // 要擋的是「除了已完成以外的全部」。WRITEBACK_STATUSES 共五種：
 // 待處理、已準備、等待重試、已完成、需人工確認。
@@ -124,11 +124,12 @@ export async function runInventoryDashboard({
     const writebackPendingSkus = pendingWritebackSkus(events);
 
     // 從商品名稱判斷有沒有實體庫存。這只是預設值，「預購額度」分頁填了就以它為準。
-    // SKU主檔 的「出貨型態」是同步寫進去的單一真相；只有該欄還空著時
-    // （剛遷移完、同步尚未跑過）才退回用名稱推導。
+    // SKU主檔 的「出貨型態」是唯一真相，看板不自己從名稱推導。
+    // 該欄空著只會發生在剛遷移完、同步還沒跑過那一段；這時當成「未知」，
+    // 不要拿顯示名稱來猜——它有可能還是貨品層的舊名稱，而那正是不可信的來源。
     const stockModes = new Map(catalog.map((item) => [
       item.sku,
-      stockModeFromLabel(item.stockMode) ?? classifyStockMode(item.displayName)
+      stockModeFromLabel(item.stockMode) ?? STOCK_MODE.UNKNOWN
     ]));
     const recentUnits = orders.recentlyOrdered?.units ?? new Map();
 

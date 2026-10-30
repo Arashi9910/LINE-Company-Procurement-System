@@ -262,12 +262,12 @@ test('runFlyingMouseSync auto mode bypasses approvals and writes the source cata
   assert.equal(result.inventorySync, null);
   assert.equal(result.catalogSync.inserted, 1);
   assert.equal(result.catalogSync.updated, 1);
+  // 這個案例走 --input，不開瀏覽器，所以沒有銷售商品資料。那不是「都不知道」，
+  // 是「這輪沒查」——O 欄完全不碰，才不會把上一輪正確的值洗成「未知」。
   assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
     "'SKU主檔'!B2:H2",
-    "'SKU主檔'!O2",
     "'SKU主檔'!A3:J3",
-    "'SKU主檔'!L3:M3",
-    "'SKU主檔'!O3"
+    "'SKU主檔'!L3:M3"
   ]);
   assert.deepEqual(result.trackingNameSync, { refreshed: 0, unchanged: 0, skipped: 0, dryRun: false });
 });

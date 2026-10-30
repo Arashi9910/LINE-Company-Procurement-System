@@ -163,7 +163,8 @@ test('SheetsRepository writes disjoint ranges without blocking spill formulas', 
   assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
     "'補貨追蹤'!A6:D6",
     "'補貨追蹤'!F6:J6",
-    "'補貨追蹤'!M6:S6"
+    "'補貨追蹤'!M6:S6",
+    "'補貨追蹤'!W6"
   ]);
   assert.equal(write.requestBody.data.some((entry) => /!E|!K|!L/.test(entry.range)), false);
 });
@@ -599,6 +600,7 @@ test('SheetsRepository appends approved purchase additions without overwriting l
     "'補貨追蹤'!A4:D4",
     "'補貨追蹤'!F4:J4",
     "'補貨追蹤'!M4:S4",
+    "'補貨追蹤'!W4",
     "'操作紀錄'!A2:F2"
   ]);
   assert.deepEqual(write.requestBody.data[2].values[0], [
@@ -1017,9 +1019,11 @@ test('SheetsRepository applies a pending same-product spec correction with the f
     '2026/07/20', 0, 5, '', '', 'SKU-RED', 'U1', 'C1', 'BUYER', '', 'create-key',
     'SKU-BLUE', '', ''
   ];
+  // 同商品的兩個規格可以是不同出貨型態：紅色現貨、藍色預購。
+  // 修正成藍色之後 W 欄必須跟著換，不能留著紅色的「現貨」。
   const catalogRows = [
-    ['SKU-RED', '收納盒', '紅色', '', 10, '', '', '收納盒｜紅色', '一般SKU', '是', '', '個', '飛鼠', '2026-07-14'],
-    ['SKU-BLUE', '收納盒', '藍色', '', 20, '', '', '收納盒｜藍色', '一般SKU', '是', '', '個', '飛鼠', '2026-07-14']
+    ['SKU-RED', '收納盒', '紅色', '', 10, '', '', '收納盒｜紅色', '一般SKU', '是', '', '個', '飛鼠', '2026-07-14', '現貨'],
+    ['SKU-BLUE', '收納盒', '藍色', '', 20, '', '', '收納盒｜藍色', '一般SKU', '是', '', '個', '飛鼠', '2026-07-14', '預購']
   ];
   let write;
   const repository = new SheetsRepository({
@@ -1042,6 +1046,7 @@ test('SheetsRepository applies a pending same-product spec correction with the f
   assert.deepEqual(write.requestBody.data.map((entry) => entry.range), [
     "'補貨追蹤'!D2",
     "'補貨追蹤'!N2",
+    "'補貨追蹤'!W2",
     "'補貨追蹤'!V2",
     "'補貨追蹤'!G2",
     "'補貨追蹤'!J2",
@@ -1049,12 +1054,14 @@ test('SheetsRepository applies a pending same-product spec correction with the f
     "'操作紀錄'!A2:F2",
     "'飛鼠庫存回寫'!A2:O2"
   ]);
-  assert.deepEqual(write.requestBody.data.slice(0, 3).map((entry) => entry.values[0][0]), [
-    '收納盒｜藍色', 'SKU-BLUE', 'SKU-RED'
+  assert.deepEqual(write.requestBody.data.slice(0, 4).map((entry) => entry.values[0][0]), [
+    '收納盒｜藍色', 'SKU-BLUE', '預購', 'SKU-RED'
   ]);
-  assert.equal(write.requestBody.data[6].values[0][5], '本次 1 項，套用規格修正 1 項');
-  assert.equal(write.requestBody.data[7].values[0][3], 'SKU-BLUE');
-  assert.equal(write.requestBody.data[7].values[0][4], 2);
+  const operationLog = write.requestBody.data.find((entry) => entry.range.includes('操作紀錄'));
+  assert.equal(operationLog.values[0][5], '本次 1 項，套用規格修正 1 項');
+  const writeback = write.requestBody.data.find((entry) => entry.range.includes('飛鼠庫存回寫'));
+  assert.equal(writeback.values[0][3], 'SKU-BLUE');
+  assert.equal(writeback.values[0][4], 2);
   assert.equal(result.items[0].sku, 'SKU-BLUE');
   assert.equal(result.items[0].skuCorrectionApplied, true);
   assert.equal(result.items[0].skuCorrectionOriginalSku, 'SKU-RED');

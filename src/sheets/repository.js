@@ -21,8 +21,10 @@ import {
   flagDuplicateEffectiveSkus,
   resolveOrderSpecCorrection
 } from './order-spec-correction.js';
+import { STOCK_MODE, STOCK_MODE_LABEL } from '../services/stock-mode.js';
 
 const TRACKING_SHEET = '補貨追蹤';
+const UNKNOWN_STOCK_MODE = STOCK_MODE_LABEL[STOCK_MODE.UNKNOWN];
 const SKU_SHEET = 'SKU主檔';
 const PRODUCT_IMAGES_SHEET = '商品圖片對照';
 const SETTINGS_SHEET = '系統設定';
@@ -87,6 +89,9 @@ function catalogSku(row) {
     searchKeywords: String(row[10] ?? ''),
     unit: String(row[11] || '件'),
     updatedAt: String(row[13] ?? ''),
+    // 由每小時同步從銷售商品名稱推導。補貨追蹤的 W 欄要跟著它走，
+    // 否則規格修正後 W 會留著舊 SKU 的型態（規格第 4.3 節）。
+    stockMode: String(row[14] ?? ''),
     available: row[9] === '是'
   };
 }
@@ -179,7 +184,7 @@ export class SheetsRepository {
   async #listSkuCatalog() {
     const response = await this.sheets.spreadsheets.values.get({
       spreadsheetId: this.spreadsheetId,
-      range: `'${SKU_SHEET}'!A2:N`
+      range: `'${SKU_SHEET}'!A2:O`
     });
 
     return (response.data.values ?? [])
@@ -377,7 +382,8 @@ export class SheetsRepository {
       data.push(
         { range: `'${TRACKING_SHEET}'!A${row}:D${row}`, values: [[newId, serial, actor.displayName || '採購人員', sku.displayName]] },
         { range: `'${TRACKING_SHEET}'!F${row}:J${row}`, values: [[0, '已下單', item.quantity, dateSerial(draft.expectedDate), 0]] },
-        { range: `'${TRACKING_SHEET}'!M${row}:S${row}`, values: [[draft.note, item.sku, actor.userId, draft.groupId, actor.userId, serial, key]] }
+        { range: `'${TRACKING_SHEET}'!M${row}:S${row}`, values: [[draft.note, item.sku, actor.userId, draft.groupId, actor.userId, serial, key]] },
+        { range: `'${TRACKING_SHEET}'!${TRACKING_LAST_COLUMN}${row}`, values: [[sku.stockMode || UNKNOWN_STOCK_MODE]] }
       );
       return { sku: item.sku, displayName: sku.displayName, unit: sku.unit, requestedQuantity: 0,
         orderedQuantity: item.quantity, receivedQuantity: 0, outstandingQuantity: item.quantity, status: '已下單', expectedDate: draft.expectedDate };
@@ -454,6 +460,12 @@ export class SheetsRepository {
             serial,
             input.idempotencyKey
           ]]
+        },
+        // 建單當下就寫出貨型態，不要空著等下一輪每小時刷新——採購正是在這個
+        // 時間點判斷要不要叫貨。
+        {
+          range: `'${TRACKING_SHEET}'!${TRACKING_LAST_COLUMN}${row}`,
+          values: [[sku.stockMode || UNKNOWN_STOCK_MODE]]
         }
       );
       return {
@@ -783,6 +795,10 @@ export class SheetsRepository {
             serial,
             input.idempotencyKey
           ]]
+        },
+        {
+          range: `'${TRACKING_SHEET}'!${TRACKING_LAST_COLUMN}${rowNumber}`,
+          values: [[sku.stockMode || UNKNOWN_STOCK_MODE]]
         }
       );
       return {
@@ -869,6 +885,12 @@ export class SheetsRepository {
         data.push(
           { range: `'${TRACKING_SHEET}'!D${item.rowNumber}`, values: [[item.displayName]] },
           { range: `'${TRACKING_SHEET}'!N${item.rowNumber}`, values: [[item.sku]] },
+          // 這一列可能同時被推進成已完成，之後就不再進入每小時刷新的範圍；
+          // W 沒在這裡一起換掉的話，舊 SKU 的型態會永久留著。
+          {
+            range: `'${TRACKING_SHEET}'!${TRACKING_LAST_COLUMN}${item.rowNumber}`,
+            values: [[item.stockMode || UNKNOWN_STOCK_MODE]]
+          },
           { range: `'${TRACKING_SHEET}'!V${item.rowNumber}`, values: [[item.canonicalSku]] }
         );
       }

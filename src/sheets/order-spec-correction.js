@@ -144,6 +144,9 @@ export function resolveOrderSpecCorrection({ item, catalogBySku = new Map() }) {
     ...base,
     sku: correctionSku,
     displayName: text(target.displayName) || text(target.productName) || correctionSku,
+    // 型態要換成修正後 SKU 的，不能留著原 SKU 的：同商品的兩個規格可能一個現貨
+    // 一個預購。查不到就寫「未知」，不沿用舊值。
+    stockMode: text(target.stockMode),
     unit: text(target.unit) || text(item?.unit) || '件',
     skuCorrectionPending: true,
     skuCorrectionOriginalSku: canonicalSku

@@ -102,7 +102,6 @@ test('catalog sync inserts new SKUs and refreshes every source-owned B:H field',
       range: "'SKU主檔'!B2:H2",
       values: [['新版商品 A', '紅色', '大', 8, '0012345', 'A-01', '新版商品 A｜紅色｜大']]
     },
-    { range: "'SKU主檔'!O2", values: [['未知']] },
     {
       range: "'SKU主檔'!A3:J3",
       values: [[
@@ -110,8 +109,7 @@ test('catalog sync inserts new SKUs and refreshes every source-owned B:H field',
         '一般SKU', '是'
       ]]
     },
-    { range: "'SKU主檔'!L3:M3", values: [['件', '飛鼠']] },
-    { range: "'SKU主檔'!O3", values: [['未知']] }
+    { range: "'SKU主檔'!L3:M3", values: [['件', '飛鼠']] }
   ]);
 });
 
@@ -182,7 +180,7 @@ test('catalog sync preserves source-missing rows and expands capacity for new SK
   assert.deepEqual(structuralWrites[0].requestBody.requests, [{
     appendDimension: { sheetId: 3, dimension: 'ROWS', length: 100 }
   }]);
-  assert.deepEqual(write.requestBody.data.slice(-3), [
+  assert.deepEqual(write.requestBody.data.slice(-2), [
     {
       range: "'SKU主檔'!A3:J3",
       values: [[
@@ -190,8 +188,7 @@ test('catalog sync preserves source-missing rows and expands capacity for new SK
         '一般SKU', '是'
       ]]
     },
-    { range: "'SKU主檔'!L3:M3", values: [['件', '飛鼠']] },
-    { range: "'SKU主檔'!O3", values: [['未知']] }
+    { range: "'SKU主檔'!L3:M3", values: [['件', '飛鼠']] }
   ]);
 });
 
@@ -630,7 +627,10 @@ test('catalog sync writes the sales product name into 補貨顯示名稱', async
     }),
     spreadsheetId: 'sheet-123',
     sourceItems: [catalogSource({ productName: '預售✨ 收納盒' })],
-    imageItems: [image({ sku: 'SKU-A', productName: '隔日到貨⚡️ 收納盒' })]
+    imageItems: [image({
+      sku: 'SKU-A',
+      productBindings: [{ productName: '隔日到貨⚡️ 收納盒' }]
+    })]
   });
 
   const byRange = new Map(write.requestBody.data.map((entry) => [entry.range, entry.values[0]]));
@@ -640,22 +640,51 @@ test('catalog sync writes the sales product name into 補貨顯示名稱', async
   assert.deepEqual(byRange.get("'SKU主檔'!O2"), ['現貨']);
 });
 
-test('catalog sync falls back to the part name when the sales name is missing', async () => {
+// 未綁定銷售商品的貨品，只有貨品列表那一行的字串，沒有銷售商品記錄可對照。
+// 名稱可以沿用，型態不行——貨品層的前綴正是整件事不可信的來源。
+test('catalog sync marks an unbound part as 未知 instead of reading its prefix', async () => {
   let write;
   await syncCatalogItems({
     sheets: catalogSheets({ rows: [], onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [
+      catalogSource({ partNumber: 'SKU-A', productName: '預售✨ 收納盒' }),
+      catalogSource({ partNumber: 'SKU-Z', productName: '預售✨ 沒綁定的貨品' })
+    ],
+    imageItems: [
+      image({ sku: 'SKU-A', productBindings: [{ productName: '隔日到貨⚡️ 收納盒' }] }),
+      // mergeProductDetails 對未綁定的貨品原樣回傳，沒有 productBindings。
+      image({ partId: '2', sku: 'SKU-Z', productId: '', productName: '預售✨ 沒綁定的貨品' })
+    ]
+  });
+
+  const byRange = new Map(write.requestBody.data.map((entry) => [entry.range, entry.values[0]]));
+  const unbound = [...byRange].find(([range]) => range.endsWith(':J3'))[1];
+  assert.equal(unbound[0], 'SKU-Z');
+  assert.equal(unbound[7], '預售✨ 沒綁定的貨品｜紅色｜大');
+  assert.deepEqual(byRange.get("'SKU主檔'!O3"), ['未知']);
+});
+
+// 整輪都沒有銷售商品資料（--input 走既有 Excel、不開瀏覽器）時，H 可以回退到
+// 貨品名稱，但 O 欄一個字都不能碰：那不是「都不知道」，是「這輪沒查」，
+// 照寫下去會把上一輪正確的值全部洗成「未知」。
+test('catalog sync leaves 出貨型態 untouched when no product list was captured', async () => {
+  let write;
+  await syncCatalogItems({
+    sheets: catalogSheets({
+      rows: [[
+        'SKU-A', '舊名', '紅色', '大', 1, '', '', '舊顯示名', '一般SKU', '是',
+        '', '件', '飛鼠', '', '現貨'
+      ]],
+      onWrite: (request) => { write = request; }
+    }),
     spreadsheetId: 'sheet-123',
     sourceItems: [catalogSource({ productName: '預售✨ 收納盒' })],
     imageItems: []
   });
 
-  const inserted = write.requestBody.data
-    .find((entry) => entry.range === "'SKU主檔'!A2:J2").values[0];
-  assert.equal(inserted[7], '預售✨ 收納盒｜紅色｜大');
-  assert.deepEqual(
-    write.requestBody.data.find((entry) => entry.range === "'SKU主檔'!O2").values[0],
-    ['預購']
-  );
+  assert.deepEqual(write.requestBody.data.map((entry) => entry.range), ["'SKU主檔'!B2:H2"]);
+  assert.equal(write.requestBody.data[0].values[0][6], '預售✨ 收納盒｜紅色｜大');
 });
 
 // 一個貨號綁多個銷售商品時，兩邊前綴不一樣就無從判斷。名稱還是取第一個綁定
