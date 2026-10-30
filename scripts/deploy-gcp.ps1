@@ -58,7 +58,8 @@ $appVersion = "$packageVersion+$gitShort"
 $deployedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 $flyingmouseWritebackEnabled = if ($EnableFlyingmouseWriteback) { 'true' } else { 'false' }
 $dailyTodosEnabled = if ($EnableDailyTodos) { 'true' } else { 'false' }
-# 看板分頁必須先存在（scripts/setup-inventory-dashboard.mjs），否則嚴格表頭比對會讓整輪失敗。
+# The four dashboard sheets must already exist (scripts/setup-inventory-dashboard.mjs):
+# header checks are exact, so a missing sheet fails the whole round.
 $inventoryDashboardEnabled = if ($EnableInventoryDashboard) { 'true' } else { 'false' }
 $purchaseDraftsEnabled = if ($EnablePurchaseDrafts) { 'true' } else { 'false' }
 

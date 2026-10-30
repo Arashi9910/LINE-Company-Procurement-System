@@ -23,8 +23,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# 關閉時合併 Job 的看板階段會乾淨跳過；開啟前看板分頁必須先建好
-# （scripts/setup-inventory-dashboard.mjs），否則嚴格表頭比對會讓那一階段失敗。
+# When off, the combined job skips its dashboard phase cleanly. Before turning it on the four
+# dashboard sheets must exist (scripts/setup-inventory-dashboard.mjs): header checks are exact,
+# so a missing sheet fails that phase.
 $inventoryDashboardEnabled = if ($EnableInventoryDashboard) { 'true' } else { 'false' }
 
 if ($WritebackMode -eq 'live' -and -not $ApproveLive) {
