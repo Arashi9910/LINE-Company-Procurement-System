@@ -272,6 +272,35 @@ test('runInventoryDashboard reads the sheets fresh, after the writeback phase', 
   assert.equal(state.calls.reads.some((range) => range.includes('預購額度')), true);
 });
 
+test('a failed velocity query fails the whole round instead of publishing zeros', async () => {
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-A', 7)],
+    syncStatus: [[...SYNC_STATUS_HEADERS], [DASHBOARD_SYNC_OK, '2026-10-29 14:00:00', '2026-10-29 14:00:00', '']]
+  });
+
+  const result = await runInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    readOrders: async () => ({
+      parts: [],
+      orderCounts: { processing: 0, preparing: 0 },
+      driftedOrderIds: [],
+      recentlyOrdered: null,
+      recentlyOrderedError: '飛鼠訂單查詢逾時'
+    }),
+    listTrackingRows: async () => [],
+    updatedAt: UPDATED_AT,
+    logger: silentLogger
+  });
+
+  // 動銷件數是安全庫存的計算依據。查不到卻當成「沒有動銷」的話，
+  // 現貨商品的安全庫存會整批變 0，然後發布一張「全部正常」的看板——比不更新還糟。
+  assert.equal(result.ok, false);
+  assert.match(result.error, /近 30 天動銷查詢失敗/);
+  assert.deepEqual(dashboardWrites(state.calls), []);
+  assert.equal(statusWrite(state.calls)[1], '2026-10-29 14:00:00');
+});
+
 test('a failed order read leaves the board untouched and records the failure', async () => {
   const previousBoard = [
     [...DASHBOARD_HEADERS],

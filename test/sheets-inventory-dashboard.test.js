@@ -390,7 +390,8 @@ test('initializeInventoryDashboard creates both sheets with frozen bold headers'
         return { data: {} };
       },
       values: {
-        async get() { throw new Error('不該讀不存在的分頁'); }
+        async get() { throw new Error('不該讀不存在的分頁'); },
+        async clear() { throw new Error('新建分頁不該需要清空'); }
       }
     }
   };
@@ -401,6 +402,7 @@ test('initializeInventoryDashboard creates both sheets with frozen bold headers'
     created: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME],
     checked: [],
     rewritten: [],
+    clearedRows: 0,
     changes: 8
   });
   const added = batch.requestBody.requests.filter((entry) => entry.addSheet);
@@ -433,7 +435,8 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
           if (range.includes(SYNC_STATUS_SHEET_NAME)) return { data: { values: [[...SYNC_STATUS_HEADERS]] } };
           if (range.includes(MOVEMENT_SHEET_NAME)) return { data: { values: [[...MOVEMENT_HEADERS]] } };
           return { data: { values: [[...DASHBOARD_HEADERS]] } };
-        }
+        },
+        async clear() { throw new Error('表頭沒變就不該清空'); }
       }
     }
   };
@@ -444,6 +447,7 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
     created: [],
     checked: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME],
     rewritten: [],
+    clearedRows: 0,
     changes: 0
   });
   assert.deepEqual(batches, []);
@@ -453,6 +457,7 @@ test('initializeInventoryDashboard rewrites a system sheet header but never a ma
   // 系統每輪整張覆寫的分頁，表頭由程式當準，不然每次加欄位都要人進去手動改。
   // 「預購額度」是使用者的資料，腳本沒有資格改它。
   const batches = [];
+  const cleared = [];
   const sheetsFactory = (headersBySheet) => ({
     spreadsheets: {
       ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME]).spreadsheets,
@@ -466,6 +471,10 @@ test('initializeInventoryDashboard rewrites a system sheet header but never a ma
             if (range.includes(name)) return { data: { values: [headers] } };
           }
           throw new Error(`unexpected range: ${range}`);
+        },
+        async clear({ range }) {
+          cleared.push(range);
+          return { data: {} };
         }
       }
     }
@@ -482,6 +491,8 @@ test('initializeInventoryDashboard rewrites a system sheet header but never a ma
     spreadsheetId: 'sheet-123'
   });
   assert.deepEqual(stale.rewritten, [DASHBOARD_SHEET_NAME]);
+  // 欄位插在中間時舊的資料列會整排錯位，所以換表頭一定要連舊列一起清掉。
+  assert.deepEqual(cleared, ["'庫存看板'!A2:O"]);
 
   // 人工維護的分頁被改名 → 停手，不覆寫。
   await assert.rejects(initializeInventoryDashboard({

@@ -107,6 +107,12 @@ export async function runInventoryDashboard({
   try {
     // 訂單要先讀：它最慢（要登入飛鼠），失敗的話就不必動任何分頁。
     const orders = await readOrders();
+    // 動銷件數現在是安全庫存的計算依據，不再只是個篩子。
+    // 查不到就當成「沒有動銷」的話，現貨商品的安全庫存會整批變 0，
+    // 然後把一張「全部正常」的看板發布出去——比不更新還糟。
+    if (orders.recentlyOrderedError) {
+      throw new Error(`近 30 天動銷查詢失敗，這一輪不發布：${orders.recentlyOrderedError}`);
+    }
 
     // 回寫之後重新讀，不可重用回寫前讀到的值。
     const { catalog, tracking, preorders, events } = await readConsistentSnapshot({

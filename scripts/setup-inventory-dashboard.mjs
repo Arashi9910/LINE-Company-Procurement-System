@@ -66,6 +66,7 @@ export async function initializeInventoryDashboard({ sheets, spreadsheetId }) {
   const created = [];
   const checked = [];
   const rewritten = [];
+  const clears = [];
 
   for (const table of DASHBOARD_TABLES) {
     const sheet = existing.find((item) => item.properties?.title === table.name);
@@ -107,6 +108,10 @@ export async function initializeInventoryDashboard({ sheets, spreadsheetId }) {
             fields: 'userEnteredValue,userEnteredFormat.textFormat.bold'
           }
         });
+        // 欄位插在中間時，舊的資料列會整排錯位（舊的「狀態」會被當成「缺口」）。
+        // 這些分頁每輪都會整張重寫，所以把舊列清掉最安全——
+        // 留著的話，萬一下一輪同步失敗，查缺貨 會讀到一份解析錯誤的資料。
+        clears.push(`'${table.name}'!A2:${columnLetter(table.headers.length)}`);
         rewritten.push(table.name);
       }
       if ((sheet.properties.gridProperties?.rowCount ?? 0) < table.rowCount) {
@@ -158,7 +163,10 @@ export async function initializeInventoryDashboard({ sheets, spreadsheetId }) {
   if (requests.length > 0) {
     await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
   }
-  return { created, checked, rewritten, changes: requests.length };
+  for (const range of clears) {
+    await sheets.spreadsheets.values.clear({ spreadsheetId, range });
+  }
+  return { created, checked, rewritten, clearedRows: clears.length, changes: requests.length };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -162,6 +162,34 @@ test('a quiet physical SKU never asks to be reordered', () => {
   assert.equal(row.status, '正常');
 });
 
+test('a sold-out physical SKU with nothing else still reaches the board', () => {
+  // 庫存 0、貨都寄完、沒有叫貨中、沒有人工額度——四項候選條件都不符合，
+  // 但它正是最該補貨的那一種。使用者說「賣 1 件也要知道」。
+  const rows = buildInventoryDashboard({
+    catalog: [{ sku: 'SOLDOUT', displayName: '現貨✨賣完了', stock: 0 }],
+    orderQuantities: [],
+    stockModes: new Map([['SOLDOUT', STOCK_MODE.PHYSICAL]]),
+    recentUnits: new Map([['SOLDOUT', 1]]),
+    updatedAt: '2026-10-30 14:00:00'
+  }).rows;
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].safetyStock, 1);
+  assert.equal(rows[0].gap, 1);
+  assert.equal(rows[0].status, '要叫貨');
+});
+
+test('a SKU with zero recent units does not get dragged onto the board', () => {
+  const rows = buildInventoryDashboard({
+    catalog: [{ sku: 'QUIET', displayName: '現貨✨沒人買', stock: 0 }],
+    stockModes: new Map([['QUIET', STOCK_MODE.PHYSICAL]]),
+    recentUnits: new Map([['QUIET', 0]]),
+    updatedAt: '2026-10-30 14:00:00'
+  }).rows;
+
+  assert.deepEqual(rows, []);
+});
+
 test('without stockModes the board behaves exactly as before', () => {
   const rows = buildInventoryDashboard({
     catalog: [{ sku: 'PHY', displayName: '現貨✨某某', stock: 5 }],

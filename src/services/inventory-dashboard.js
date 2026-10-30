@@ -247,7 +247,10 @@ export function buildInventoryDashboard({
     ...correctionIssues.keys(),
     // 到貨已登記、追蹤已結案，但回寫還沒跑完的 SKU 可能四項都沒有，
     // 仍要列出來才看得到「回寫未完成」。
-    ...pendingSkus
+    ...pendingSkus,
+    // 近 30 天有賣出的也要列：庫存 0、貨都寄完、沒有叫貨中的現貨商品
+    // 四項都不符合，但它正是最該補貨的那一種（使用者：賣 1 件也要知道）。
+    ...[...recentUnits].filter(([, units]) => Number(units) > 0).map(([sku]) => sku)
   ]);
 
   const rows = [...candidates].map((sku) => {
