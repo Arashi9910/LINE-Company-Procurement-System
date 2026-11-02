@@ -227,6 +227,9 @@ export function buildInventoryDashboard({
   // 沒給就全部當 unknown、件數 0，行為跟以前一樣（額度與安全庫存都是 0）。
   stockModes = new Map(),
   recentUnits = new Map(),
+  // 貨號汰換把舊貨號的數字折疊過來之後，要在備註說明來源，
+  // 否則新貨號的未寄與安全庫存會無聲無息地變大（規格第 4 節）。
+  retirementNotes = new Map(),
   coverDays = DEFAULT_COVER_DAYS,
   updatedAt = ''
 } = {}) {
@@ -292,6 +295,8 @@ export function buildInventoryDashboard({
     if (publishable && closeShortfall > 0) {
       notes.push(`目前不能關閉預購，還差 ${closeShortfall} 個`);
     }
+    const retirementNote = retirementNotes.get(sku);
+    if (retirementNote) notes.push(retirementNote);
 
     return {
       sku,

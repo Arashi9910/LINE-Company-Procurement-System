@@ -13,13 +13,16 @@ import {
   readCatalogSnapshots,
   readDashboardSyncStatus,
   readPreorderAllowances,
+  readSkuRetirements,
   readTrackingRows,
+  writeRetirementResults,
   writeMovementSkus,
   safeSyncMessage,
   writeDashboardSyncStatus,
   writeInventoryDashboard
 } from '../sheets/inventory-dashboard.js';
 import { buildInventoryDashboard } from './inventory-dashboard.js';
+import { applySkuRetirement, RETIREMENT_STATUS } from './sku-retirement.js';
 import { STOCK_MODE, stockModeFromLabel } from './stock-mode.js';
 
 // 要擋的是「除了已完成以外的全部」。WRITEBACK_STATUSES 共五種：
@@ -133,14 +136,26 @@ export async function runInventoryDashboard({
     ]));
     const recentUnits = orders.recentlyOrdered?.units ?? new Map();
 
-    const dashboard = buildInventoryDashboard({
+    // 重新上架會換掉整組貨號，舊貨號上的需求不會消失。把它折疊到新貨號之後才進計算，
+    // 計算本身完全不用改。對應是人工填的，程式不猜（docs/sku-retirement-spec.md）。
+    const retirements = await readSkuRetirements({ sheets, spreadsheetId });
+    const retired = applySkuRetirement({
+      retirements,
       catalog,
       orderQuantities: orders.parts,
+      tracking,
+      recentUnits
+    });
+
+    const dashboard = buildInventoryDashboard({
+      catalog: retired.catalog,
+      orderQuantities: retired.orderQuantities,
       tracking,
       preorders,
       writebackPendingSkus,
       stockModes,
-      recentUnits,
+      recentUnits: retired.recentUnits,
+      retirementNotes: retired.notes,
       updatedAt: attemptedAt
     });
     // 看板與「同步成功」同一批寫入：分兩次的話，看板換新了而狀態寫入失敗，
@@ -181,6 +196,26 @@ export async function runInventoryDashboard({
       }
     }
 
+    // 回寫每一條對應的結果。失敗不影響看板：看板已經寫完了，而這只是給人看的狀態。
+    const blockedRetirements = retired.results
+      .filter((item) => item.status !== RETIREMENT_STATUS.APPLIED).length;
+    if (retired.results.length > 0) {
+      try {
+        await writeRetirementResults({
+          sheets,
+          spreadsheetId,
+          results: retired.results,
+          checkedAt: attemptedAt
+        });
+      } catch (error) {
+        log(logger, 'warn', {
+          component: 'inventory-dashboard',
+          status: 'retirement-status-write-failed',
+          error: safeSyncMessage(error?.message ?? '未知錯誤')
+        });
+      }
+    }
+
     log(logger, 'info', {
       component: 'inventory-dashboard',
       status: 'completed',
@@ -188,6 +223,8 @@ export async function runInventoryDashboard({
       rows: written.rows,
       clearedRows: written.clearedRows,
       writebackPendingSkus: writebackPendingSkus.length,
+      retirementsApplied: retired.applied,
+      retirementsBlocked: blockedRetirements,
       orderCounts: orders.orderCounts
     });
     return Object.freeze({
@@ -196,6 +233,8 @@ export async function runInventoryDashboard({
       clearedRows: written.clearedRows,
       writebackPendingSkus: writebackPendingSkus.length,
       movementSkus: movement?.skus ?? null,
+      retirementsApplied: retired.applied,
+      retirementsBlocked: blockedRetirements,
       syncStatus
     });
   } catch (error) {
