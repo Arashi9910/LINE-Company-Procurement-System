@@ -409,8 +409,11 @@ export async function syncReviewFindings({ sheets, spreadsheetId, diff, generate
   return { created, findings: findings.length, inserted, updated, resolved, staleApprovals };
 }
 
+// 順序要與 sheets-operational.js 的 buildDisplayName 一致（規格在前）。
+// 只改那邊的話，核准匯入寫出來的新列會是舊格式，而 review 模式不跑目錄同步，
+// 不會自動被補正。
 function buildDisplayName(source) {
-  return [source.productName, source.spec1, source.spec2].map(normalizeText).filter(Boolean).join('｜');
+  return [source.spec1, source.spec2, source.productName].map(normalizeText).filter(Boolean).join('｜');
 }
 
 function sameCatalogIdentity(mainRow, source) {

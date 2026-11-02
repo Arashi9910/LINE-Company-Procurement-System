@@ -25,13 +25,26 @@ export function buildCatalogIndex({ images = [], orderableSkus = [] } = {}) {
   for (const image of images) {
     const sku = text(image?.sku);
     if (!sku || index.has(sku)) continue;
-    index.set(sku, { imageUrl: pickImageUrl(image), unit: '件', stockMode: '', orderable: false });
+    index.set(sku, {
+      imageUrl: pickImageUrl(image),
+      unit: '件',
+      stockMode: '',
+      orderable: false,
+      // 規格與商品名稱在上游本來就是分開的欄位，不要從「規格｜名稱」切回來：
+      // 商品名稱本身可能含「｜」，切錯就把規格顯示成別的東西。
+      spec: text(image?.variantName),
+      productName: text(image?.productName)
+    });
   }
   for (const item of orderableSkus) {
     const sku = text(item?.sku);
     if (!sku) continue;
-    const entry = index.get(sku) ?? { imageUrl: '', unit: '件', stockMode: '', orderable: false };
+    const entry = index.get(sku)
+      ?? { imageUrl: '', unit: '件', stockMode: '', orderable: false, spec: '', productName: '' };
     entry.unit = text(item?.unit) || '件';
+    // SKU主檔 的蝦皮規格優先（那是採購在表上看到的字），沒有才用飛鼠的規格名稱。
+    const specs = [text(item?.spec1), text(item?.spec2)].filter(Boolean).join('｜');
+    if (specs) entry.spec = specs;
     // 出貨型態的單一真相是 SKU主檔 的 O 欄，由每小時同步從銷售商品名稱寫入。
     entry.stockMode = text(item?.stockMode);
     entry.orderable = true;
@@ -49,6 +62,9 @@ function shortageItem(row, catalog) {
     imageUrl: entry?.imageUrl ?? '',
     unit: entry?.unit ?? '件',
     stockMode: entry?.stockMode ?? '',
+    // 卡片把規格獨立一行顯示，所以兩者分開回傳，前端不必解析字串。
+    spec: entry?.spec ?? '',
+    productName: entry?.productName ?? '',
     orderable: entry?.orderable === true,
     gap: row.gap,
     unshipped: row.unshipped,

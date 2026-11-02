@@ -419,16 +419,36 @@ textarea { resize: vertical; }
 /* 缺貨清單（查缺貨 的 LIFF 頁面） */
 .shortage-section { margin-top: 18px; }
 .shortage-list { display: grid; gap: 9px; margin-top: 14px; }
+/* 頁面底是淺灰、卡片白底，光靠 1px 細框看起來很平。加上陰影與有底色的標題帶，
+   每一筆才看得出是一個獨立的方框。 */
 .shortage-row {
+  overflow: hidden;
+  border: 1px solid #d7dcd7;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(32, 45, 37, .07);
+}
+.shortage-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 11px;
+  background: var(--soft-green);
+  border-bottom: 1px solid #cfe7d8;
+}
+.shortage-body {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr);
   gap: 11px;
   padding: 11px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: #fff;
 }
+/* 不可補貨的整張卡壓灰，連標題帶一起，避免看起來還能操作。 */
 .shortage-row[data-blocked="true"] { background: #faf9f7; }
+.shortage-row[data-blocked="true"] .shortage-header {
+  background: #eef0ee;
+  border-bottom-color: var(--border);
+}
 /* 圖片載不出來時留白會讓整列塌掉，所以佔位方塊要有固定尺寸。 */
 .shortage-image {
   width: 64px;
@@ -448,6 +468,9 @@ textarea { resize: vertical; }
 .shortage-pick label { font-size: .8rem; }
 .shortage-badge {
   align-self: start;
+  /* 標題帶是 flex：不加這兩個的話，規格一長標籤就會被擠成兩行。 */
+  flex: none;
+  white-space: nowrap;
   padding: 1px 7px;
   border-radius: 999px;
   background: var(--soft-green);
@@ -457,3 +480,16 @@ textarea { resize: vertical; }
 }
 .shortage-badge[data-mode="預購"] { background: #fff3cd; color: #7a5500; }
 .shortage-badge[data-mode=""], .shortage-badge[data-mode="未知"] { background: #eef0ee; color: var(--muted); }
+
+/* 規格是分辨同商品不同規格的唯一依據，要比商品名稱醒目。 */
+.shortage-spec { font-size: .95rem; line-height: 1.35; color: #11221a; }
+.shortage-product {
+  color: var(--muted);
+  font-size: .76rem;
+  line-height: 1.4;
+  /* 蝦皮的關鍵字堆疊很長，限兩行就好，不要把卡片撐開。 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

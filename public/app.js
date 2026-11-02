@@ -817,16 +817,29 @@ function shortageRow(entry, catalogBySku) {
   // 有約 72 筆綁定指向已刪除的銷售商品，網址可能失效：載不出來就留佔位方塊。
   image.addEventListener('error', () => { image.removeAttribute('src'); });
 
+  // 卡片分成「標題帶」與「內容」兩塊：標題帶有底色，整張卡才看得出是一個方框。
+  const header = document.createElement('div');
+  header.className = 'shortage-header';
+
+  const body = document.createElement('div');
+  body.className = 'shortage-body';
+
   const info = document.createElement('div');
   info.className = 'shortage-info';
 
+  // 規格要獨立一行而且醒目：商品名稱是蝦皮的關鍵字堆疊（常常 50～60 字），
+  // 規格混在裡面的話，同一商品的不同規格看起來一模一樣。2026-11-02 就因此
+  // 讓人把戒指的採購單當成項鍊的。
   const title = document.createElement('strong');
-  title.textContent = entry.displayName;
+  title.className = 'shortage-spec';
+  title.textContent = entry.spec || entry.displayName;
 
   const badge = document.createElement('span');
   badge.className = 'shortage-badge';
   badge.dataset.mode = entry.stockMode || '';
   badge.textContent = entry.stockMode || '型態未知';
+
+  header.append(title, badge);
 
   const sku = document.createElement('span');
   sku.className = 'shortage-sku';
@@ -837,7 +850,14 @@ function shortageRow(entry, catalogBySku) {
   numbers.textContent = `缺口 ${entry.gap} ${entry.unit}｜未寄 ${entry.unshipped}`
     + `｜叫貨中 ${entry.onOrder}｜飛鼠 ${entry.flyingmouseStock}`;
 
-  info.append(title, badge, sku, numbers);
+  // 有規格時才另外列商品名稱；沒有規格的話標題已經是名稱了，不重複顯示。
+  if (entry.spec && entry.productName) {
+    const product = document.createElement('span');
+    product.className = 'shortage-product';
+    product.textContent = entry.productName;
+    info.append(product);
+  }
+  info.append(sku, numbers);
 
   if (entry.note) {
     const note = document.createElement('span');
@@ -852,7 +872,8 @@ function shortageRow(entry, catalogBySku) {
     blocked.className = 'shortage-note';
     blocked.textContent = 'SKU主檔 標記為不可補貨，無法從這裡下單';
     info.append(blocked);
-    row.append(image, info);
+    body.append(image, info);
+    row.append(header, body);
     return row;
   }
 
@@ -888,7 +909,8 @@ function shortageRow(entry, catalogBySku) {
 
   pick.append(checkbox, label, quantity, document.createTextNode(entry.unit));
   info.append(pick);
-  row.append(image, info);
+  body.append(image, info);
+  row.append(header, body);
   return row;
 }
 

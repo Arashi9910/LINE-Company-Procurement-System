@@ -126,3 +126,41 @@ test('沒有缺貨時三個清單都是空的，摘要也說沒有', () => {
   assert.equal(view.blockedCount, 0);
   assert.match(formatShortageSummary(data), /目前沒有要叫貨的品項/);
 });
+
+// 卡片把規格獨立一行顯示，所以 API 要把規格與商品名稱分開回傳。
+// 不可以讓前端從「規格｜名稱」切回來：商品名稱本身可能含「｜」，切錯就顯示成別的東西。
+test('規格與商品名稱分開回傳，前端不必解析字串', () => {
+  const view = buildShortageView({
+    dashboard: dashboard([row({ sku: 'E1EF5F', displayName: '一條魚項鍊｜預購⚡路亞釣魚項鍊 路亞 釣魚' })]),
+    images: [{ sku: 'E1EF5F', variantName: '飛鼠規格', productName: '預購⚡路亞釣魚項鍊 路亞 釣魚' }],
+    orderableSkus: [{ sku: 'E1EF5F', unit: '件', spec1: '一條魚項鍊', spec2: '' }]
+  });
+
+  const [item] = view.reorder;
+  // SKU主檔 的蝦皮規格優先，那是採購在表上看到的字。
+  assert.equal(item.spec, '一條魚項鍊');
+  assert.equal(item.productName, '預購⚡路亞釣魚項鍊 路亞 釣魚');
+});
+
+test('兩個蝦皮規格要併起來，沒有規格時回空字串', () => {
+  const view = buildShortageView({
+    dashboard: dashboard([row({ sku: 'A' }), row({ sku: 'B' })]),
+    orderableSkus: [
+      { sku: 'A', unit: '件', spec1: '紅色', spec2: '大' },
+      { sku: 'B', unit: '件' }
+    ]
+  });
+
+  assert.equal(view.reorder.find((x) => x.sku === 'A').spec, '紅色｜大');
+  assert.equal(view.reorder.find((x) => x.sku === 'B').spec, '');
+});
+
+test('沒有蝦皮規格時退回飛鼠的規格名稱', () => {
+  const view = buildShortageView({
+    dashboard: dashboard([row({ sku: 'A' })]),
+    images: [{ sku: 'A', variantName: '飛鼠才有的規格', productName: '商品' }],
+    orderableSkus: [{ sku: 'A', unit: '件' }]
+  });
+
+  assert.equal(view.reorder[0].spec, '飛鼠才有的規格');
+});

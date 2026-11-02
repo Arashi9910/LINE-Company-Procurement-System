@@ -116,9 +116,16 @@ function unboundWhitespaceAliases(imageItems) {
 // 採購看到的、也是唯一會隨供貨狀況更新的，是銷售商品名稱。
 // 規格第 2 節：這份資料每小時由 captureFlyingMouseProductList 取得，
 // 不額外增加飛鼠負擔。查不到時沿用貨品名稱，不中斷同步。
+// 規格放最前面，不是接在名稱後面。商品名稱是蝦皮的關鍵字堆疊，常常 50～60 字，
+// 規格接在尾巴的話，Google Sheets 的預設欄寬只看得到前 20 字，同一商品的不同規格
+// 顯示出來完全一樣。2026-11-02 就因此讓人把戒指那張已下單的單當成項鍊的，
+// 然後懷疑看板的「叫貨中」算錯了。
+//
+// 兩個寫入者都要用同一種順序：這裡（每小時同步）與 sheets-review.js（核准匯入）。
+// 只改一邊的話，新核准的 SKU 會是舊格式。
 function buildDisplayName(item, salesName) {
   const name = salesName || item.productName;
-  return [name, item.spec1, item.spec2].filter(Boolean).join('｜');
+  return [item.spec1, item.spec2, name].filter(Boolean).join('｜');
 }
 
 // 一個貨號可能綁多個銷售商品。目前實測衝突數為 0，但不能假設永遠如此：

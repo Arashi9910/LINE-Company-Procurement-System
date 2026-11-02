@@ -222,7 +222,7 @@ test('importApprovedNewItems writes only safe main columns and resets a stale ap
     `'${REVIEW_SHEET_NAME}'!S3`
   ]);
   assert.deepEqual(data[0].values[0], [
-    'SKU-A', '商品 SKU-A', '紅色', '', 7, '00123', 'A-01', '商品 SKU-A｜紅色', '一般SKU', '是'
+    'SKU-A', '商品 SKU-A', '紅色', '', 7, '00123', 'A-01', '紅色｜商品 SKU-A', '一般SKU', '是'
   ]);
   assert.equal(data.some((entry) => /![KN]\d/.test(entry.range)), false);
   assert.deepEqual(data[4].values, [['需重新確認']]);
@@ -316,7 +316,7 @@ test('importApprovedReviewSnapshots imports an approved review snapshot without 
   const data = state.getWrite().requestBody.data;
   assert.deepEqual(data[0], {
     range: "'SKU主檔'!A2:J2",
-    values: [['SKU-FAST', '快速新品', '紅色', '', 9, '00123', 'A-01', '快速新品｜紅色', '一般SKU', '是']]
+    values: [['SKU-FAST', '快速新品', '紅色', '', 9, '00123', 'A-01', '紅色｜快速新品', '一般SKU', '是']]
   });
   assert.deepEqual(data[2].values, [['已匯入']]);
 });
