@@ -56,7 +56,11 @@ test('多個舊貨號指到同一個新貨號時數字相加', () => {
     .filter((entry) => entry.partNo === NEW)
     .reduce((sum, entry) => sum + entry.processing + entry.preparing, 0);
   assert.equal(unshipped, 4);
-  assert.match(result.notes.get(NEW), /；/, '兩條來源都要寫進備註');
+  // 備註要寫「每一條來源各自的貢獻」，不是目標的累計值。印累計值的話，
+  // 兩條備註會寫出同一個數字，加起來跟實際搬的量對不起來。
+  const note = result.notes.get(NEW);
+  assert.match(note, /含已汰換 069A04-舊款拉絲黑 的未寄 2 件、近 30 天 5 件/);
+  assert.match(note, /含已汰換 155118-舊款胡桃色 的未寄 2 件、近 30 天 3 件/);
 });
 
 // 擋下的每一條都只影響自己，不可以讓整輪同步失敗。

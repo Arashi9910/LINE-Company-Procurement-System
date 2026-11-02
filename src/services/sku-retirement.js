@@ -106,6 +106,8 @@ export function applySkuRetirement({
   }
 
   // 未寄：客戶在等的貨要從新貨號出，需求屬於新貨號。
+  // 累計要記在「來源貨號」上而不是目標上：目標可能有多個來源（例如只差空白的
+  // 孿生貨號），記在目標上會讓每一條備註都印出同一個累計值，讀起來對不起來。
   const movedUnshipped = new Map();
   const nextOrders = [];
   for (const entry of orderQuantities) {
@@ -116,7 +118,7 @@ export function applySkuRetirement({
       continue;
     }
     const units = Number(entry?.processing ?? 0) + Number(entry?.preparing ?? 0);
-    if (units > 0) movedUnshipped.set(target, (movedUnshipped.get(target) ?? 0) + units);
+    if (units > 0) movedUnshipped.set(sku, (movedUnshipped.get(sku) ?? 0) + units);
     nextOrders.push({ ...entry, partNo: target });
   }
 
@@ -127,7 +129,7 @@ export function applySkuRetirement({
     const key = text(sku);
     const target = applied.get(key) ?? key;
     if (target !== key && units > 0) {
-      movedUnits.set(target, (movedUnits.get(target) ?? 0) + units);
+      movedUnits.set(key, (movedUnits.get(key) ?? 0) + Number(units ?? 0));
     }
     nextUnits.set(target, (nextUnits.get(target) ?? 0) + Number(units ?? 0));
   }
@@ -139,8 +141,8 @@ export function applySkuRetirement({
   const notes = new Map();
   for (const [oldSku, newSku] of applied) {
     const parts = [];
-    const unshipped = movedUnshipped.get(newSku) ?? 0;
-    const units = movedUnits.get(newSku) ?? 0;
+    const unshipped = movedUnshipped.get(oldSku) ?? 0;
+    const units = movedUnits.get(oldSku) ?? 0;
     if (unshipped > 0) parts.push(`未寄 ${unshipped} 件`);
     if (units > 0) parts.push(`近 30 天 ${units} 件`);
     if (parts.length === 0) continue;
