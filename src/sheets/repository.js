@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readCountPreview } from './count-preview.js';
 import { google } from 'googleapis';
 import { loadTodoStore } from './daily-todos.js';
 import { loadDraftStore, assertSourceUnreserved } from './purchase-drafts.js';
@@ -487,6 +488,10 @@ export class SheetsRepository {
 
   getRequest(targetRequestId) {
     return this.#readRequest(targetRequestId, false);
+  }
+
+  getCountPreview() {
+    return readCountPreview(this);
   }
 
   getRequestForCancellation(targetRequestId) {

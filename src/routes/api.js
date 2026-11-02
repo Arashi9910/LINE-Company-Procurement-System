@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { PILOT_COUNT_SKU } from '../sheets/count-preview.js';
 import { bearerToken } from '../line/identity.js';
 import { verifyGroupContext } from '../line/context.js';
 import { listSearchableSkus, submitRequest } from '../services/requests.js';
@@ -182,10 +183,21 @@ export function createApiRouter({
 
   router.get('/requests/:requestId', async (request, response, next) => {
     try {
-      response.json(await getRequestDetails({
+      const details = await getRequestDetails({
         actor: request.actor,
         requestId: request.params.requestId
-      }, repository));
+      }, repository);
+      if (request.query.preview === 'count' && ['採購確認', '到貨確認', '管理員'].includes(details.actorRole)) {
+        const item = details.items.find(row => row.sku === PILOT_COUNT_SKU && !row.skuCorrectionError);
+        if (item) {
+          try {
+            item.countPreview = await repository.getCountPreview();
+          } catch {
+            item.countPreview = { unavailable: true };
+          }
+        }
+      }
+      response.json(details);
     } catch (error) {
       next(error);
     }
