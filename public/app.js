@@ -548,6 +548,25 @@ function workflowItem(item, mode) {
     row.append(heading);
   }
 
+  if (mode === 'detail' && item.countPreview) {
+    const panel = document.createElement('section');
+    const label = document.createElement('strong');
+    label.textContent = '盤點對帳（唯讀）';
+    panel.append(label);
+    const p = item.countPreview;
+    const lines = p.unavailable ? ['暫時無法核對盤點資料，請稍後重開明細。'] : [
+      `盤點起點　${p.countedAt}（台北）實盤 ${p.physical} 件`,
+      `盤點後已登記到貨　${p.received} 件`,
+      '實際交寄件數待倉庫核對，目前庫存尚未結算。',
+      `本規格對帳排除單　${p.excludedOrders.join('、') || '無'}`
+    ];
+    for (const line of lines) {
+      const paragraph = document.createElement('p');
+      paragraph.textContent = line;
+      panel.append(paragraph);
+    }
+    row.append(panel);
+  }
   if (view.readOnly) return row;
 
   const fields = document.createElement('div');
@@ -588,7 +607,8 @@ function workflowItem(item, mode) {
 }
 
 async function loadWorkflow(mode, requestId) {
-  const request = await api(`/api/requests/${encodeURIComponent(requestId)}`);
+  const query = mode === 'detail' ? '?preview=count' : '';
+  const request = await api(`/api/requests/${encodeURIComponent(requestId)}${query}`);
   const config = workflowConfig(mode);
   if (!config) throw new Error('補貨單連結格式不正確');
   if (config.allowedRoles.length > 0 && !config.allowedRoles.includes(request.actorRole)) {

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createApp } from '../src/app.js';
 import { createGroupContext } from '../src/line/context.js';
+import { PILOT_COUNT_SKU, readCountPreview } from '../src/sheets/count-preview.js';
+import { WRITEBACK_HEADERS, buildWritebackEvent, writebackEventRow } from '../src/flyingmouse/sheets-writeback.js';
 
 function fixture() {
   const calls = {
@@ -85,6 +87,45 @@ async function start(t, dependencies) {
   await once(server, 'listening');
   return `http://127.0.0.1:${server.address().port}`;
 }
+
+test('盤點預覽只向有權限的明細讀取顯示一般款，讀取錯誤保留單據', async t => {
+  const deps = fixture();
+  deps.repository.getRequest = async () => ({ requestId: 'RQ-T', items: [{ sku: PILOT_COUNT_SKU }, { sku: 'OTHER' }] });
+  let reads = 0;
+  deps.repository.getCountPreview = async () => { reads++; return { physical: 9 }; };
+  const base = await start(t, deps);
+  const read = async suffix => (await fetch(base + '/api/requests/RQ-T' + suffix, {
+    headers: { authorization: 'Bearer valid-token' }
+  })).json();
+  assert.equal((await read('')).items[0].countPreview, undefined);
+  const preview = await read('?preview=count');
+  assert.equal(preview.items[0].countPreview.physical, 9);
+  assert.equal(preview.items[1].countPreview, undefined);
+  deps.repository.getAuthorization = async () => ({ role: '申請人', enabled: true });
+  assert.equal((await read('?preview=count')).items[0].countPreview, undefined);
+  assert.equal(reads, 1);
+  deps.repository.getAuthorization = async () => ({ role: '採購確認', enabled: true });
+  deps.repository.getCountPreview = async () => { throw Error('offline'); };
+  assert.equal((await read('?preview=count')).items[0].countPreview.unavailable, true);
+});
+
+test('正式盤點表依 SKU、台北盤點時間切分已登記到貨，不推估實寄或結餘', async () => {
+  const time = (Date.UTC(2026, 10, 2, 18, 19) - Date.UTC(1899, 11, 30)) / 86400000;
+  const header = ['紀錄類型', 'SKU', '規格', '盤點基準時間（台北）', '實盤件數', '關聯單號', '依據與適用範圍'];
+  const counts = [header, ['實盤起點', PILOT_COUNT_SKU, '一般款', time, 9],
+    ['排除舊單', PILOT_COUNT_SKU, '一般款', time, '', 'old-order']];
+  function event(clock, qty, sku = PILOT_COUNT_SKU) {
+    return writebackEventRow(buildWritebackEvent({ sku, createdAt: new Date('2026-11-02T' + clock + '+08:00'),
+      idempotencyKey: 'simulation-pilot-' + qty, requestId: 'test', actorUserId: 'test', receivedQuantity: qty }));
+  }
+  const receipts = [WRITEBACK_HEADERS, event('17:27:03', 5), event('19:00:00', 4), event('19:01:00', 7, 'other')];
+  const deps = { sheets: { spreadsheets: { values: { batchGet: async () => ({
+    data: { valueRanges: [{ values: counts }, { values: receipts }] }
+  }) } } }, spreadsheetId: 'test' };
+  assert.deepEqual(await readCountPreview(deps), { countedAt: '2026-11-02 18:19', physical: 9, received: 4, excludedOrders: ['old-order'] });
+  receipts.push(event('18:19:30', 1));
+  await assert.rejects(readCountPreview(deps), /同分鐘/);
+});
 
 test('SKU API requires LINE authentication and returns duplicate counts', async (t) => {
   const dependencies = fixture();
