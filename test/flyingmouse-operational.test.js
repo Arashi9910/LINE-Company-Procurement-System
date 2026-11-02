@@ -100,12 +100,12 @@ test('catalog sync inserts new SKUs and refreshes every source-owned B:H field',
   assert.deepEqual(write.requestBody.data, [
     {
       range: "'SKU主檔'!B2:H2",
-      values: [['新版商品 A', '紅色', '大', 8, '0012345', 'A-01', '新版商品 A｜紅色｜大']]
+      values: [['新版商品 A', '紅色', '大', 8, '0012345', 'A-01', '紅色｜大｜新版商品 A']]
     },
     {
       range: "'SKU主檔'!A3:J3",
       values: [[
-        'SKU-B', '全新商品', '', '二入組', 4, '0099', 'B-02', '全新商品｜二入組',
+        'SKU-B', '全新商品', '', '二入組', 4, '0099', 'B-02', '二入組｜全新商品',
         '一般SKU', '是'
       ]]
     },
@@ -184,7 +184,7 @@ test('catalog sync preserves source-missing rows and expands capacity for new SK
     {
       range: "'SKU主檔'!A3:J3",
       values: [[
-        'SKU-C', '商品 C', '紅色', '大', 8, '0012345', 'A-01', '商品 C｜紅色｜大',
+        'SKU-C', '商品 C', '紅色', '大', 8, '0012345', 'A-01', '紅色｜大｜商品 C',
         '一般SKU', '是'
       ]]
     },
@@ -636,7 +636,7 @@ test('catalog sync writes the sales product name into 補貨顯示名稱', async
   const byRange = new Map(write.requestBody.data.map((entry) => [entry.range, entry.values[0]]));
   // B 欄必須還是官方 Excel 的貨品名稱，否則 sheets-baseline 的差異比對會整份爆掉。
   assert.equal(byRange.get("'SKU主檔'!B2:H2")[0], '預售✨ 收納盒');
-  assert.equal(byRange.get("'SKU主檔'!B2:H2")[6], '隔日到貨⚡️ 收納盒｜紅色｜大');
+  assert.equal(byRange.get("'SKU主檔'!B2:H2")[6], '紅色｜大｜隔日到貨⚡️ 收納盒');
   assert.deepEqual(byRange.get("'SKU主檔'!O2"), ['現貨']);
 });
 
@@ -661,7 +661,7 @@ test('catalog sync marks an unbound part as 未知 instead of reading its prefix
   const byRange = new Map(write.requestBody.data.map((entry) => [entry.range, entry.values[0]]));
   const unbound = [...byRange].find(([range]) => range.endsWith(':J3'))[1];
   assert.equal(unbound[0], 'SKU-Z');
-  assert.equal(unbound[7], '預售✨ 沒綁定的貨品｜紅色｜大');
+  assert.equal(unbound[7], '紅色｜大｜預售✨ 沒綁定的貨品');
   assert.deepEqual(byRange.get("'SKU主檔'!O3"), ['未知']);
 });
 
@@ -684,7 +684,7 @@ test('catalog sync leaves 出貨型態 untouched when no product list was captur
   });
 
   assert.deepEqual(write.requestBody.data.map((entry) => entry.range), ["'SKU主檔'!B2:H2"]);
-  assert.equal(write.requestBody.data[0].values[0][6], '預售✨ 收納盒｜紅色｜大');
+  assert.equal(write.requestBody.data[0].values[0][6], '紅色｜大｜預售✨ 收納盒');
 });
 
 // 一個貨號綁多個銷售商品時，兩邊前綴不一樣就無從判斷。名稱還是取第一個綁定
@@ -710,7 +710,7 @@ test('catalog sync refuses to guess the mode when bound products disagree', asyn
 
   const inserted = write.requestBody.data
     .find((entry) => entry.range === "'SKU主檔'!A2:J2").values[0];
-  assert.equal(inserted[7], '隔日到貨⚡️ 收納盒｜紅色｜大');
+  assert.equal(inserted[7], '紅色｜大｜隔日到貨⚡️ 收納盒');
   assert.deepEqual(
     write.requestBody.data.find((entry) => entry.range === "'SKU主檔'!O2").values[0],
     ['未知']
@@ -880,4 +880,33 @@ test('tracking refresh never re-reads or writes when nothing needs changing', as
   assert.equal(state.calls.rereads, 0);
   assert.equal(writes, 0);
   assert.deepEqual(result, { refreshed: 0, unchanged: 1, skipped: 0, dryRun: false });
+});
+
+// 2026-11-02 的真實誤讀：商品名稱是蝦皮的關鍵字堆疊（60 字），規格接在尾巴，
+// Google Sheets 的預設欄寬只看得到前 20 字，三個規格顯示出來一模一樣。
+// 使用者因此把戒指那張已下單的單當成項鍊的，然後懷疑看板的「叫貨中」算錯。
+// 規格必須在最前面，前 10 個字就要能分辨。
+test('同商品不同規格要在開頭就分得出來', async () => {
+  const LONG = '預購⚡路亞釣魚項鍊 路亞 釣魚 造型項鍊 釣魚造型項鍊 魚形吊墜 釣魚迷禮物 男友老公生日禮物 創意交換禮物';
+  let write;
+  await syncCatalogItems({
+    sheets: catalogSheets({ rows: [], onWrite: (request) => { write = request; } }),
+    spreadsheetId: 'sheet-123',
+    sourceItems: [
+      catalogSource({ partNumber: 'E1EF5F', productName: LONG, spec1: '一條魚項鍊', spec2: '' }),
+      catalogSource({ partNumber: '76F424', productName: LONG, spec1: '一條魚項鍊+戒指', spec2: '' }),
+      catalogSource({ partNumber: '34145F', productName: LONG, spec1: '一條魚戒指', spec2: '' })
+    ]
+  });
+
+  const names = write.requestBody.data
+    .filter((entry) => entry.range.includes(':J'))
+    .map((entry) => entry.values[0][7]);
+  assert.equal(names.length, 3);
+  for (const name of names) assert.ok(name.startsWith('一條魚'), `規格要在最前面：${name}`);
+  // 關鍵：截到前 10 個字還是三個都不一樣。
+  const heads = new Set(names.map((name) => name.slice(0, 10)));
+  assert.equal(heads.size, 3, `前 10 字應該要能分辨三個規格，實際只有 ${heads.size} 種`);
+  // 完整名稱仍然保留，沒有為了好讀而丟掉資訊。
+  for (const name of names) assert.ok(name.includes(LONG), '商品名稱要完整保留');
 });
