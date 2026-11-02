@@ -15,12 +15,18 @@ param(
   [string]$WritebackMode = 'dry-run',
   [ValidateRange(1, 100)]
   [int]$WritebackLimit = 20,
+  [switch]$EnableInventoryDashboard,
   [switch]$ApproveLive,
   [switch]$SkipSchedule,
   [switch]$ExecuteNow
 )
 
 $ErrorActionPreference = 'Stop'
+
+# When off, the combined job skips its dashboard phase cleanly. Before turning it on the four
+# dashboard sheets must exist (scripts/setup-inventory-dashboard.mjs): header checks are exact,
+# so a missing sheet fails that phase.
+$inventoryDashboardEnabled = if ($EnableInventoryDashboard) { 'true' } else { 'false' }
 
 if ($WritebackMode -eq 'live' -and -not $ApproveLive) {
   throw 'Live writeback mode requires the explicit -ApproveLive switch.'
@@ -134,7 +140,7 @@ if ($repositoryProbe.ExitCode -ne 0) {
   '--memory', '1Gi',
   '--command', 'node',
   '--args', 'scripts/flyingmouse-combined-job.mjs',
-  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,FLYINGMOUSE_SHEET_MODE=$SheetMode,FLYINGMOUSE_WRITEBACK_MODE=$WritebackMode,FLYINGMOUSE_WRITEBACK_LIMIT=$WritebackLimit,FLYINGMOUSE_ADMIN_URL=https://ss-select.fslol.com/admin/dashboard,FLYINGMOUSE_PRODUCT_LIST_URL=https://ss-select.fslol.com/admin/part/list/*",
+  '--set-env-vars', "SPREADSHEET_ID=$SpreadsheetId,FLYINGMOUSE_SHEET_MODE=$SheetMode,FLYINGMOUSE_WRITEBACK_MODE=$WritebackMode,FLYINGMOUSE_WRITEBACK_LIMIT=$WritebackLimit,FLYINGMOUSE_ADMIN_URL=https://ss-select.fslol.com/admin/dashboard,FLYINGMOUSE_PRODUCT_LIST_URL=https://ss-select.fslol.com/admin/part/list/*,INVENTORY_DASHBOARD_ENABLED=$inventoryDashboardEnabled",
   '--set-secrets', 'FLYINGMOUSE_USERNAME=flyingmouse-username:latest,FLYINGMOUSE_PASSWORD=flyingmouse-password:latest',
   '--labels', "component=flyingmouse-combined,mode=$SheetMode-$WritebackMode",
   '--quiet'

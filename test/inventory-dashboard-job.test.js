@@ -5,6 +5,7 @@ import {
   DASHBOARD_SYNC_FAILED,
   DASHBOARD_SYNC_OK,
   PREORDER_HEADERS,
+  RETIREMENT_HEADERS,
   SYNC_STATUS_HEADERS,
   readCatalogSnapshots,
   readDashboardSyncStatus,
@@ -20,8 +21,9 @@ import { runFlyingMouseCombinedJob } from '../scripts/flyingmouse-combined-job.m
 
 const UPDATED_AT = '2026-10-29 15:00:00';
 
-function catalogRow(sku, stock, displayName = `商品 ${sku}`) {
-  return [sku, displayName, '', '', stock, '', '', displayName, '一般SKU', '是', '', '件', '飛鼠', ''];
+function catalogRow(sku, stock, displayName = `商品 ${sku}`, { available = true } = {}) {
+  return [sku, displayName, '', '', stock, '', '', displayName, '一般SKU',
+    available ? '是' : '否', '', '件', '飛鼠', ''];
 }
 
 function writebackRow(sku, status, overrides = {}) {
@@ -46,6 +48,7 @@ function sheetsFor({
   writebackSequence = null,
   dashboard = [[...DASHBOARD_HEADERS]],
   syncStatus = [[...SYNC_STATUS_HEADERS]],
+  retirements = null,
   failOn = null
 } = {}) {
   const calls = { reads: [], updates: [], writebackReads: 0 };
@@ -64,6 +67,8 @@ function sheetsFor({
     }
     if (range.includes('庫存看板')) return dashboard;
     if (range.includes('看板同步狀態')) return syncStatus;
+    // 貨號汰換是可選分頁：預設只有表頭，等於沒有任何對應。
+    if (range.includes('貨號汰換')) return retirements ?? [[...RETIREMENT_HEADERS]];
     throw new Error(`unexpected range: ${range}`);
   };
   const sheets = {
@@ -673,4 +678,73 @@ test('MAIN_HEADERS still matches the columns readCatalogSnapshots relies on', ()
   assert.equal(MAIN_HEADERS[1], '商品名稱');
   assert.equal(MAIN_HEADERS[4], '庫存快照');
   assert.equal(MAIN_HEADERS[7], '補貨顯示名稱');
+});
+
+// 重新上架換掉整組貨號時，舊貨號的需求要折疊到新貨號，否則缺貨清單會指著一個
+// 不能補的貨號，而真正該補的新貨號看起來不缺（docs/sku-retirement-spec.md）。
+test('貨號汰換把舊貨號的未寄與動銷折疊到新貨號', async () => {
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-OLD', 0, '舊款拉絲黑', { available: false }),
+      catalogRow('SKU-NEW', 0, '新款拉絲黑')],
+    retirements: [[...RETIREMENT_HEADERS], ['SKU-OLD', 'SKU-NEW', '2026-10 重新上架', '', '', '']]
+  });
+
+  const result = await runInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    readOrders: async () => ({
+      parts: [{ partNo: 'SKU-OLD', processing: 2, preparing: 1, total: 3 }],
+      orderCounts: { processing: 1, preparing: 1 },
+      driftedOrderIds: [],
+      recentlyOrdered: { since: '2026-09-29', skus: new Set(['SKU-OLD']), units: new Map([['SKU-OLD', 5]]), orderCount: 5 }
+    }),
+    listTrackingRows: async () => [],
+    updatedAt: UPDATED_AT,
+    logger: silentLogger
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.retirementsApplied, 1);
+  assert.equal(result.retirementsBlocked, 0);
+
+  const rows = dashboardWrites(state.calls)[0].values.slice(1).filter((row) => row[0]);
+  // 舊貨號不該出現：它不能補，留著只會讓人以為要處理它。
+  assert.equal(rows.some((row) => row[0] === 'SKU-OLD'), false);
+  const next = rows.find((row) => row[0] === 'SKU-NEW');
+  assert.ok(next, '新貨號要出現在看板上');
+  // 未寄 3 件搬過來了。
+  assert.equal(next[5], 3);
+  // 數字變大要講得出來自哪裡。
+  assert.match(String(next[13]), /含已汰換 SKU-OLD/);
+
+  // 套用結果要寫回分頁，人工才看得到為什麼。
+  const statusWrite = state.calls.updates.find((entry) => String(entry.range).includes('貨號汰換'));
+  assert.ok(statusWrite, '要把狀態寫回貨號汰換分頁');
+});
+
+test('填錯的汰換對應只擋自己，不影響整輪同步', async () => {
+  const state = sheetsFor({
+    catalog: [catalogRow('SKU-A', 7)],
+    preorder: [[...PREORDER_HEADERS], ['SKU-A', 10, '', '', '', '']],
+    // 新貨號不在 SKU主檔。
+    retirements: [[...RETIREMENT_HEADERS], ['SKU-GONE', 'SKU-NOT-THERE', '', '', '', '']]
+  });
+
+  const result = await runInventoryDashboard({
+    sheets: state.sheets,
+    spreadsheetId: 'sheet-123',
+    readOrders: async () => ({
+      parts: [{ partNo: 'SKU-A', processing: 3, preparing: 0, total: 3 }],
+      orderCounts: { processing: 1, preparing: 0 },
+      driftedOrderIds: []
+    }),
+    listTrackingRows: async () => [],
+    updatedAt: UPDATED_AT,
+    logger: silentLogger
+  });
+
+  assert.equal(result.ok, true, '一條填錯不該讓整輪失敗');
+  assert.equal(result.retirementsApplied, 0);
+  assert.equal(result.retirementsBlocked, 1);
+  assert.equal(result.rows, 1);
 });

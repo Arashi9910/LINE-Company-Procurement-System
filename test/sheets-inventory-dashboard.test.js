@@ -6,6 +6,8 @@ import {
   DASHBOARD_SHEET_NAME,
   PREORDER_HEADERS,
   PREORDER_SHEET_NAME,
+  RETIREMENT_HEADERS,
+  RETIREMENT_SHEET_NAME,
   SYNC_STATUS_HEADERS,
   SYNC_STATUS_SHEET_NAME,
   MOVEMENT_HEADERS,
@@ -26,7 +28,8 @@ import {
 } from '../src/sheets/inventory-dashboard.js';
 import { DASHBOARD_STATUS, buildInventoryDashboard } from '../src/services/inventory-dashboard.js';
 import { readFile } from 'node:fs/promises';
-import { formatShortageReply } from '../src/services/group-commands.js';
+import { formatShortageSummary } from '../src/services/group-commands.js';
+import { buildShortageView } from '../src/services/shortage-view.js';
 import { initializeInventoryDashboard } from '../scripts/setup-inventory-dashboard.mjs';
 
 function row(overrides = {}) {
@@ -399,15 +402,17 @@ test('initializeInventoryDashboard creates both sheets with frozen bold headers'
   const result = await initializeInventoryDashboard({ sheets, spreadsheetId: 'sheet-123' });
 
   assert.deepEqual(result, {
-    created: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME],
+    created: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME,
+      MOVEMENT_SHEET_NAME, RETIREMENT_SHEET_NAME],
     checked: [],
     rewritten: [],
     clearedRows: 0,
-    changes: 8
+    changes: 10
   });
   const added = batch.requestBody.requests.filter((entry) => entry.addSheet);
   assert.deepEqual(added.map((entry) => entry.addSheet.properties.title),
-    [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME]);
+    [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME,
+      MOVEMENT_SHEET_NAME, RETIREMENT_SHEET_NAME]);
   assert.equal(added[1].addSheet.properties.gridProperties.frozenRowCount, 1);
   assert.equal(added[1].addSheet.properties.gridProperties.columnCount, DASHBOARD_HEADERS.length);
   const headers = batch.requestBody.requests.filter((entry) => entry.updateCells);
@@ -424,7 +429,8 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
   const batches = [];
   const sheets = {
     spreadsheets: {
-      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME]).spreadsheets,
+      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME,
+        MOVEMENT_SHEET_NAME, RETIREMENT_SHEET_NAME]).spreadsheets,
       async batchUpdate(request) {
         batches.push(request);
         return { data: {} };
@@ -434,6 +440,7 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
           if (range.includes(PREORDER_SHEET_NAME)) return { data: { values: [[...PREORDER_HEADERS]] } };
           if (range.includes(SYNC_STATUS_SHEET_NAME)) return { data: { values: [[...SYNC_STATUS_HEADERS]] } };
           if (range.includes(MOVEMENT_SHEET_NAME)) return { data: { values: [[...MOVEMENT_HEADERS]] } };
+          if (range.includes(RETIREMENT_SHEET_NAME)) return { data: { values: [[...RETIREMENT_HEADERS]] } };
           return { data: { values: [[...DASHBOARD_HEADERS]] } };
         },
         async clear() { throw new Error('表頭沒變就不該清空'); }
@@ -445,7 +452,8 @@ test('initializeInventoryDashboard is repeatable and verifies existing headers',
 
   assert.deepEqual(result, {
     created: [],
-    checked: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME],
+    checked: [PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME,
+      MOVEMENT_SHEET_NAME, RETIREMENT_SHEET_NAME],
     rewritten: [],
     clearedRows: 0,
     changes: 0
@@ -460,7 +468,8 @@ test('initializeInventoryDashboard rewrites a system sheet header but never a ma
   const cleared = [];
   const sheetsFactory = (headersBySheet) => ({
     spreadsheets: {
-      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME, MOVEMENT_SHEET_NAME]).spreadsheets,
+      ...metadataFor([PREORDER_SHEET_NAME, DASHBOARD_SHEET_NAME, SYNC_STATUS_SHEET_NAME,
+        MOVEMENT_SHEET_NAME, RETIREMENT_SHEET_NAME]).spreadsheets,
       async batchUpdate(request) {
         batches.push(request);
         return { data: {} };
@@ -486,7 +495,8 @@ test('initializeInventoryDashboard rewrites a system sheet header but never a ma
       [PREORDER_SHEET_NAME]: [...PREORDER_HEADERS],
       [DASHBOARD_SHEET_NAME]: DASHBOARD_HEADERS.slice(0, -1),
       [SYNC_STATUS_SHEET_NAME]: [...SYNC_STATUS_HEADERS],
-      [MOVEMENT_SHEET_NAME]: [...MOVEMENT_HEADERS]
+      [MOVEMENT_SHEET_NAME]: [...MOVEMENT_HEADERS],
+      [RETIREMENT_SHEET_NAME]: [...RETIREMENT_HEADERS]
     }),
     spreadsheetId: 'sheet-123'
   });
@@ -500,7 +510,8 @@ test('initializeInventoryDashboard rewrites a system sheet header but never a ma
       [PREORDER_SHEET_NAME]: ['SKU', '預購量', '安全庫存', '備註', '最後修改人', '最後修改時間'],
       [DASHBOARD_SHEET_NAME]: [...DASHBOARD_HEADERS],
       [SYNC_STATUS_SHEET_NAME]: [...SYNC_STATUS_HEADERS],
-      [MOVEMENT_SHEET_NAME]: [...MOVEMENT_HEADERS]
+      [MOVEMENT_SHEET_NAME]: [...MOVEMENT_HEADERS],
+      [RETIREMENT_SHEET_NAME]: [...RETIREMENT_HEADERS]
     }),
     spreadsheetId: 'sheet-123'
   }), /預購額度 表頭不符/);
@@ -609,19 +620,23 @@ test('an anomaly survives calc → board → read back → reply, with its reaso
   });
   const values = buildDashboardValues(dashboard);
   const readBack = parseDashboardRows(values);
-  const reply = formatShortageReply({
+  const snapshot = {
     rows: readBack,
     syncStatus: { status: DASHBOARD_SYNC_OK, lastSuccessAt: '2026-10-29 14:00:00' }
+  };
+  const view = buildShortageView({
+    dashboard: snapshot,
+    orderableSkus: [{ sku: 'SKU-A', unit: '件' }]
   });
 
   assert.equal(readBack.find((row) => row.sku === 'SKU-GHOST').status, DASHBOARD_STATUS.ANOMALY);
-  assert.match(reply, /要叫貨 1 個/);
-  assert.match(reply, /SKU SKU-A/);
   // 異常列不可以混在「要叫貨」裡——缺口是正的，直接拿去下單就錯了。
-  assert.match(reply, /異常 1 個/);
-  assert.match(reply, /SKU SKU-GHOST/);
-  assert.match(reply, /不在 SKU主檔/);
-  assert.equal(reply.indexOf('SKU SKU-A') < reply.indexOf('異常'), true, '要叫貨要排在異常前面');
+  // 分成兩個陣列比「文字順序」更難搞錯。
+  assert.deepEqual(view.reorder.map((item) => item.sku), ['SKU-A']);
+  assert.deepEqual(view.anomaly.map((item) => item.sku), ['SKU-GHOST']);
+  assert.match(view.anomaly[0].note, /不在 SKU主檔/);
+  assert.match(formatShortageSummary(snapshot), /要叫貨 1 個/);
+  assert.match(formatShortageSummary(snapshot), /需人工確認 1 個/);
 });
 
 test('the movement list round-trips and overwrites the previous one', async () => {
@@ -765,7 +780,7 @@ test('a non-empty movement list that becomes empty still filters, end to end', a
   assert.equal(readBack.initialized, true, '空集合也要留下完成標記');
   assert.equal(readBack.skus.size, 0);
 
-  const reply = formatShortageReply({
+  const snapshot = {
     syncStatus: { status: DASHBOARD_SYNC_OK, lastSuccessAt: '2026-10-29 14:00:00' },
     movement: readBack,
     rows: [{
@@ -773,8 +788,9 @@ test('a non-empty movement list that becomes empty still filters, end to end', a
       preparing: 0, unshipped: 3, onOrder: 0, preorderAllowance: 10, safetyStock: 0,
       estimatedStock: 0, gap: 3, status: '要叫貨', note: '', updatedAt: '2026-10-29 14:00:00'
     }]
-  });
-  assert.match(reply, /目前沒有要叫貨的品項/);
-  assert.match(reply, /另有 1 個有缺口但近 30 天沒有訂單/);
-  assert.equal(reply.includes('SKU-OLD'), false);
+  };
+  const view = buildShortageView({ dashboard: snapshot, orderableSkus: [] });
+  assert.deepEqual(view.reorder, []);
+  assert.equal(view.quiet, 1);
+  assert.match(formatShortageSummary(snapshot), /目前沒有要叫貨的品項/);
 });

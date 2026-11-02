@@ -227,6 +227,9 @@ export function buildInventoryDashboard({
   // 沒給就全部當 unknown、件數 0，行為跟以前一樣（額度與安全庫存都是 0）。
   stockModes = new Map(),
   recentUnits = new Map(),
+  // 貨號汰換把舊貨號的數字折疊過來之後，要在備註說明來源，
+  // 否則新貨號的未寄與安全庫存會無聲無息地變大（規格第 4 節）。
+  retirementNotes = new Map(),
   coverDays = DEFAULT_COVER_DAYS,
   updatedAt = ''
 } = {}) {
@@ -292,6 +295,8 @@ export function buildInventoryDashboard({
     if (publishable && closeShortfall > 0) {
       notes.push(`目前不能關閉預購，還差 ${closeShortfall} 個`);
     }
+    const retirementNote = retirementNotes.get(sku);
+    if (retirementNote) notes.push(retirementNote);
 
     return {
       sku,
@@ -325,4 +330,42 @@ export function buildInventoryDashboard({
   });
 
   return { rows, updatedAt };
+}
+
+// 動銷清單只有在「跟這份看板同一輪寫出來」時才拿得來篩：Job 用同一個時間戳寫看板與
+// 動銷清單，所以時間不一致就代表動銷那一步失敗了，清單是舊的。拿舊清單去篩會把今天
+// 才開始出單的商品誤判成「沒在動」而藏起來。
+export function movementUsable(dashboard) {
+  const movement = dashboard?.movement;
+  if (!movement?.initialized) return false;
+  const boardAt = text(dashboard?.rows?.[0]?.updatedAt);
+  return Boolean(boardAt) && movement.updatedAt === boardAt;
+}
+
+function byGapDescending(left, right) {
+  return right.gap - left.gap;
+}
+
+// 文字回覆與 LIFF 缺貨頁共用這一份分組，兩邊才不會各算各的（規格第 5 節）。
+//
+// 缺口為正的不一定能直接叫貨：上游會把查無貨號、規格修正失效、推算實際為負的列
+// 標成「異常」，缺口照樣是正的。混在一起報會害人誤下單，所以一定要分開。
+export function groupShortageRows(dashboard) {
+  const rows = dashboard?.rows ?? [];
+  const all = rows.filter((row) => typeof row.gap === 'number' && row.gap > 0);
+  const reorder = all
+    .filter((row) => row.status === DASHBOARD_STATUS.REORDER)
+    .sort(byGapDescending);
+  const anomaly = all
+    .filter((row) => row.status !== DASHBOARD_STATUS.REORDER)
+    .sort(byGapDescending);
+  const moving = movementUsable(dashboard) ? dashboard.movement.skus : null;
+  const active = moving ? reorder.filter((row) => moving.has(row.sku)) : reorder;
+  return Object.freeze({
+    all,
+    active,
+    anomaly,
+    quiet: moving ? reorder.length - active.length : 0,
+    blocked: rows.filter((row) => row.status === DASHBOARD_STATUS.WRITEBACK_PENDING).length
+  });
 }

@@ -13,6 +13,9 @@ import {
   MOVEMENT_ROW_COUNT,
   MOVEMENT_SHEET_NAME,
   PREORDER_SHEET_NAME,
+  RETIREMENT_HEADERS,
+  RETIREMENT_ROW_COUNT,
+  RETIREMENT_SHEET_NAME,
   SYNC_STATUS_HEADERS,
   SYNC_STATUS_ROW_COUNT,
   SYNC_STATUS_SHEET_NAME,
@@ -51,6 +54,15 @@ export const DASHBOARD_TABLES = Object.freeze([
     headers: MOVEMENT_HEADERS,
     rowCount: MOVEMENT_ROW_COUNT,
     manual: false
+  }),
+  // 重新上架換掉整組貨號時，把舊貨號的需求指到新貨號。A～C 人工維護，
+  // D～F 由每小時的 Job 回寫套用結果，所以這張是 manual。
+  Object.freeze({
+    sheetId: 1720000004,
+    name: RETIREMENT_SHEET_NAME,
+    headers: RETIREMENT_HEADERS,
+    rowCount: RETIREMENT_ROW_COUNT,
+    manual: true
   })
 ]);
 

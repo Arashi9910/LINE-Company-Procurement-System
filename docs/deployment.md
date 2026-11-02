@@ -91,6 +91,11 @@ FlyingMouse 使用獨立 Cloud Run Job。部署腳本預設為商品 `read-only`
   這次建立的 revision，並確認 `latestReadyRevisionName` 與它相符才繼續。
   回滾改流量即可，不需要重新部署：
   `gcloud run services update-traffic <服務> --region <區域> --to-revisions <舊 revision>=100`。
+- 庫存看板：由 `INVENTORY_DASHBOARD_ENABLED` 控制，兩支部署腳本都以
+  `-EnableInventoryDashboard` 開啟（不帶就是關閉，合併 Job 的看板階段會乾淨跳過）。
+  開啟前「預購額度」「庫存看板」「看板同步狀態」「動銷清單」四個分頁必須先存在，
+  用 `node scripts/setup-inventory-dashboard.mjs --spreadsheet-id <id>` 建立；
+  表頭是嚴格比對，對不上那一階段就會失敗。
 - 出貨型態欄位遷移：`SKU主檔` O 欄與 `補貨追蹤` W 欄的「出貨型態」在部署前必須先存在，
   否則嚴格表頭比對會讓整輪同步停住。部署新版程式**之前**先跑一次
   `node scripts/setup-sales-name-sync.mjs --spreadsheet-id <id>`（可重跑，只補欄位與表頭，

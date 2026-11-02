@@ -17,6 +17,19 @@ export const PREORDER_HEADERS = Object.freeze([
 ]);
 export const PREORDER_ROW_COUNT = 2000;
 
+export const RETIREMENT_SHEET_NAME = '貨號汰換';
+export const RETIREMENT_HEADERS = Object.freeze([
+  '舊貨號',
+  '新貨號',
+  '備註',
+  // D 之後由程式回寫，人工只維護 A～C（規格第 3 節）。
+  '狀態',
+  '說明',
+  '最後檢查時間'
+]);
+export const RETIREMENT_LAST_COLUMN = 'F';
+export const RETIREMENT_ROW_COUNT = 500;
+
 export const DASHBOARD_SHEET_NAME = '庫存看板';
 export const DASHBOARD_HEADERS = Object.freeze([
   'SKU',
@@ -152,6 +165,58 @@ export async function readPreorderAllowances({ sheets, spreadsheetId }) {
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
   return parsePreorderRows(response.data.values ?? []);
+}
+
+export function parseRetirementRows(values) {
+  assertSheetHeaders(values?.[0] ?? [], RETIREMENT_HEADERS, RETIREMENT_SHEET_NAME);
+  const rows = [];
+  for (let index = 1; index < (values?.length ?? 0); index += 1) {
+    const row = paddedRow(values[index], RETIREMENT_HEADERS.length);
+    if (!hasValues(row)) continue;
+    // 這裡不驗內容：哪一條不成立、為什麼，由 applySkuRetirement 判斷並寫回 D／E 欄。
+    // 在讀取層丟錯會讓一條填錯的對應擋掉整輪同步。
+    rows.push(Object.freeze({
+      rowNumber: index + 1,
+      oldSku: normalizeText(row[0]),
+      newSku: normalizeText(row[1]),
+      note: normalizeText(row[2])
+    }));
+  }
+  return rows;
+}
+
+// 分頁不存在時回空陣列：這個功能是可選的，沒建分頁的部署行為要與以前完全相同。
+export async function readSkuRetirements({ sheets, spreadsheetId }) {
+  if (!sheets || !spreadsheetId) throw new Error('貨號汰換讀取設定不完整');
+  let response;
+  try {
+    response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${RETIREMENT_SHEET_NAME}'!A:${RETIREMENT_LAST_COLUMN}`,
+      valueRenderOption: 'UNFORMATTED_VALUE'
+    });
+  } catch (error) {
+    if (Number(error?.code ?? error?.response?.status) === 400) return [];
+    throw error;
+  }
+  return parseRetirementRows(response.data.values ?? []);
+}
+
+// 把每一條的套用結果寫回 D～F，人工在維護這張表的地方就看得到為什麼被擋下。
+export async function writeRetirementResults({ sheets, spreadsheetId, results, checkedAt }) {
+  if (!sheets || !spreadsheetId) throw new Error('貨號汰換回寫設定不完整');
+  const data = results
+    .filter((item) => Number.isSafeInteger(item?.rowNumber) && item.rowNumber > 1)
+    .map((item) => ({
+      range: `'${RETIREMENT_SHEET_NAME}'!D${item.rowNumber}:F${item.rowNumber}`,
+      values: [[item.status, item.reason ?? '', checkedAt]]
+    }));
+  if (data.length === 0) return { written: 0 };
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId,
+    requestBody: { valueInputOption: 'RAW', data }
+  });
+  return { written: data.length };
 }
 
 // 缺口與推算實際庫存在「回寫未完成」時是 null，代表這一輪不發布這個數字；
