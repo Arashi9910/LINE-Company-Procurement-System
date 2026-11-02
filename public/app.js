@@ -817,6 +817,13 @@ function shortageRow(entry, catalogBySku) {
   // 有約 72 筆綁定指向已刪除的銷售商品，網址可能失效：載不出來就留佔位方塊。
   image.addEventListener('error', () => { image.removeAttribute('src'); });
 
+  // 卡片分成「標題帶」與「內容」兩塊：標題帶有底色，整張卡才看得出是一個方框。
+  const header = document.createElement('div');
+  header.className = 'shortage-header';
+
+  const body = document.createElement('div');
+  body.className = 'shortage-body';
+
   const info = document.createElement('div');
   info.className = 'shortage-info';
 
@@ -832,6 +839,8 @@ function shortageRow(entry, catalogBySku) {
   badge.dataset.mode = entry.stockMode || '';
   badge.textContent = entry.stockMode || '型態未知';
 
+  header.append(title, badge);
+
   const sku = document.createElement('span');
   sku.className = 'shortage-sku';
   sku.textContent = entry.sku;
@@ -841,7 +850,6 @@ function shortageRow(entry, catalogBySku) {
   numbers.textContent = `缺口 ${entry.gap} ${entry.unit}｜未寄 ${entry.unshipped}`
     + `｜叫貨中 ${entry.onOrder}｜飛鼠 ${entry.flyingmouseStock}`;
 
-  info.append(title, badge);
   // 有規格時才另外列商品名稱；沒有規格的話標題已經是名稱了，不重複顯示。
   if (entry.spec && entry.productName) {
     const product = document.createElement('span');
@@ -864,7 +872,8 @@ function shortageRow(entry, catalogBySku) {
     blocked.className = 'shortage-note';
     blocked.textContent = 'SKU主檔 標記為不可補貨，無法從這裡下單';
     info.append(blocked);
-    row.append(image, info);
+    body.append(image, info);
+    row.append(header, body);
     return row;
   }
 
@@ -900,7 +909,8 @@ function shortageRow(entry, catalogBySku) {
 
   pick.append(checkbox, label, quantity, document.createTextNode(entry.unit));
   info.append(pick);
-  row.append(image, info);
+  body.append(image, info);
+  row.append(header, body);
   return row;
 }
 
